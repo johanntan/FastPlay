@@ -88,4 +88,4 @@ rm -rf temp_dl
 echo
 echo "Done. Build with:"
 echo "  cmake -S . -B build -DCMAKE_BUILD_TYPE=Release"
-echo "  cmake --build build --parallel"
+echo "  cmake --build build --parallel \"$(sysctl -n hw.ncpu)\""

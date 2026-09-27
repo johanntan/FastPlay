@@ -65,6 +65,7 @@ jobs:
 
   build-macos:
     runs-on: macos-latest
+    timeout-minutes: 90
 
     steps:
       - name: Checkout code
@@ -85,8 +86,9 @@ jobs:
       - name: Configure
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 
+      # One compile per core: a bare --parallel lets make start them all at once.
       - name: Build FastPlay.app
-        run: cmake --build build --parallel
+        run: cmake --build build --parallel "$(sysctl -n hw.ncpu)"
 
       # Ad-hoc signed (no Developer ID): the libraries first, then the app itself.
       - name: Sign and zip
