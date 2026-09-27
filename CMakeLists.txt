@@ -161,6 +161,7 @@ if(WIN32)
         src/platform/ini_windows.cpp
         src/platform/paths_windows.cpp
         src/platform/subprocess_windows.cpp
+        src/platform/win7_compat.cpp
         src/platform/speech_windows.cpp
         src/platform/startup_windows.cpp
         res/fastplay.rc

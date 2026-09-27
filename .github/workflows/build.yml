@@ -42,6 +42,20 @@ jobs:
       - name: Build FastPlay (exe + portable zip + installer)
         run: .\build_new.bat
 
+      # FastPlay runs on Windows 7. An import Windows 7 lacks stops it from starting,
+      # and a newer compiler's runtime library can bring one in unnoticed.
+      - name: Check FastPlay.exe still runs on Windows 7
+        shell: pwsh
+        run: |
+          $win8Only = 'CreateFile2|CopyFile2|GetSystemTimePreciseAsFileTime|WaitOnAddress|WakeByAddress|SetThreadDescription|GetThreadDescription|GetCurrentThreadStackLimits|FromApp|PrefetchVirtualMemory|GetOverlappedResultEx|api-ms-win-'
+          $found = dumpbin /imports FastPlay.exe | Select-String -Pattern $win8Only
+          if ($found) {
+            Write-Host "FastPlay.exe imports functions Windows 7 does not have:"
+            $found | ForEach-Object { Write-Host $_.Line.Trim() }
+            exit 1
+          }
+          Write-Host "No Windows 8+ imports."
+
       - name: Read APP_VERSION from version.h
         id: version
         shell: pwsh
