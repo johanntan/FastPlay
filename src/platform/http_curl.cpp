@@ -71,7 +71,7 @@ HttpResult HttpGet(const std::wstring& url, const HttpOptions& options) {
 
     std::string urlUtf8 = WideToUtf8(url);
     curl_easy_setopt(curl, CURLOPT_URL, urlUtf8.c_str());
-    curl_easy_setopt(curl, CURLOPT_USERAGENT, "FastPlay/1.0");
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, UserAgent().c_str());
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, options.followRedirects ? 1L : 0L);
     curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 5L);  // six requests in all, as on Windows
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, OnData);

@@ -47,7 +47,7 @@ HttpResult HttpGet(const std::wstring& startUrl, const HttpOptions& options) {
     }
     if (!authHeader.empty()) extraHeaders += authHeader + L"\r\n";
 
-    HINTERNET hInternet = InternetOpenW(L"FastPlay/1.0", INTERNET_OPEN_TYPE_PRECONFIG, nullptr, nullptr, 0);
+    HINTERNET hInternet = InternetOpenW(Utf8ToWide(UserAgent()).c_str(), INTERNET_OPEN_TYPE_PRECONFIG, nullptr, nullptr, 0);
     if (!hInternet) {
         Fail(result);
         return result;

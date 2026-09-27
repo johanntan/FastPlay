@@ -1,6 +1,7 @@
 #include "player.h"
 #include "globals.h"
 #include "utils.h"
+#include "http.h"
 #include "accessibility.h"
 #include "settings.h"
 #include "app_ui.h"
@@ -303,8 +304,8 @@ bool InitBass(void* windowHandle) {
     // Apply MIDI settings (SoundFont, max voices)
     ApplyMidiSettings();
 
-    // Configure network settings for URL streaming (YouTube, etc.)
-    BASS_SetConfigPtr(BASS_CONFIG_NET_AGENT, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36");
+    // Configure network settings for URL streaming (radio, podcasts)
+    BASS_SetConfigPtr(BASS_CONFIG_NET_AGENT, UserAgent().c_str());
     BASS_SetConfig(BASS_CONFIG_NET_TIMEOUT, 30000);  // 30 second timeout
     BASS_SetConfig(BASS_CONFIG_NET_BUFFER, 10000);   // 10 second network buffer (helps with long streams)
     BASS_SetConfig(BASS_CONFIG_NET_PREBUF, 50);      // Start playback when 50% buffered

@@ -46,6 +46,10 @@ struct HttpResult {
 
 HttpResult HttpGet(const std::wstring& url, const HttpOptions& options = HttpOptions());
 
+// How FastPlay identifies itself on every request (HTTP, audio streams, updates):
+// "FastPlay/0.7.0 (Windows 11 10.0.26200; x64)".
+const std::string& UserAgent();
+
 // "Authorization: Basic <base64(user:pass)>" (UTF-8), or empty if both are empty.
 std::wstring BuildBasicAuthHeader(const std::wstring& username, const std::wstring& password);
 

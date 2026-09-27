@@ -1,7 +1,14 @@
 // HTTP helpers shared by every platform.
 
 #include "http.h"
+#include "platform.h"
 #include "utils.h"
+#include "version.h"
+
+const std::string& UserAgent() {
+    static const std::string agent = std::string("FastPlay/" APP_VERSION " (") + GetSystemDescription() + ")";
+    return agent;
+}
 
 // Build an "Authorization: Basic <base64(user:pass)>" header from credentials (UTF-8 encoded).
 // Returns an empty string when no credentials are given.
