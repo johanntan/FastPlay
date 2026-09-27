@@ -44,6 +44,24 @@ static const int kHotkeyMediaStop = 0x7F01;
 static const int kHotkeyMediaPrev = 0x7F02;
 static const int kHotkeyMediaNext = 0x7F03;
 
+#ifdef __WXOSX__
+namespace {
+
+// macOS delivers key presses to the focused view, and a frame with only a menu bar
+// and status bar has none: only keys that are also menu shortcuts would work. This
+// empty window fills the frame and holds the focus, so every key reaches the
+// frame's accelerator table (wxWidgets looks it up from the focused window).
+class KeyTarget : public wxWindow {
+public:
+    explicit KeyTarget(wxWindow* parent)
+        : wxWindow(parent, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxWANTS_CHARS) {}
+    bool AcceptsFocus() const override { return true; }
+    bool AcceptsFocusFromKeyboard() const override { return true; }
+};
+
+}  // namespace
+#endif
+
 MainFrame::MainFrame()
     : wxFrame(nullptr, wxID_ANY, APP_NAME, wxDefaultPosition, wxSize(500, 150)),
       m_titleTimer(), m_schedulerTimer(), m_batchTimer(), m_durationTimer() {
@@ -57,6 +75,10 @@ MainFrame::MainFrame()
     CreateStatusBar(SB_PART_COUNT);
     const int widths[SB_PART_COUNT] = {200, 100, -1};
     GetStatusBar()->SetStatusWidths(SB_PART_COUNT, widths);
+
+#ifdef __WXOSX__
+    (new KeyTarget(this))->SetFocus();
+#endif
 
     Bind(wxEVT_MENU, &MainFrame::OnMenu, this);
     Bind(wxEVT_MENU_OPEN, &MainFrame::OnMenuOpen, this);
@@ -164,8 +186,15 @@ void MainFrame::BuildMenuBar() {
     play->Append(IDM_PLAY_BEGINNING, "&Beginning\tHome");
     play->Append(IDM_PLAY_JUMPTOTIME, "&Jump to Time...\tJ");
     play->AppendSeparator();
+#ifdef __WXOSX__
+    // On macOS a menu shortcut is a real key, and plain Up/Down belong to the
+    // effect controls; volume is Cmd+Up/Down.
+    play->Append(IDM_PLAY_VOLUP, "Volume &Up\tCtrl+Up");
+    play->Append(IDM_PLAY_VOLDOWN, "Volume &Down\tCtrl+Down");
+#else
     play->Append(IDM_PLAY_VOLUP, "Volume &Up\tUp");
     play->Append(IDM_PLAY_VOLDOWN, "Volume &Down\tDown");
+#endif
     play->AppendSeparator();
     play->Append(IDM_PLAY_ELAPSED, "Speak &Elapsed\tCtrl+Shift+E");
     play->Append(IDM_PLAY_REMAINING, "Speak &Remaining\tCtrl+Shift+R");
