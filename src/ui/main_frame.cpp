@@ -133,11 +133,19 @@ void MainFrame::BuildMenuBar() {
     file->AppendSubMenu(m_recentMenu, "Recent &Files");
     RebuildRecentFilesMenu();
     file->AppendSeparator();
+#ifdef __WXOSX__
+    // Cmd+H is the system's Hide; the menu bar icon stands in for the tray.
+    file->Append(IDM_FILE_HIDE_TRAY, "&Hide to Menu Bar");
+    // wxWidgets moves these two into the application menu, where macOS keeps them.
+    file->Append(wxID_PREFERENCES, "&Settings...\tCtrl+,");
+    file->Append(wxID_EXIT, "&Quit FastPlay\tCtrl+Q");
+#else
     file->Append(IDM_FILE_HIDE_TRAY, "&Hide to Tray\tCtrl+H");
     file->AppendSeparator();
     file->Append(IDM_TOOLS_OPTIONS, "O&ptions...\tCtrl+,");
     file->AppendSeparator();
     file->Append(IDM_FILE_EXIT, "E&xit\tAlt+F4");
+#endif
 
     auto* play = new wxMenu();
     play->Append(IDM_PLAY_PLAY, "&Play\tX");
@@ -191,7 +199,9 @@ void MainFrame::BuildAccelerators() {
         {C, 'D', IDM_FILE_ADD_TO_FAVORITES},
         {C | S, 'P', IDM_FILE_PODCAST},
         {C, 'S', IDM_FILE_SCHEDULE},
+#ifndef __WXOSX__
         {C, 'H', IDM_FILE_HIDE_TRAY},
+#endif
         {C | S, 'H', IDM_VIEW_SONG_HISTORY},
         {C, ',', IDM_TOOLS_OPTIONS},
         {N, WXK_SPACE, IDM_PLAY_PLAYPAUSE},
@@ -342,7 +352,13 @@ void MainFrame::OnMenuOpen(wxMenuEvent& event) {
 }
 
 void MainFrame::OnMenu(wxCommandEvent& event) {
-    RunCommand(event.GetId(), 0);
+    int id = event.GetId();
+#ifdef __WXOSX__
+    // The application menu's Settings and Quit (see BuildMenuBar)
+    if (id == wxID_PREFERENCES) id = IDM_TOOLS_OPTIONS;
+    else if (id == wxID_EXIT) id = IDM_FILE_EXIT;
+#endif
+    RunCommand(id, 0);
 }
 
 // ---------------------------------------------------------------------------

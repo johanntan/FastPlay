@@ -107,7 +107,7 @@ jobs:
           path: FastPlay-macOS.zip
 
   release:
-    needs: [build-windows]
+    needs: [build-windows, build-macos]
     if: github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
 
@@ -125,6 +125,13 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: windows-installer
+          path: artifacts/
+
+      # Its name contains "macOS", which the Windows updater skips.
+      - name: Download macOS app
+        uses: actions/download-artifact@v4
+        with:
+          name: macos-app
           path: artifacts/
 
       - name: List artifacts
@@ -155,6 +162,14 @@ jobs:
             ## Download
             - **Windows Installer:** FastPlayInstaller.exe (recommended for most users)
             - **Windows Portable:** FastPlay.zip (no installation required)
+            - **macOS:** FastPlay-macOS.zip (macOS 11 or later, Apple silicon and Intel)
+
+            ## macOS installation
+            1. Download and unzip FastPlay-macOS.zip
+            2. Move FastPlay.app to Applications
+            3. The app is not notarized, so macOS blocks it at first. In Terminal, run:
+               `xattr -cr /Applications/FastPlay.app`
+            4. Open FastPlay
           files: artifacts/*
           prerelease: true
           make_latest: false

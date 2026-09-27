@@ -115,10 +115,15 @@ int GetCurrentItem(wxListBox* list) {
 #endif
 }
 
-// Make an item the current one (LB_SETCURSEL).
+// Make an item the current one: the only one selected, with the focus rectangle.
+// (LB_SETCURSEL does nothing in a multiple-selection list box.)
 void SetCurrentItem(wxListBox* list, int index) {
 #ifdef __WXMSW__
-    ::SendMessageW(static_cast<HWND>(list->GetHWND()), LB_SETCURSEL, static_cast<WPARAM>(index), 0);
+    if (index < 0 || index >= static_cast<int>(list->GetCount())) return;
+    HWND hwnd = static_cast<HWND>(list->GetHWND());
+    ::SendMessageW(hwnd, LB_SETSEL, FALSE, -1);
+    ::SendMessageW(hwnd, LB_SETSEL, TRUE, static_cast<LPARAM>(index));  // scrolls it into view
+    ::SendMessageW(hwnd, LB_SETCARETINDEX, static_cast<WPARAM>(index), FALSE);
 #else
     if (index >= 0 && index < static_cast<int>(list->GetCount())) {
         list->DeselectAll();
