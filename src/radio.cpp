@@ -427,6 +427,10 @@ std::wstring ResolvePlaylistUrl(const std::wstring& url) {
         std::wstring content = RadioHttpGet(currentUrl);
         if (content.empty()) return url;  // Fetch failed - fall back to original.
 
+        // An HLS playlist is the stream itself (BASSHLS plays it); its entries are
+        // variants or few-second segments, not alternative stream addresses.
+        if (content.find(L"#EXT-X-") != std::wstring::npos) return currentUrl;
+
         std::string narrow = WideToUtf8(content);
         std::vector<StreamOption> options = ParsePlaylistContentMultiple(narrow);
 

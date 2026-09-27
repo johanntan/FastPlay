@@ -2,6 +2,11 @@
 #ifndef FASTPLAY_YOUTUBE_H
 #define FASTPLAY_YOUTUBE_H
 
+// YouTube: search (the YouTube Data API when there is a key, yt-dlp otherwise),
+// playlist and channel listings, and getting a video ready to play. Everything here
+// blocks, often for seconds: call it from a worker thread.
+
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -10,52 +15,50 @@ struct YouTubeResult {
     std::wstring videoId;
     std::wstring title;
     std::wstring channel;
-    std::wstring duration;    // Human-readable duration
+    std::wstring duration;    // Human-readable duration ("live" for a live stream)
     std::wstring uploadDate;  // Human-readable upload date
     bool isPlaylist = false;
     bool isChannel = false;
 };
 
-// Search YouTube using API or yt-dlp fallback
-// Returns results, nextPageToken is set if more results available
+// A video ready to play: a local audio file, or for a live stream its URL.
+struct YouTubeMedia {
+    std::wstring file;
+    std::wstring url;
+    std::wstring title;
+};
+
+// Short progress messages worth saying while something slow happens (a first-time
+// download of the YouTube tools, say). Called on the worker thread.
+using YouTubeStatus = std::function<void(const std::wstring& message)>;
+
+// Search YouTube. With an API key, nextPageToken is set if more results are
+// available; yt-dlp search returns one page. `error` explains a failure.
 bool YouTubeSearch(const std::wstring& query, std::vector<YouTubeResult>& results,
-                   std::wstring& nextPageToken, const std::wstring& pageToken = L"");
+                   std::wstring& nextPageToken, const std::wstring& pageToken,
+                   std::wstring& error, const YouTubeStatus& status = nullptr);
 
-// Get contents of a playlist or channel
-bool YouTubeGetPlaylistContents(const std::wstring& playlistId, std::vector<YouTubeResult>& results,
-                                std::wstring& nextPageToken, const std::wstring& pageToken = L"");
+// The videos of a playlist or channel page (a YouTube URL).
+bool YouTubeGetListContents(const std::wstring& listUrl, std::vector<YouTubeResult>& results,
+                            std::wstring& error, const YouTubeStatus& status = nullptr);
 
-// Get audio stream URL for a video using yt-dlp
-bool YouTubeGetStreamURL(const std::wstring& videoId, std::wstring& streamUrl);
+// Get a video ready to play. The audio is downloaded (with yt-dlp) and kept for a
+// week, so playing it again is immediate. On first use this also downloads yt-dlp
+// and deno, the JavaScript runtime yt-dlp needs for YouTube.
+bool YouTubePrepare(const std::wstring& videoId, YouTubeMedia& media, std::wstring& error,
+                    const YouTubeStatus& status = nullptr);
 
-// Download YouTube audio to temp file (more reliable than streaming)
-bool YouTubeDownloadAudio(const std::wstring& videoId, std::wstring& filePath);
-
-// Start streaming - downloads and returns path when complete (blocking)
-bool YouTubeStartStream(const std::wstring& videoId, std::wstring& filePath);
-
-// Async download functions
-bool YouTubeStartDownload(const std::wstring& videoId);  // Start download, returns immediately
-bool YouTubeIsDownloadComplete();                         // Check if download finished
-bool YouTubeGetDownloadResult(std::wstring& filePath);   // Get result after completion
-
-// Async search functions
-bool YouTubeStartSearch(const std::wstring& query, bool isPlaylist, const std::wstring& playlistId,
-                        const std::wstring& pageToken, bool isLoadMore);  // Start search, returns immediately
-bool YouTubeIsSearchComplete();                                            // Check if search finished
-bool YouTubeGetSearchResult(std::vector<YouTubeResult>& results, std::wstring& nextPageToken);  // Get results
-bool YouTubeWasLoadMore();                                                 // Check if last search was "load more"
-
-// Clean up temp files (call on startup and exit)
+// Remove downloaded videos not played for a week (call on startup and exit)
 void YouTubeCleanup();
-
-// Check if yt-dlp is configured and the file exists
-bool IsYtdlpAvailable();
 
 // Check if input looks like a YouTube URL
 bool IsYouTubeURL(const std::wstring& input);
 
 // Parse YouTube URL to extract video/playlist/channel ID
 bool ParseYouTubeURL(const std::wstring& url, std::wstring& id, bool& isPlaylist, bool& isChannel);
+
+// The URL listing a playlist's videos, and a channel's (from ParseYouTubeURL's ID)
+std::wstring YouTubePlaylistUrl(const std::wstring& playlistId);
+std::wstring YouTubeChannelUrl(const std::wstring& channelId);
 
 #endif // FASTPLAY_YOUTUBE_H

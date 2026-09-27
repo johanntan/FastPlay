@@ -1,14 +1,21 @@
-// The YouTube window: search YouTube (or paste a video or playlist URL) and play
-// a result. It is modeless, so the main window stays usable while it is open.
+// The YouTube window: search YouTube (or paste a video, playlist or channel URL) and
+// play a result. It is modeless, so the main window stays usable while it is open.
+// Searching and loading take seconds, so they run on worker threads; what they find
+// is used only if nothing newer was asked for meanwhile.
 
 #include "ui/dialogs.h"
 #include "ui/ui_common.h"
 
 #include "youtube.h"
 #include "player.h"
+#include "globals.h"
 #include "accessibility.h"
+#include "app_ui.h"
 
+#include <atomic>
 #include <string>
+#include <thread>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -17,6 +24,43 @@ class YouTubeDialog;
 
 // The open YouTube window, if any.
 YouTubeDialog* g_youTubeDialog = nullptr;
+
+// The newest search and the newest video to play; older ones are dropped when done.
+std::atomic<int> g_searchRequest{0};
+std::atomic<int> g_playRequest{0};
+
+// Progress from a worker thread, said on the UI thread.
+void SpeakStatus(const std::wstring& message) {
+    RunOnUiThread([message]() { SpeakW(message); });
+}
+
+// Get a video ready on a worker thread, then play it (whether or not the window is
+// still open).
+void StartPlaying(const std::wstring& videoId) {
+    int request = ++g_playRequest;
+    Speak("Loading");
+    std::thread([videoId, request]() {
+        YouTubeMedia media;
+        std::wstring error;
+        bool ok = YouTubePrepare(videoId, media, error, SpeakStatus);
+        RunOnUiThread([ok, media, error, request]() {
+            if (request != g_playRequest) return;  // another video was chosen meanwhile
+            if (!ok) {
+                Speak("Could not play the video");
+                ShowMessage(L"Could not play the video.\n\n" + error, L"YouTube", MessageIcon::Error);
+                return;
+            }
+            if (!media.file.empty()) {
+                // Played like an opened file: it becomes the playlist.
+                g_playlist.clear();
+                g_playlist.push_back(media.file);
+                PlayTrack(0);
+            } else if (LoadURL(media.url.c_str())) {
+                Speak("Playing");
+            }
+        });
+    }).detach();
+}
 
 class YouTubeDialog : public wxDialog {
 public:
@@ -37,6 +81,7 @@ public:
 
         auto* buttons = new wxBoxSizer(wxHORIZONTAL);
         m_loadMore = new wxButton(this, wxID_ANY, "&Load More");
+        m_loadMore->Enable(false);
         buttons->Add(m_loadMore);
         buttons->AddStretchSpacer();
         buttons->Add(new wxButton(this, wxID_CANCEL, "Close"));
@@ -77,6 +122,29 @@ public:
         if (g_youTubeDialog == this) g_youTubeDialog = nullptr;
     }
 
+    // A search, listing or "load more" finished (UI thread).
+    void SearchDone(int request, bool ok, std::vector<YouTubeResult> results, const std::wstring& nextPageToken,
+                    const std::wstring& error, bool append, const char* doneMessage) {
+        if (request != g_searchRequest) return;
+        size_t found = results.size();
+        if (append) {
+            m_results.insert(m_results.end(), results.begin(), results.end());
+        } else {
+            m_results = std::move(results);
+        }
+        m_nextPageToken = nextPageToken;
+        UpdateResultsList();
+
+        if (!ok && found == 0) {
+            Speak("Search failed");
+            if (!error.empty()) ShowMessage(L"The search failed.\n\n" + error, L"YouTube", MessageIcon::Error);
+        } else if (found == 0) {
+            Speak("No results");
+        } else {
+            Speak(std::to_string(found) + doneMessage);
+        }
+    }
+
 private:
     // Update results list in dialog
     void UpdateResultsList() {
@@ -97,6 +165,22 @@ private:
         m_loadMore->Enable(!m_nextPageToken.empty());
     }
 
+    // Run a search or listing on a worker thread; SearchDone gets the results.
+    template <typename Work>
+    void StartSearch(Work work, bool append, const char* doneMessage) {
+        int request = ++g_searchRequest;
+        std::thread([work, request, append, doneMessage]() {
+            std::vector<YouTubeResult> results;
+            std::wstring nextPageToken, error;
+            bool ok = work(results, nextPageToken, error);
+            RunOnUiThread([=]() {
+                if (g_youTubeDialog) {
+                    g_youTubeDialog->SearchDone(request, ok, results, nextPageToken, error, append, doneMessage);
+                }
+            });
+        }).detach();
+    }
+
     // Perform search
     void DoSearch() {
         std::wstring query = WS(m_search->GetValue());
@@ -104,85 +188,54 @@ private:
         if (query.empty()) return;
 
         m_currentQuery = query;
-        m_results.clear();
-        m_nextPageToken.clear();
-        m_isPlaylistView = false;
 
-        // Check if it's a YouTube URL
+        // A YouTube URL: list a playlist or channel, or play a video
         if (IsYouTubeURL(query)) {
             std::wstring id;
             bool isPlaylist, isChannel;
             if (ParseYouTubeURL(query, id, isPlaylist, isChannel)) {
-                if (isPlaylist) {
-                    m_isPlaylistView = true;
-                    m_currentPlaylistId = id;
-                    YouTubeGetPlaylistContents(id, m_results, m_nextPageToken, L"");
-                    UpdateResultsList();
-                    Speak("Playlist loaded");
-                    return;
-                } else if (!isPlaylist && !isChannel) {
-                    // Single video - try to play it directly
-                    std::wstring streamUrl;
-                    Speak("Loading video");
-                    if (YouTubeGetStreamURL(id, streamUrl)) {
-                        LoadURL(streamUrl.c_str());
-                        Speak("Playing");
-                    } else {
-                        Speak("Failed to get stream URL");
-                    }
-                    return;
+                if (isPlaylist || isChannel) {
+                    std::wstring listUrl = isPlaylist ? YouTubePlaylistUrl(id) : YouTubeChannelUrl(id);
+                    Speak(isPlaylist ? "Loading playlist" : "Loading channel");
+                    StartSearch(
+                        [listUrl](std::vector<YouTubeResult>& results, std::wstring&, std::wstring& error) {
+                            return YouTubeGetListContents(listUrl, results, error, SpeakStatus);
+                        },
+                        false, " videos");
+                } else {
+                    StartPlaying(id);
                 }
+                return;
             }
         }
 
         // Regular search
         Speak("Searching");
-        if (YouTubeSearch(query, m_results, m_nextPageToken, L"")) {
-            UpdateResultsList();
-            Speak(std::to_string(m_results.size()) + " results");
-        } else {
-            Speak("No results or search failed");
-        }
+        StartSearch(
+            [query](std::vector<YouTubeResult>& results, std::wstring& nextPageToken, std::wstring& error) {
+                return YouTubeSearch(query, results, nextPageToken, L"", error, SpeakStatus);
+            },
+            false, " results");
     }
 
     // Load more results
     void DoLoadMore() {
         if (m_nextPageToken.empty()) return;
 
-        std::vector<YouTubeResult> moreResults;
-        std::wstring newToken;
-
         Speak("Loading more");
-        if (m_isPlaylistView) {
-            YouTubeGetPlaylistContents(m_currentPlaylistId, moreResults, newToken, m_nextPageToken);
-        } else {
-            YouTubeSearch(m_currentQuery, moreResults, newToken, m_nextPageToken);
-        }
-
-        m_nextPageToken = newToken;
-        for (const auto& r : moreResults) {
-            m_results.push_back(r);
-        }
-        UpdateResultsList();
-
-        Speak(std::to_string(moreResults.size()) + " more loaded");
+        std::wstring query = m_currentQuery, pageToken = m_nextPageToken;
+        StartSearch(
+            [query, pageToken](std::vector<YouTubeResult>& results, std::wstring& nextPageToken, std::wstring& error) {
+                return YouTubeSearch(query, results, nextPageToken, pageToken, error, SpeakStatus);
+            },
+            true, " more loaded");
     }
 
     // Play selected result
     void PlaySelected() {
         int sel = m_list->GetSelection();
         if (sel < 0 || sel >= static_cast<int>(m_results.size())) return;
-
-        const YouTubeResult& result = m_results[sel];
-        std::wstring streamUrl;
-
-        Speak("Loading");
-        if (YouTubeGetStreamURL(result.videoId, streamUrl)) {
-            LoadURL(streamUrl.c_str());
-            Speak("Playing");
-        } else {
-            Speak("Failed to get stream URL");
-        }
+        StartPlaying(m_results[sel].videoId);
     }
 
     wxTextCtrl* m_search;
@@ -192,8 +245,6 @@ private:
     std::vector<YouTubeResult> m_results;
     std::wstring m_nextPageToken;
     std::wstring m_currentQuery;
-    bool m_isPlaylistView = false;
-    std::wstring m_currentPlaylistId;
 };
 
 }  // namespace
@@ -205,14 +256,8 @@ void ShowYouTubeDialog() {
         return;
     }
 
-    // Check if yt-dlp is available
-    if (!IsYtdlpAvailable()) {
-        wxMessageBox("yt-dlp is not configured. Please set the yt-dlp path in Options > YouTube tab.",
-                     "YouTube", wxOK | wxICON_WARNING, GetMainWindow());
-        return;
-    }
-
-    // Owned by the main window, so it is destroyed with it
+    // Owned by the main window, so it is destroyed with it. yt-dlp is fetched on
+    // first use if there is none.
     auto* dialog = new YouTubeDialog(GetMainWindow());
     dialog->Show();
 }

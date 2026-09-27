@@ -625,6 +625,7 @@ void OptionsDialog::BuildYouTubePage(wxNotebook* book) {
     auto* browse = new wxButton(page, wxID_ANY, "&Browse...");
     row->Add(browse, 0, wxALIGN_CENTER_VERTICAL);
     browse->Bind(wxEVT_BUTTON, &OptionsDialog::OnYtdlpBrowse, this);
+    AddText(page, sizer, "Optional. Leave it empty and FastPlay downloads yt-dlp itself and keeps it up to date.");
 
     AddText(page, sizer, "YouTube Data &API key (optional, enables search):");
     m_ytApiKey = new wxTextCtrl(page, wxID_ANY, WX(g_ytApiKey), wxDefaultPosition, wxSize(430, -1), wxTE_PASSWORD);
