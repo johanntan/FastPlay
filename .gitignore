@@ -22,6 +22,10 @@ include/prism.h
 # Config files (user-specific)
 *.ini
 
+# YouTube tools FastPlay downloads, and imported cookies (portable mode keeps them here)
+tools/
+youtube-cookies.txt
+
 # Dependencies (downloaded/external)
 lib/*.dll
 lib/mac/
