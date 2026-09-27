@@ -1,8 +1,8 @@
-// Windows 7 support. Newer MSVC runtime libraries call CreateFile2, which Windows 7
-// lacks, and an import it cannot resolve stops FastPlay from starting at all. This
-// file defines the import slot itself, so the linker takes it from here instead of
-// from kernel32: the real CreateFile2 where there is one, otherwise the same call
-// made through CreateFileW.
+// Windows 7 support. Newer MSVC runtime libraries call CreateFile2 and
+// GetSystemTimePreciseAsFileTime, which Windows 7 lacks, and an import it cannot
+// resolve stops FastPlay from starting at all. This file defines those import slots
+// itself, so the linker takes them from here instead of from kernel32: the real
+// function where there is one, otherwise the nearest Windows 7 equivalent.
 
 #include <windows.h>
 
@@ -26,7 +26,21 @@ HANDLE WINAPI CreateFile2Compat(LPCWSTR fileName, DWORD access, DWORD shareMode,
     return ::CreateFileW(fileName, access, shareMode, security, disposition, flags, templateFile);
 }
 
+// The time to a millisecond or so instead of a fraction of a microsecond.
+VOID WINAPI GetSystemTimePreciseAsFileTimeCompat(LPFILETIME time) {
+    using PreciseFn = VOID(WINAPI*)(LPFILETIME);
+    static const PreciseFn real = reinterpret_cast<PreciseFn>(
+        ::GetProcAddress(::GetModuleHandleW(L"kernel32.dll"), "GetSystemTimePreciseAsFileTime"));
+    if (real) {
+        real(time);
+    } else {
+        ::GetSystemTimeAsFileTime(time);
+    }
+}
+
 }  // namespace
 
-// The import slot the runtime library's calls go through (x64 names are undecorated).
+// The import slots the runtime library's calls go through (x64 names are undecorated).
 extern "C" decltype(&CreateFile2Compat) __imp_CreateFile2 = &CreateFile2Compat;
+extern "C" decltype(&GetSystemTimePreciseAsFileTimeCompat) __imp_GetSystemTimePreciseAsFileTime =
+    &GetSystemTimePreciseAsFileTimeCompat;
