@@ -28,29 +28,19 @@ if exist "%VSINSTALL%\VC\Auxiliary\Build\vcvars64.bat" (
     exit /b 1
 )
 
-REM Default build flags (Universal Speech + Speedy enabled by default)
-set "SPEECH_FLAG=/DUSE_UNIVERSAL_SPEECH /DUNIVERSAL_SPEECH_STATIC"
-set "SPEECH_LIBS=UniversalSpeechStatic.lib ole32.lib oleaut32.lib version.lib psapi.lib"
-set "SPEEDY_FLAG=/DUSE_SPEEDY /DKISS_FFT /DSONIC_INTERNAL"
-set "SPEEDY_INC=/I"deps\speedy" /I"deps\sonic" /I"deps\kissfft""
-set "SPEEDY_SRC=deps\speedy\speedy.c deps\speedy\soniclib.c deps\sonic\sonic.c deps\kissfft\kiss_fft.c"
-set "SIGNALSMITH_FLAG=/DUSE_SIGNALSMITH"
-set "SIGNALSMITH_INC=/I"deps\signalsmith-stretch""
-set "STEAMAUDIO_FLAG=/DUSE_STEAM_AUDIO"
-set "STEAMAUDIO_INC=/I"deps\steamaudio\include""
-set "STEAMAUDIO_LIB="
+REM Build options (screen reader speech and Steam Audio are on by default). Both are
+REM always passed, so an earlier no-speech / no-steamaudio build does not stick.
+set "SPEECH=ON"
+set "STEAMAUDIO=ON"
 
 REM Parse arguments
 :parse_args
 if "%1"=="" goto :done_args
 if "%1"=="no-speech" (
-    set "SPEECH_FLAG="
-    set "SPEECH_LIBS="
+    set "SPEECH=OFF"
     echo Disabling screen reader support...
 ) else if "%1"=="no-steamaudio" (
-    set "STEAMAUDIO_FLAG="
-    set "STEAMAUDIO_INC="
-    set "STEAMAUDIO_LIB="
+    set "STEAMAUDIO=OFF"
     echo Disabling Steam Audio support...
 )
 shift
@@ -60,47 +50,17 @@ goto :parse_args
 REM Read version from version.h
 set "APP_VERSION="
 for /f "tokens=3 delims= " %%v in ('findstr /C:"#define APP_VERSION " include\fastplay\version.h') do set "APP_VERSION=%%~v"
+echo Building FastPlay %APP_VERSION%...
 
-REM Get git commit hash for update-check comparison (short SHA, e.g. "ad07165")
-set "BUILD_COMMIT="
-for /f "tokens=*" %%i in ('git rev-parse --short HEAD 2^>nul') do set "BUILD_COMMIT=%%i"
-if defined BUILD_COMMIT (
-    set "COMMIT_FLAG=/DBUILD_COMMIT=\"%BUILD_COMMIT%\""
-    echo Building FastPlay %APP_VERSION% ^(commit %BUILD_COMMIT%^)...
-) else (
-    set "COMMIT_FLAG="
-    echo Building FastPlay %APP_VERSION%...
-)
-
-REM Source files
-set "SOURCES=src\main.cpp src\globals.cpp src\utils.cpp src\player.cpp"
-set "SOURCES=%SOURCES% src\settings.cpp src\hotkeys.cpp src\tray.cpp"
-set "SOURCES=%SOURCES% src\accessibility.cpp src\ui.cpp src\effects.cpp"
-set "SOURCES=%SOURCES% src\database.cpp src\sqlite3.c"
-set "SOURCES=%SOURCES% src\tempo_processor.cpp src\youtube.cpp src\center_cancel.cpp src\convolution.cpp src\download_manager.cpp src\updater.cpp src\spatial_audio.cpp"
-set "SOURCES=%SOURCES% src\reverb\reverb.cpp src\reverb\efx_reverb.cpp"
-
-REM Add Speedy source if enabled
-if defined SPEEDY_SRC set "SOURCES=%SOURCES% %SPEEDY_SRC%"
-
-REM Compile resources
-rc /nologo FastPlay.rc
+REM Configure and build with CMake. The first run fetches and builds wxWidgets and
+REM UniversalSpeech into build\, which takes a while; later runs reuse them.
+REM FastPlay.exe is written to this folder. The commit hash for the update check
+REM is picked up by CMakeLists.txt.
+cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DFASTPLAY_SPEECH=%SPEECH% -DFASTPLAY_STEAM_AUDIO=%STEAMAUDIO%
 if errorlevel 1 goto :error
-
-REM Compile and link
-cl /nologo /W3 /O2 /MT /EHsc /std:c++17 /DUNICODE /D_UNICODE /DNOMINMAX %COMMIT_FLAG% %SPEECH_FLAG% %SPEEDY_FLAG% %SIGNALSMITH_FLAG% %STEAMAUDIO_FLAG% ^
-   /I"." /I"include" /I"include\fastplay" %SPEEDY_INC% %SIGNALSMITH_INC% %STEAMAUDIO_INC% ^
-   %SOURCES% FastPlay.res ^
-   /Fe:FastPlay.exe ^
-   /link /LIBPATH:"lib" /DELAYLOAD:bass.dll /DELAYLOAD:bass_fx.dll /DELAYLOAD:bass_aac.dll /DELAYLOAD:bassmidi.dll /DELAYLOAD:bassenc.dll /DELAYLOAD:bassenc_mp3.dll /DELAYLOAD:bassenc_ogg.dll /DELAYLOAD:bassenc_flac.dll ^
-   bass.lib bass_fx.lib bass_aac.lib bassmidi.lib bassenc.lib bassenc_mp3.lib bassenc_ogg.lib bassenc_flac.lib %SPEECH_LIBS% user32.lib comctl32.lib comdlg32.lib shell32.lib shlwapi.lib advapi32.lib ole32.lib delayimp.lib
-
+REM /nodeReuse:false: do not leave MSBuild worker processes running afterwards.
+cmake --build build --config Release --parallel -- /nodeReuse:false
 if errorlevel 1 goto :error
-
-REM Clean up intermediate files
-del /q *.obj *.res 2>nul
-
-REM DLLs are loaded from lib subfolder via SetDllDirectory, no copy needed
 
 REM Build distribution zip
 echo Building distribution...

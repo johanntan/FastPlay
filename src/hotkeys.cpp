@@ -1,8 +1,6 @@
 #include "hotkeys.h"
 #include "globals.h"
 #include "types.h"
-#include "resource.h"
-#include <commctrl.h>
 #include <cstdio>
 
 // Format hotkey for display (e.g., "Ctrl+Shift+P")
@@ -15,8 +13,19 @@ std::wstring FormatHotkey(UINT modifiers, UINT vk) {
 
     // Get key name
     UINT scanCode = MapVirtualKeyW(vk, MAPVK_VK_TO_VSC);
+    LONG keyParam = static_cast<LONG>(scanCode << 16);
+    // Keys on the extended part of the keyboard share scan codes with the numeric
+    // keypad; without the extended bit, Up would be named "Num 8".
+    switch (vk) {
+        case VK_PRIOR: case VK_NEXT: case VK_END: case VK_HOME:
+        case VK_LEFT: case VK_UP: case VK_RIGHT: case VK_DOWN:
+        case VK_INSERT: case VK_DELETE: case VK_DIVIDE: case VK_NUMLOCK:
+        case VK_RCONTROL: case VK_RMENU: case VK_LWIN: case VK_RWIN: case VK_APPS:
+            keyParam |= 1 << 24;
+            break;
+    }
     wchar_t keyName[64] = {0};
-    GetKeyNameTextW(scanCode << 16, keyName, 64);
+    GetKeyNameTextW(keyParam, keyName, 64);
     if (keyName[0]) {
         result += keyName;
     } else {
@@ -25,45 +34,6 @@ std::wstring FormatHotkey(UINT modifiers, UINT vk) {
         result += buf;
     }
     return result;
-}
-
-// Media key hotkey IDs (use high values to avoid conflicts)
-#define HOTKEY_ID_MEDIA_PLAYPAUSE   0x7F00
-#define HOTKEY_ID_MEDIA_STOP        0x7F01
-#define HOTKEY_ID_MEDIA_PREV        0x7F02
-#define HOTKEY_ID_MEDIA_NEXT        0x7F03
-
-// Register all global hotkeys
-void RegisterGlobalHotkeys() {
-    if (!g_hwnd) return;
-
-    // Always register media keys (no modifiers needed)
-    RegisterHotKey(g_hwnd, HOTKEY_ID_MEDIA_PLAYPAUSE, 0, VK_MEDIA_PLAY_PAUSE);
-    RegisterHotKey(g_hwnd, HOTKEY_ID_MEDIA_STOP, 0, VK_MEDIA_STOP);
-    RegisterHotKey(g_hwnd, HOTKEY_ID_MEDIA_PREV, 0, VK_MEDIA_PREV_TRACK);
-    RegisterHotKey(g_hwnd, HOTKEY_ID_MEDIA_NEXT, 0, VK_MEDIA_NEXT_TRACK);
-
-    // Register user-defined hotkeys
-    if (!g_hotkeysEnabled) return;
-    for (const auto& hk : g_hotkeys) {
-        RegisterHotKey(g_hwnd, hk.id, hk.modifiers, hk.vk);
-    }
-}
-
-// Unregister all global hotkeys
-void UnregisterGlobalHotkeys() {
-    if (!g_hwnd) return;
-
-    // Unregister media keys
-    UnregisterHotKey(g_hwnd, HOTKEY_ID_MEDIA_PLAYPAUSE);
-    UnregisterHotKey(g_hwnd, HOTKEY_ID_MEDIA_STOP);
-    UnregisterHotKey(g_hwnd, HOTKEY_ID_MEDIA_PREV);
-    UnregisterHotKey(g_hwnd, HOTKEY_ID_MEDIA_NEXT);
-
-    // Unregister user-defined hotkeys
-    for (const auto& hk : g_hotkeys) {
-        UnregisterHotKey(g_hwnd, hk.id);
-    }
 }
 
 // Load hotkeys from INI file
@@ -112,72 +82,3 @@ void SaveHotkeys() {
     }
 }
 
-// Hotkey assignment dialog procedure
-INT_PTR CALLBACK HotkeyDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
-    static HotkeyDlgData* data = nullptr;
-
-    switch (msg) {
-        case WM_INITDIALOG: {
-            data = reinterpret_cast<HotkeyDlgData*>(lParam);
-
-            // Populate action combo box
-            HWND hCombo = GetDlgItem(hwnd, IDC_HOTKEY_ACTION);
-            for (int i = 0; i < g_hotkeyActionCount; i++) {
-                SendMessageW(hCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(g_hotkeyActions[i].name));
-            }
-            SendMessageW(hCombo, CB_SETCURSEL, data->actionIdx, 0);
-
-            // Set hotkey control
-            if (data->vk != 0) {
-                WORD hkCode = static_cast<WORD>(data->vk);
-                if (data->modifiers & MOD_SHIFT) hkCode |= HOTKEYF_SHIFT << 8;
-                if (data->modifiers & MOD_CONTROL) hkCode |= HOTKEYF_CONTROL << 8;
-                if (data->modifiers & MOD_ALT) hkCode |= HOTKEYF_ALT << 8;
-                SendDlgItemMessageW(hwnd, IDC_HOTKEY_KEY, HKM_SETHOTKEY, hkCode, 0);
-            }
-
-            // Set dialog title
-            SetWindowTextW(hwnd, data->isEdit ? L"Edit Global Hotkey" : L"Add Global Hotkey");
-
-            return TRUE;
-        }
-
-        case WM_COMMAND:
-            switch (LOWORD(wParam)) {
-                case IDOK: {
-                    // Get selected action
-                    data->actionIdx = static_cast<int>(SendDlgItemMessageW(hwnd, IDC_HOTKEY_ACTION, CB_GETCURSEL, 0, 0));
-
-                    // Get hotkey
-                    WORD hk = static_cast<WORD>(SendDlgItemMessageW(hwnd, IDC_HOTKEY_KEY, HKM_GETHOTKEY, 0, 0));
-                    data->vk = LOBYTE(hk);
-                    BYTE mods = HIBYTE(hk);
-
-                    data->modifiers = 0;
-                    if (mods & HOTKEYF_SHIFT) data->modifiers |= MOD_SHIFT;
-                    if (mods & HOTKEYF_CONTROL) data->modifiers |= MOD_CONTROL;
-                    if (mods & HOTKEYF_ALT) data->modifiers |= MOD_ALT;
-
-                    // Require at least one modifier for global hotkeys
-                    if (data->vk == 0) {
-                        MessageBoxW(hwnd, L"Please enter a hotkey.", L"Error", MB_ICONWARNING);
-                        return TRUE;
-                    }
-                    if (data->modifiers == 0) {
-                        MessageBoxW(hwnd, L"Global hotkeys require at least one modifier key (Ctrl, Alt, or Shift).", L"Error", MB_ICONWARNING);
-                        return TRUE;
-                    }
-
-                    EndDialog(hwnd, IDOK);
-                    return TRUE;
-                }
-
-                case IDCANCEL:
-                    EndDialog(hwnd, IDCANCEL);
-                    return TRUE;
-            }
-            break;
-    }
-
-    return FALSE;
-}

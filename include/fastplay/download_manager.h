@@ -71,6 +71,5 @@ private:
 };
 
 // Custom message for download completion
-#define WM_DOWNLOAD_COMPLETE (WM_USER + 101)
 
 #endif // FASTPLAY_DOWNLOAD_MANAGER_H

@@ -1,7 +1,7 @@
 #include "effects.h"
 #include "globals.h"
 #include "accessibility.h"
-#include "resource.h"
+#include "app_ui.h"
 #include "bass_fx.h"
 #include "tempo_processor.h"
 #include "center_cancel.h"
@@ -938,7 +938,7 @@ void ApplyDSPEffects() {
                 if (!initOk) {
                     const wchar_t* err = spatial->GetLastError();
                     if (err && err[0]) {
-                        MessageBoxW(GetMessageBoxOwner(), err, L"3D Audio Error", MB_OK | MB_ICONERROR);
+                        ShowMessage(err, L"3D Audio Error", MessageIcon::Error);
                     }
                     g_dspEnabled[(int)DSPEffectType::SpatialAudio] = false;
                 }

@@ -15,54 +15,19 @@ A fast, accessible audio player for Windows with support for tempo/pitch shiftin
 
 ## Prerequisites
 
-- **Visual C++ Build Tools** (or Visual Studio with C++ workload)
-  - Download from [Visual Studio Downloads](https://visualstudio.microsoft.com/downloads/) → "Tools for Visual Studio" → "Build Tools for Visual Studio"
-  - Install the "Desktop development with C++" workload
+- **Visual Studio 2022** (or its Build Tools) with the "Desktop development with C++" workload
+  - Download from [Visual Studio Downloads](https://visualstudio.microsoft.com/downloads/)
+- **CMake** 3.21 or newer
+- **Git** (CMake fetches some dependencies with it)
 
 ## Dependencies
 
-### BASS Audio Libraries
+Run `download-deps.bat` once. It downloads BASS and its add-ons, Steam Audio,
+SQLite, Speedy, Sonic, KissFFT and Signalsmith Stretch into `lib/`, `include/`,
+`deps/` and `src/`.
 
-Download from [un4seen.com](https://www.un4seen.com/bass.html) and place the following in the `lib/` folder:
-
-**Libraries (.lib files for x64):**
-- bass.lib
-- bass_fx.lib
-- bass_aac.lib
-- bassmidi.lib
-- bassenc.lib
-- bassenc_mp3.lib
-- bassenc_ogg.lib
-- bassenc_flac.lib
-
-**DLLs (place in lib/ folder):**
-- bass.dll
-- bass_fx.dll
-- bass_aac.dll
-- bassmidi.dll
-- bassenc.dll
-- bassenc_mp3.dll
-- bassenc_ogg.dll
-- bassenc_flac.dll
-
-### SQLite
-
-Download the [SQLite amalgamation](https://www.sqlite.org/download.html) and place `sqlite3.c` in the `src/` folder.
-
-### Universal Speech (optional, for screen reader support)
-
-Clone [UniversalSpeechMSVCStatic](https://github.com/samtupy/UniversalSpeechMSVCStatic), build it with `c.bat`, then place `bin-x64\UniversalSpeechStatic.lib` in the `lib/` folder.
-
-### Rubber Band (optional, for high-quality pitch shifting)
-
-Download [Rubber Band Library](https://breakfastquay.com/rubberband/) v4.0.0 and extract to `deps/rubberband-4.0.0/`.
-
-### Speedy/Sonic (optional, for fast tempo algorithm)
-
-Place the following in `deps/`:
-- `deps/speedy/` - Speedy library source
-- `deps/sonic/` - Sonic library source
-- `deps/kissfft/` - KissFFT source
+wxWidgets (the user interface toolkit) and UniversalSpeech (screen reader
+speech) are fetched and built by CMake itself on the first build.
 
 ## Building
 
@@ -72,6 +37,10 @@ Open a command prompt and run:
 build_new.bat
 ```
 
+This configures CMake in `build/`, builds `FastPlay.exe`, and packages
+`FastPlay.zip` (and `FastPlayInstaller.exe` when Inno Setup is installed). The
+first build takes a while because it compiles wxWidgets; later builds reuse it.
+
 ### Build Options
 
 Disable screen reader support:
@@ -79,14 +48,9 @@ Disable screen reader support:
 build_new.bat no-speech
 ```
 
-Disable Rubber Band:
+Disable Steam Audio (3D audio):
 ```batch
-build_new.bat no-rubberband
-```
-
-Combine options:
-```batch
-build_new.bat no-speech no-rubberband
+build_new.bat no-steamaudio
 ```
 
 ## Running
@@ -97,12 +61,16 @@ After building, run `FastPlay.exe`. DLLs are loaded from the `lib/` subfolder.
 
 ```
 FastPlay/
-├── src/              # Source files
+├── src/              # Player, effects, database and other core code
+│   ├── ui/           # The user interface (wxWidgets)
+│   ├── platform/     # Operating system specific code
+│   └── reverb/       # The reverb engines
 ├── include/          # Header files
 ├── lib/              # BASS libraries and DLLs
-├── deps/             # Third-party dependencies (Rubber Band, Speedy, etc.)
+├── deps/             # Third-party dependencies (Speedy, Sonic, Signalsmith Stretch, etc.)
+├── res/              # Windows resources
+├── CMakeLists.txt    # Build definition
 ├── build_new.bat     # Build script
-├── FastPlay.rc       # Resource file
 └── FastPlay.exe      # Output executable
 ```
 
@@ -111,5 +79,5 @@ FastPlay/
 This project uses the following third-party libraries:
 - BASS and related libraries (commercial/free for non-commercial use)
 - SQLite (public domain)
-- Rubber Band Library (GPL)
+- wxWidgets (wxWindows Library Licence)
 - Universal Speech (MIT)

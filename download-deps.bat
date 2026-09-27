@@ -185,41 +185,6 @@ if exist "deps\kissfft" rmdir /s /q "deps\kissfft"
 git clone --depth 1 https://github.com/mborgerding/kissfft.git "deps\kissfft"
 
 echo.
-echo Cloning Universal Speech (screen reader support)...
-if exist "deps\UniversalSpeech" rmdir /s /q "deps\UniversalSpeech"
-git clone --depth 1 https://github.com/samtupy/UniversalSpeechMSVCStatic.git "deps\UniversalSpeech"
-
-echo.
-echo Building Universal Speech...
-pushd deps\UniversalSpeech
-REM Build using SCons (requires Python and SCons: pip install scons)
-where scons >nul 2>&1
-if errorlevel 1 (
-    echo SCons not found. Installing via pip...
-    pip install scons
-)
-call scons
-if exist "UniversalSpeechStatic.lib" (
-    copy /y "UniversalSpeechStatic.lib" "..\..\lib\" >nul
-    echo Universal Speech built successfully.
-) else (
-    echo WARNING: Universal Speech build failed.
-    echo Make sure Python, pip, and Visual C++ Build Tools are installed.
-)
-REM Copy screen reader DLLs from build x64 folder
-if exist "bin-x64\nvdaControllerClient64.dll" (
-    copy /y "bin-x64\nvdaControllerClient64.dll" "..\..\lib\" >nul
-    echo NVDA controller client DLL copied.
-) else (
-    echo WARNING: nvdaControllerClient64.dll not found in bin-x64 folder.
-)
-if exist "bin-x64\SAAPI64.dll" (
-    copy /y "bin-x64\SAAPI64.dll" "..\..\lib\" >nul
-    echo SAAPI64.dll copied.
-)
-popd
-
-echo.
 echo Cleaning up...
 rmdir /s /q temp_dl 2>nul
 
@@ -228,5 +193,6 @@ echo ============================================
 echo Download and build complete!
 echo ============================================
 echo.
-echo Run build_new.bat to compile FastPlay.
+echo Run build_new.bat to compile FastPlay. CMake fetches wxWidgets and
+echo UniversalSpeech itself on the first build.
 echo.

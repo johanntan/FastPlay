@@ -7,7 +7,7 @@
 #include "accessibility.h"
 #include "tempo_processor.h"
 #include "updater.h"
-#include "resource.h"
+#include "commands.h"
 #include <cstdio>
 #include <shlobj.h>
 
@@ -944,49 +944,15 @@ void AddToRecentFiles(const std::wstring& filePath) {
     }
 }
 
-// Update the Recent Files submenu
-void UpdateRecentFilesMenu(HMENU hMenu) {
-    // Find the File menu
-    HMENU hFileMenu = GetSubMenu(hMenu, 0);
-    if (!hFileMenu) return;
-
-    // Find the Recent Files submenu by iterating through items
-    int itemCount = GetMenuItemCount(hFileMenu);
-    HMENU hRecentMenu = nullptr;
-    for (int i = 0; i < itemCount; i++) {
-        HMENU hSub = GetSubMenu(hFileMenu, i);
-        if (hSub) {
-            wchar_t text[64] = {0};
-            GetMenuStringW(hFileMenu, i, text, 64, MF_BYPOSITION);
-            if (wcsstr(text, L"Recent") != nullptr) {
-                hRecentMenu = hSub;
-                break;
-            }
-        }
+// Whether "allow multiple instances" is on. Read before settings are loaded, from
+// FastPlay.ini beside the executable, to decide whether to hand files over.
+bool ReadAllowMultipleInstances() {
+    wchar_t configPath[MAX_PATH];
+    GetModuleFileNameW(nullptr, configPath, MAX_PATH);
+    wchar_t* configSlash = wcsrchr(configPath, L'\\');
+    if (configSlash) {
+        *(configSlash + 1) = L'\0';
+        wcscat_s(configPath, MAX_PATH, L"FastPlay.ini");
     }
-
-    if (!hRecentMenu) return;
-
-    // Clear the submenu
-    while (GetMenuItemCount(hRecentMenu) > 0) {
-        DeleteMenu(hRecentMenu, 0, MF_BYPOSITION);
-    }
-
-    // Add recent files
-    if (g_recentFiles.empty()) {
-        AppendMenuW(hRecentMenu, MF_STRING | MF_GRAYED, 0, L"(Empty)");
-    } else {
-        for (size_t i = 0; i < g_recentFiles.size(); i++) {
-            // Get just the filename for display
-            std::wstring display = g_recentFiles[i];
-            size_t pos = display.find_last_of(L"\\/");
-            if (pos != std::wstring::npos) {
-                display = display.substr(pos + 1);
-            }
-            // Add number prefix for keyboard access
-            wchar_t menuText[MAX_PATH + 10];
-            swprintf(menuText, MAX_PATH + 10, L"&%d %s", static_cast<int>((i + 1) % 10), display.c_str());
-            AppendMenuW(hRecentMenu, MF_STRING, IDM_FILE_RECENT_BASE + i, menuText);
-        }
-    }
+    return GetPrivateProfileIntW(L"Playback", L"AllowMultipleInstances", 0, configPath) != 0;
 }

@@ -29,6 +29,8 @@ void SpeakSeekAmount();
 
 // Recent files
 void AddToRecentFiles(const std::wstring& filePath);
-void UpdateRecentFilesMenu(HMENU hMenu);
+
+// Read "allow multiple instances" early, before LoadSettings().
+bool ReadAllowMultipleInstances();
 
 #endif // FASTPLAY_SETTINGS_H

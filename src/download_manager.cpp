@@ -1,6 +1,7 @@
 #include "download_manager.h"
 #include "globals.h"
 #include "accessibility.h"
+#include "app_ui.h"
 #include <wininet.h>
 #include <cstdio>
 
@@ -60,10 +61,8 @@ static DWORD WINAPI DownloadThread(LPVOID lpParam) {
 
     delete params;
 
-    // Notify completion via main window (always valid while app runs)
-    if (g_hwnd) {
-        PostMessageW(g_hwnd, WM_DOWNLOAD_COMPLETE, id, success ? 1 : 0);
-    }
+    // Finish on the UI thread
+    RunOnUiThread([id, success]() { DownloadManager::Instance().ProcessCompletion(id, success); });
     return success ? 0 : 1;
 }
 
@@ -232,10 +231,9 @@ void DownloadManager::StartDownload(DownloadItem& item) {
     item.thread = CreateThread(nullptr, 0, DownloadThread, params, 0, nullptr);
     if (!item.thread) {
         delete params;
-        // Notify failure via main window
-        if (g_hwnd) {
-            PostMessageW(g_hwnd, WM_DOWNLOAD_COMPLETE, item.id, 0);
-        }
+        // Report the failure on the UI thread
+        int id = item.id;
+        RunOnUiThread([id]() { DownloadManager::Instance().ProcessCompletion(id, false); });
     }
 }
 

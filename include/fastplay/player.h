@@ -4,10 +4,12 @@
 
 #include <windows.h>
 #include <string>
+#include <vector>
 #include "bass.h"
 
 // BASS initialization
-bool InitBass(HWND hwnd);
+// windowHandle: the main window's native handle (see GetMainWindowHandle()).
+bool InitBass(void* windowHandle);
 void FreeBass();
 void LoadBassPlugins();
 std::wstring GetLoadedPluginsInfo();
@@ -57,7 +59,12 @@ void AnnounceStreamMetadata();
 bool ReinitBass(int device);
 int FindDeviceByName(const std::wstring& name);
 std::wstring GetDeviceName(int device);
-void ShowAudioDeviceMenu(HWND hwnd);
+struct AudioDeviceInfo {
+    int index;          // BASS device number
+    std::wstring name;
+    bool current;       // the device FastPlay is using
+};
+std::vector<AudioDeviceInfo> GetAudioDevices();
 void SelectAudioDevice(int deviceIndex);
 
 // Speak functions

@@ -2,7 +2,6 @@
 #ifndef FASTPLAY_YOUTUBE_H
 #define FASTPLAY_YOUTUBE_H
 
-#include <windows.h>
 #include <string>
 #include <vector>
 
@@ -50,19 +49,13 @@ bool YouTubeWasLoadMore();                                                 // Ch
 // Clean up temp files (call on startup and exit)
 void YouTubeCleanup();
 
+// Check if yt-dlp is configured and the file exists
+bool IsYtdlpAvailable();
+
 // Check if input looks like a YouTube URL
 bool IsYouTubeURL(const std::wstring& input);
 
 // Parse YouTube URL to extract video/playlist/channel ID
 bool ParseYouTubeURL(const std::wstring& url, std::wstring& id, bool& isPlaylist, bool& isChannel);
-
-// Show YouTube search dialog (modeless)
-void ShowYouTubeDialog(HWND parent);
-
-// Get YouTube dialog handle (for message loop)
-HWND GetYouTubeDialog();
-
-// YouTube dialog procedure
-INT_PTR CALLBACK YouTubeDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
 #endif // FASTPLAY_YOUTUBE_H

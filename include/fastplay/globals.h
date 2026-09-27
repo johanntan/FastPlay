@@ -15,7 +15,6 @@ struct CycleItem;
 
 // Constants
 extern const wchar_t* APP_NAME;
-extern const wchar_t* WINDOW_CLASS;
 extern const wchar_t* MUTEX_NAME;
 constexpr double SEEK_AMOUNT = 5.0;
 constexpr UINT UPDATE_INTERVAL = 250;
@@ -28,15 +27,6 @@ constexpr int SB_PART_POSITION = 0;
 constexpr int SB_PART_VOLUME = 1;
 constexpr int SB_PART_STATE = 2;
 constexpr int SB_PART_COUNT = 3;
-
-// Window handles
-extern HWND g_hwnd;
-extern HWND g_statusBar;
-
-// Returns the best parent for a MessageBox so focus returns correctly.
-// Prefers the current thread's active window (e.g. an open modal dialog),
-// falling back to the main window.
-HWND GetMessageBoxOwner();
 
 // BASS state
 extern HSTREAM g_stream;      // Source stream
@@ -86,10 +76,6 @@ extern bool g_showTitleInWindow;           // Show track name in window title (d
 extern bool g_playlistFollowPlayback;      // Auto-select current track in playlist dialog
 extern bool g_checkForUpdates;             // Check for updates on startup
 extern bool g_allowMultipleInstances;      // Allow multiple instances (new windows)
-
-// System tray
-extern NOTIFYICONDATAW g_trayIcon;
-extern bool g_trayIconVisible;
 
 // File batching
 extern std::vector<std::wstring> g_pendingFiles;

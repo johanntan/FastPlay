@@ -2,7 +2,7 @@
 #include "version.h"
 #include "globals.h"
 #include "accessibility.h"
-#include "resource.h"
+#include "app_ui.h"
 #include <winhttp.h>
 #include <shlobj.h>
 #include <fstream>
@@ -443,18 +443,16 @@ void ApplyUpdate() {
         std::wstring installerPath = GetUpdateInstallerPath();
 
         if (GetFileAttributesW(installerPath.c_str()) == INVALID_FILE_ATTRIBUTES) {
-            MessageBoxW(GetMessageBoxOwner(), L"Update file not found. The download may have failed.",
-                L"Update Error", MB_OK | MB_ICONERROR);
+            ShowMessage(L"Update file not found. The download may have failed.", L"Update Error", MessageIcon::Error);
             return;
         }
 
         HINSTANCE result = ShellExecuteW(NULL, L"open", installerPath.c_str(), L"/SILENT", NULL, SW_SHOWNORMAL);
         if (reinterpret_cast<intptr_t>(result) <= 32) {
-            MessageBoxW(GetMessageBoxOwner(), L"Failed to launch installer.",
-                L"Update Error", MB_OK | MB_ICONERROR);
+            ShowMessage(L"Failed to launch installer.", L"Update Error", MessageIcon::Error);
             return;
         }
-        PostMessageW(g_hwnd, WM_CLOSE, 0, 0);
+        CloseMainWindow();
     } else {
         std::wstring appDir = GetAppDirectory();
         std::wstring zipPath = GetUpdateZipPath();
@@ -462,8 +460,7 @@ void ApplyUpdate() {
         std::wstring extractDir = appDir + L"\\update_temp";
 
         if (GetFileAttributesW(zipPath.c_str()) == INVALID_FILE_ATTRIBUTES) {
-            MessageBoxW(GetMessageBoxOwner(), L"Update file not found. The download may have failed.",
-                L"Update Error", MB_OK | MB_ICONERROR);
+            ShowMessage(L"Update file not found. The download may have failed.", L"Update Error", MessageIcon::Error);
             return;
         }
 
@@ -489,187 +486,20 @@ void ApplyUpdate() {
 
         HINSTANCE result = ShellExecuteW(NULL, L"open", batchPath.c_str(), NULL, appDir.c_str(), SW_HIDE);
         if (reinterpret_cast<intptr_t>(result) <= 32) {
-            MessageBoxW(GetMessageBoxOwner(), L"Failed to launch update script.",
-                L"Update Error", MB_OK | MB_ICONERROR);
+            ShowMessage(L"Failed to launch update script.", L"Update Error", MessageIcon::Error);
             return;
         }
-        PostMessageW(g_hwnd, WM_CLOSE, 0, 0);
+        CloseMainWindow();
     }
 }
 
-// Progress dialog data
-struct ProgressDialogData {
-    HWND hwndDialog;
-    HWND hwndProgress;
-    HWND hwndText;
-    bool cancelled;
-    size_t totalBytes;
-    size_t downloadedBytes;
-};
-
-static ProgressDialogData* g_progressData = nullptr;
-
-static INT_PTR CALLBACK ProgressDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
-    switch (msg) {
-        case WM_INITDIALOG:
-            g_progressData->hwndDialog = hwnd;
-            g_progressData->hwndProgress = GetDlgItem(hwnd, IDC_PROGRESS_BAR);
-            g_progressData->hwndText = GetDlgItem(hwnd, IDC_PROGRESS_TEXT);
-            SendMessageW(g_progressData->hwndProgress, PBM_SETRANGE, 0, MAKELPARAM(0, 100));
-            return TRUE;
-
-        case WM_COMMAND:
-            if (LOWORD(wParam) == IDCANCEL) {
-                g_progressData->cancelled = true;
-                return TRUE;
-            }
-            break;
-
-        case WM_USER + 100:
-            if (g_progressData) {
-                int percent = (g_progressData->totalBytes > 0)
-                    ? (int)((g_progressData->downloadedBytes * 100) / g_progressData->totalBytes)
-                    : 0;
-                SendMessageW(g_progressData->hwndProgress, PBM_SETPOS, percent, 0);
-
-                wchar_t text[256];
-                double downloadedMB = g_progressData->downloadedBytes / (1024.0 * 1024.0);
-                double totalMB = g_progressData->totalBytes / (1024.0 * 1024.0);
-                swprintf(text, 256, L"Downloading: %.1f MB / %.1f MB (%d%%)",
-                    downloadedMB, totalMB, percent);
-                SetWindowTextW(g_progressData->hwndText, text);
-            }
-            return TRUE;
-
-        case WM_USER + 101:
-            DestroyWindow(hwnd);
-            return TRUE;
-
-        case WM_USER + 102:
-            DestroyWindow(hwnd);
-            return TRUE;
-    }
-    return FALSE;
-}
-
-void ShowCheckForUpdatesDialog(HWND hwndParent, bool silent) {
-    std::thread([hwndParent, silent]() {
-        UpdateInfo info = CheckForUpdates();
-
-        PostMessageW(hwndParent, WM_USER + 200, 0,
-            reinterpret_cast<LPARAM>(new std::pair<UpdateInfo, bool>(info, silent)));
-    }).detach();
-}
-
+// Check for updates on startup: after a short delay, a silent check that only
+// speaks up when an update is available.
 void CheckForUpdatesOnStartup() {
     if (!g_checkForUpdates) return;
 
     std::thread([]() {
         Sleep(3000);
-        if (g_hwnd) {
-            ShowCheckForUpdatesDialog(g_hwnd, true);
-        }
+        RunOnUiThread([]() { ShowCheckForUpdatesDialog(true); });
     }).detach();
-}
-
-void HandleUpdateCheckResult(HWND hwnd, UpdateInfo* info, bool silent) {
-    if (!info->errorMessage.empty()) {
-        if (!silent) {
-            MessageBoxA(hwnd, info->errorMessage.c_str(), "Check for Updates", MB_OK | MB_ICONERROR);
-        }
-        return;
-    }
-
-    if (!info->available) {
-        if (!silent) {
-            Speak("No updates available. You are running the latest version.");
-            MessageBoxA(hwnd, "No updates available. You are running the latest version.",
-                "Check for Updates", MB_OK | MB_ICONINFORMATION);
-        }
-        return;
-    }
-
-    std::string message = "A new version of FastPlay is available!\n\n";
-    message += "Current version: " + std::string(APP_VERSION);
-    if (strlen(BUILD_COMMIT) > 0) {
-        message += " (" + std::string(BUILD_COMMIT).substr(0, 7) + ")";
-    }
-    message += "\nLatest version: " + info->latestVersion;
-    if (!info->latestCommit.empty()) {
-        message += " (" + info->latestCommit.substr(0, 7) + ")";
-    }
-    message += "\n\nDo you want to download and install the update?";
-
-    Speak("Update available. " + info->latestVersion);
-
-    if (MessageBoxA(hwnd, message.c_str(), "Update Available", MB_YESNO | MB_ICONQUESTION) == IDYES) {
-        ProgressDialogData progressData = {0};
-        progressData.cancelled = false;
-        g_progressData = &progressData;
-
-        HWND hwndProgress = CreateDialogW(GetModuleHandle(NULL),
-            MAKEINTRESOURCEW(IDD_PROGRESS), hwnd, ProgressDlgProc);
-
-        if (!hwndProgress) {
-            MessageBoxA(hwnd, "Starting download...", "Update", MB_OK);
-        }
-
-        if (hwndProgress) {
-            ShowWindow(hwndProgress, SW_SHOW);
-        }
-
-        std::string downloadUrl;
-        if (IsInstalledMode() && !info->installerUrl.empty()) {
-            downloadUrl = info->installerUrl;
-        } else if (!info->downloadUrl.empty()) {
-            downloadUrl = info->downloadUrl;
-        } else if (!info->installerUrl.empty()) {
-            downloadUrl = info->installerUrl;
-        }
-
-        std::thread([hwnd, hwndProgress, downloadUrl]() {
-            bool wasCancelled = false;
-            bool success = DownloadUpdate(downloadUrl, [hwndProgress, &wasCancelled](size_t downloaded, size_t total) {
-                if (g_progressData) {
-                    g_progressData->downloadedBytes = downloaded;
-                    g_progressData->totalBytes = total;
-                    if (hwndProgress) {
-                        PostMessageW(hwndProgress, WM_USER + 100, 0, 0);
-                    }
-                    wasCancelled = g_progressData->cancelled;
-                    return !wasCancelled;
-                }
-                return true;
-            });
-
-            if (g_progressData) {
-                wasCancelled = g_progressData->cancelled;
-            }
-
-            if (hwndProgress) {
-                PostMessageW(hwndProgress, success ? WM_USER + 101 : WM_USER + 102, 0, 0);
-            }
-
-            Sleep(100);
-
-            if (success && !wasCancelled) {
-                PostMessageW(hwnd, WM_USER + 201, 0, 0);
-            } else if (!success && !wasCancelled) {
-                MessageBoxA(hwnd, "Failed to download update.", "Error", MB_OK | MB_ICONERROR);
-            }
-        }).detach();
-
-        if (hwndProgress) {
-            MSG msg;
-            while (GetMessageW(&msg, NULL, 0, 0)) {
-                if (!IsDialogMessageW(hwndProgress, &msg)) {
-                    TranslateMessage(&msg);
-                    DispatchMessageW(&msg);
-                }
-                if (!IsWindow(hwndProgress)) break;
-            }
-        }
-
-        g_progressData = nullptr;
-    }
 }

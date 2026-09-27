@@ -33,13 +33,12 @@ bool DownloadUpdate(const std::string& url, DownloadProgressCallback progressCal
 // Apply the downloaded update (creates batch script and exits app)
 void ApplyUpdate();
 
-// Show check for updates dialog (can be called from UI thread)
-void ShowCheckForUpdatesDialog(HWND hwndParent, bool silent = false);
+// Check for updates in the background and report the result: an offer to download
+// when an update exists, otherwise (unless silent) a message saying there is none.
+// UI thread; implemented with the update windows in src/ui/update_dialog.cpp.
+void ShowCheckForUpdatesDialog(bool silent = false);
 
 // Check for updates on startup (runs in background thread)
 void CheckForUpdatesOnStartup();
-
-// Handle update check result (called from main window proc)
-void HandleUpdateCheckResult(HWND hwnd, UpdateInfo* info, bool silent);
 
 #endif // FASTPLAY_UPDATER_H

@@ -1,23 +1,13 @@
 #include "youtube.h"
 #include "globals.h"
 #include "utils.h"
-#include "player.h"
-#include "accessibility.h"
-#include "resource.h"
+#include <windows.h>
 #include <wininet.h>
 #include <shlwapi.h>
 #include <regex>
 #include <sstream>
 
 #pragma comment(lib, "wininet.lib")
-
-// Dialog state
-static HWND g_ytDialog = nullptr;
-static std::vector<YouTubeResult> g_ytResults;
-static std::wstring g_ytNextPageToken;
-static std::wstring g_ytCurrentQuery;
-static bool g_ytIsPlaylistView = false;
-static std::wstring g_ytCurrentPlaylistId;
 
 // Forward declarations
 static bool SearchWithAPI(const std::wstring& query, std::vector<YouTubeResult>& results,
@@ -30,7 +20,7 @@ static std::wstring ParseJsonString(const std::wstring& json, const std::wstring
 static std::vector<std::wstring> ParseJsonArray(const std::wstring& json, const std::wstring& arrayKey);
 
 // Check if yt-dlp is available
-static bool IsYtdlpAvailable() {
+bool IsYtdlpAvailable() {
     if (g_ytdlpPath.empty()) return false;
     return PathFileExistsW(g_ytdlpPath.c_str()) != FALSE;
 }
@@ -401,214 +391,7 @@ bool ParseYouTubeURL(const std::wstring& url, std::wstring& id, bool& isPlaylist
     return false;
 }
 
-// Update results list in dialog
-static void UpdateResultsList(HWND hwnd) {
-    HWND hList = GetDlgItem(hwnd, IDC_YT_RESULTS);
-    SendMessageW(hList, LB_RESETCONTENT, 0, 0);
-
-    for (const auto& result : g_ytResults) {
-        std::wstring display = result.title;
-        if (!result.channel.empty()) {
-            display += L" - " + result.channel;
-        }
-        if (!result.duration.empty()) {
-            display += L" [" + result.duration + L"]";
-        }
-        SendMessageW(hList, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(display.c_str()));
-    }
-
-    // Update load more button visibility
-    HWND hLoadMore = GetDlgItem(hwnd, IDC_YT_LOADMORE);
-    EnableWindow(hLoadMore, !g_ytNextPageToken.empty());
-}
-
-// Perform search
-static void DoSearch(HWND hwnd) {
-    wchar_t query[512];
-    GetDlgItemTextW(hwnd, IDC_YT_SEARCH, query, 512);
-
-    if (wcslen(query) == 0) return;
-
-    g_ytCurrentQuery = query;
-    g_ytResults.clear();
-    g_ytNextPageToken.clear();
-    g_ytIsPlaylistView = false;
-
-    // Check if it's a YouTube URL
-    if (IsYouTubeURL(query)) {
-        std::wstring id;
-        bool isPlaylist, isChannel;
-        if (ParseYouTubeURL(query, id, isPlaylist, isChannel)) {
-            if (isPlaylist) {
-                g_ytIsPlaylistView = true;
-                g_ytCurrentPlaylistId = id;
-                YouTubeGetPlaylistContents(id, g_ytResults, g_ytNextPageToken, L"");
-                UpdateResultsList(hwnd);
-                Speak("Playlist loaded");
-                return;
-            } else if (!isPlaylist && !isChannel) {
-                // Single video - try to play it directly
-                std::wstring streamUrl;
-                Speak("Loading video");
-                if (YouTubeGetStreamURL(id, streamUrl)) {
-                    LoadURL(streamUrl.c_str());
-                    Speak("Playing");
-                } else {
-                    Speak("Failed to get stream URL");
-                }
-                return;
-            }
-        }
-    }
-
-    // Regular search
-    Speak("Searching");
-    if (YouTubeSearch(query, g_ytResults, g_ytNextPageToken, L"")) {
-        UpdateResultsList(hwnd);
-        char buf[64];
-        snprintf(buf, sizeof(buf), "%d results", static_cast<int>(g_ytResults.size()));
-        Speak(buf);
-    } else {
-        Speak("No results or search failed");
-    }
-}
-
-// Load more results
-static void DoLoadMore(HWND hwnd) {
-    if (g_ytNextPageToken.empty()) return;
-
-    std::vector<YouTubeResult> moreResults;
-    std::wstring newToken;
-
-    Speak("Loading more");
-    if (g_ytIsPlaylistView) {
-        YouTubeGetPlaylistContents(g_ytCurrentPlaylistId, moreResults, newToken, g_ytNextPageToken);
-    } else {
-        YouTubeSearch(g_ytCurrentQuery, moreResults, newToken, g_ytNextPageToken);
-    }
-
-    g_ytNextPageToken = newToken;
-    for (const auto& r : moreResults) {
-        g_ytResults.push_back(r);
-    }
-    UpdateResultsList(hwnd);
-
-    char buf[64];
-    snprintf(buf, sizeof(buf), "%d more loaded", static_cast<int>(moreResults.size()));
-    Speak(buf);
-}
-
-// Play selected result
-static void PlaySelected(HWND hwnd) {
-    HWND hList = GetDlgItem(hwnd, IDC_YT_RESULTS);
-    int sel = static_cast<int>(SendMessageW(hList, LB_GETCURSEL, 0, 0));
-    if (sel < 0 || sel >= static_cast<int>(g_ytResults.size())) return;
-
-    const YouTubeResult& result = g_ytResults[sel];
-    std::wstring streamUrl;
-
-    Speak("Loading");
-    if (YouTubeGetStreamURL(result.videoId, streamUrl)) {
-        LoadURL(streamUrl.c_str());
-        Speak("Playing");
-    } else {
-        Speak("Failed to get stream URL");
-    }
-}
-
-
-// Dialog procedure
-INT_PTR CALLBACK YouTubeDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
-    switch (msg) {
-        case WM_INITDIALOG:
-            g_ytDialog = hwnd;
-            g_ytResults.clear();
-            g_ytNextPageToken.clear();
-            SetFocus(GetDlgItem(hwnd, IDC_YT_SEARCH));
-            return FALSE;  // We set focus manually
-
-        case WM_COMMAND:
-            switch (LOWORD(wParam)) {
-                case IDOK:
-                    // Enter pressed - check if search box has focus
-                    if (GetFocus() == GetDlgItem(hwnd, IDC_YT_SEARCH)) {
-                        DoSearch(hwnd);
-                        return TRUE;
-                    }
-                    // If results list has focus, play selected
-                    if (GetFocus() == GetDlgItem(hwnd, IDC_YT_RESULTS)) {
-                        PlaySelected(hwnd);
-                        return TRUE;
-                    }
-                    return TRUE;  // Prevent dialog from closing
-
-                case IDC_YT_RESULTS:
-                    if (HIWORD(wParam) == LBN_DBLCLK) {
-                        PlaySelected(hwnd);
-                    }
-                    break;
-
-                case IDC_YT_LOADMORE:
-                    DoLoadMore(hwnd);
-                    break;
-
-                case IDCANCEL:
-                    DestroyWindow(hwnd);
-                    g_ytDialog = nullptr;
-                    return TRUE;
-            }
-            break;
-
-        case WM_SIZE: {
-            int width = LOWORD(lParam);
-            int height = HIWORD(lParam);
-            // Resize controls
-            SetWindowPos(GetDlgItem(hwnd, IDC_YT_SEARCH), nullptr, 7, 22, width - 14, 14, SWP_NOZORDER);
-            SetWindowPos(GetDlgItem(hwnd, IDC_YT_RESULTS), nullptr, 7, 54, width - 14, height - 90, SWP_NOZORDER);
-            SetWindowPos(GetDlgItem(hwnd, IDC_YT_LOADMORE), nullptr, 7, height - 30, 60, 14, SWP_NOZORDER);
-            SetWindowPos(GetDlgItem(hwnd, IDCANCEL), nullptr, width - 57, height - 30, 50, 14, SWP_NOZORDER);
-            InvalidateRect(hwnd, nullptr, TRUE);
-            return TRUE;
-        }
-
-        case WM_DESTROY:
-            g_ytDialog = nullptr;
-            break;
-    }
-    return FALSE;
-}
-
-// Show YouTube dialog
-void ShowYouTubeDialog(HWND parent) {
-    if (g_ytDialog) {
-        // Already open, bring to front
-        SetForegroundWindow(g_ytDialog);
-        return;
-    }
-
-    // Check if yt-dlp is available
-    if (!IsYtdlpAvailable()) {
-        MessageBoxW(parent, L"yt-dlp is not configured. Please set the yt-dlp path in Options > YouTube tab.",
-                    L"YouTube", MB_ICONWARNING);
-        return;
-    }
-
-    g_ytDialog = CreateDialogW(GetModuleHandle(nullptr), MAKEINTRESOURCEW(IDD_YOUTUBE),
-                               parent, YouTubeDlgProc);
-    if (g_ytDialog) {
-        ShowWindow(g_ytDialog, SW_SHOW);
-    }
-}
-
-// Get YouTube dialog handle
-HWND GetYouTubeDialog() {
-    return g_ytDialog;
-}
-
 // Cleanup temporary files and resources
+// (search results are kept by the YouTube window, so nothing is held here)
 void YouTubeCleanup() {
-    g_ytResults.clear();
-    g_ytNextPageToken.clear();
-    g_ytCurrentQuery.clear();
-    g_ytCurrentPlaylistId.clear();
 }

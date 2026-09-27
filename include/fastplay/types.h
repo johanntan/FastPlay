@@ -16,7 +16,6 @@ struct FileAssoc {
 struct SeekAmount {
     double value;       // seconds or track count
     const char* label;
-    int ctrlId;
     bool isTrack;       // true if track-based navigation
 };
 

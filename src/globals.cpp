@@ -1,20 +1,9 @@
 #include "globals.h"
-#include "resource.h"
+#include "commands.h"
 
 // Constants
 const wchar_t* APP_NAME = L"FastPlay";
-const wchar_t* WINDOW_CLASS = L"FastPlayWindow";
 const wchar_t* MUTEX_NAME = L"FastPlaySingleInstance";
-
-// Window handles
-HWND g_hwnd = nullptr;
-HWND g_statusBar = nullptr;
-
-HWND GetMessageBoxOwner() {
-    HWND active = GetActiveWindow();
-    if (active) return active;
-    return g_hwnd;
-}
 
 // BASS state
 HSTREAM g_stream = 0;      // Source stream
@@ -66,8 +55,6 @@ bool g_checkForUpdates = true;  // Check for updates on startup (default true)
 bool g_allowMultipleInstances = false;  // Allow multiple instances (default false)
 
 // System tray
-NOTIFYICONDATAW g_trayIcon = {0};
-bool g_trayIconVisible = false;
 
 // File batching
 std::vector<std::wstring> g_pendingFiles;
@@ -139,18 +126,18 @@ const int g_posThresholdCount = sizeof(g_posThresholds) / sizeof(g_posThresholds
 
 // Seek amounts
 const SeekAmount g_seekAmounts[] = {
-    {1.0, "1 second", IDC_SEEK_1S, false},
-    {5.0, "5 seconds", IDC_SEEK_5S, false},
-    {10.0, "10 seconds", IDC_SEEK_10S, false},
-    {30.0, "30 seconds", IDC_SEEK_30S, false},
-    {60.0, "1 minute", IDC_SEEK_1M, false},
-    {300.0, "5 minutes", IDC_SEEK_5M, false},
-    {600.0, "10 minutes", IDC_SEEK_10M, false},
-    {1800.0, "30 minutes", IDC_SEEK_30M, false},
-    {3600.0, "1 hour", IDC_SEEK_1H, false},
-    {1.0, "1 track", IDC_SEEK_1T, true},
-    {5.0, "5 tracks", IDC_SEEK_5T, true},
-    {10.0, "10 tracks", IDC_SEEK_10T, true}
+    {1.0, "1 second", false},
+    {5.0, "5 seconds", false},
+    {10.0, "10 seconds", false},
+    {30.0, "30 seconds", false},
+    {60.0, "1 minute", false},
+    {300.0, "5 minutes", false},
+    {600.0, "10 minutes", false},
+    {1800.0, "30 minutes", false},
+    {3600.0, "1 hour", false},
+    {1.0, "1 track", true},
+    {5.0, "5 tracks", true},
+    {10.0, "10 tracks", true}
 };
 const int g_seekAmountCount = sizeof(g_seekAmounts) / sizeof(g_seekAmounts[0]);
 bool g_seekEnabled[12] = {false, true, false, false, false, false, false, false, false, false, false, false};

@@ -2,21 +2,20 @@
 #ifndef FASTPLAY_ACCESSIBILITY_H
 #define FASTPLAY_ACCESSIBILITY_H
 
-#include <windows.h>
 #include <string>
 
-// Speech initialization (Universal Speech)
-bool InitSpeech(HWND hwnd);
+// Screen reader speech. Safe to call from any thread: the text is spoken on the UI
+// thread, and a message still waiting to be spoken is replaced by a newer one.
+
+bool InitSpeech();
 void FreeSpeech();
 
-// Speech output (ANSI - for ASCII text)
+// ANSI / UTF-8 text
 void Speak(const char* text, bool interrupt = true);
 void Speak(const std::string& text, bool interrupt = true);
 
-// Speech output (Unicode - for ID3 tags, international text)
+// Unicode text (ID3 tags, international text)
 void SpeakW(const wchar_t* text, bool interrupt = true);
 void SpeakW(const std::wstring& text, bool interrupt = true);
-
-void DoSpeak();
 
 #endif // FASTPLAY_ACCESSIBILITY_H

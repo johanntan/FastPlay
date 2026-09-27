@@ -52,3 +52,6 @@ cmake_install.cmake
 *~
 Thumbs.db
 .DS_Store
+
+# CMake build tree (dependencies are fetched into it)
+build/

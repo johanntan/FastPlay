@@ -3,10 +3,11 @@
 #include "utils.h"
 #include "accessibility.h"
 #include "settings.h"
-#include "ui.h"
+#include "app_ui.h"
+#include "radio.h"
 #include "effects.h"
 #include "database.h"
-#include "resource.h"
+#include "commands.h"
 #include "bass_fx.h"
 #include "bass_aac.h"
 #include "bassmidi.h"
@@ -194,14 +195,10 @@ std::wstring GetDeviceName(int device) {
     return L"";
 }
 
-// Show popup menu with audio devices
-void ShowAudioDeviceMenu(HWND hwnd) {
-    HMENU hMenu = CreatePopupMenu();
-    if (!hMenu) return;
-
+// The enabled audio devices, for the main window's device menu
+std::vector<AudioDeviceInfo> GetAudioDevices() {
+    std::vector<AudioDeviceInfo> devices;
     BASS_DEVICEINFO info;
-    int itemCount = 0;
-
     for (int i = 1; BASS_GetDeviceInfo(i, &info); i++) {
         if (info.flags & BASS_DEVICE_ENABLED) {
             // Convert device name to wide string
@@ -212,48 +209,14 @@ void ShowAudioDeviceMenu(HWND hwnd) {
                 wideName.pop_back();
             }
 
-            UINT flags = MF_STRING;
-            // Check if this is the current device
-            if (i == g_selectedDevice || (g_selectedDevice == -1 && (info.flags & BASS_DEVICE_DEFAULT))) {
-                flags |= MF_CHECKED;
-            }
-
-            AppendMenuW(hMenu, flags, IDM_AUDIO_DEVICE_BASE + i, wideName.c_str());
-            itemCount++;
+            AudioDeviceInfo dev;
+            dev.index = i;
+            dev.name = wideName;
+            dev.current = (i == g_selectedDevice || (g_selectedDevice == -1 && (info.flags & BASS_DEVICE_DEFAULT)));
+            devices.push_back(dev);
         }
     }
-
-    if (itemCount == 0) {
-        DestroyMenu(hMenu);
-        Speak("No audio devices found");
-        return;
-    }
-
-    // Check if window was hidden (for global hotkey support)
-    bool wasHidden = !IsWindowVisible(hwnd);
-    if (wasHidden) {
-        ShowWindow(hwnd, SW_SHOW);
-    }
-
-    // Get cursor position for menu
-    POINT pt;
-    GetCursorPos(&pt);
-
-    // Show the popup menu and get the selected command
-    SetForegroundWindow(hwnd);
-    int cmd = TrackPopupMenu(hMenu, TPM_LEFTALIGN | TPM_TOPALIGN | TPM_RETURNCMD, pt.x, pt.y, 0, hwnd, nullptr);
-    DestroyMenu(hMenu);
-
-    // Handle device selection
-    if (cmd >= IDM_AUDIO_DEVICE_BASE && cmd < IDM_AUDIO_DEVICE_BASE + 100) {
-        int deviceIndex = cmd - IDM_AUDIO_DEVICE_BASE;
-        SelectAudioDevice(deviceIndex);
-    }
-
-    // Re-hide window if it was hidden before
-    if (wasHidden) {
-        ShowWindow(hwnd, SW_HIDE);
-    }
+    return devices;
 }
 
 // Select and switch to an audio device
@@ -311,7 +274,7 @@ void ApplyMidiSettings() {
 }
 
 // Initialize BASS library
-bool InitBass(HWND hwnd) {
+bool InitBass(void* windowHandle) {
     // Apply buffer settings before init
     BASS_SetConfig(BASS_CONFIG_BUFFER, g_bufferSize);
     BASS_SetConfig(BASS_CONFIG_UPDATEPERIOD, g_updatePeriod);
@@ -323,18 +286,18 @@ bool InitBass(HWND hwnd) {
     int device = FindDeviceByName(g_selectedDeviceName);
     g_selectedDevice = device;
 
-    if (!BASS_Init(device, 44100, 0, hwnd, nullptr)) {
+    if (!BASS_Init(device, 44100, 0, static_cast<HWND>(windowHandle), nullptr)) {
         // Try default device as fallback
         if (device != -1) {
-            if (BASS_Init(-1, 44100, 0, hwnd, nullptr)) {
+            if (BASS_Init(-1, 44100, 0, static_cast<HWND>(windowHandle), nullptr)) {
                 g_selectedDevice = -1;
                 g_selectedDeviceName.clear();
             } else {
-                MessageBoxW(hwnd, L"Failed to initialize BASS audio library.", APP_NAME, MB_ICONERROR);
+                ShowMessage(L"Failed to initialize BASS audio library.", APP_NAME, MessageIcon::Error);
                 return false;
             }
         } else {
-            MessageBoxW(hwnd, L"Failed to initialize BASS audio library.", APP_NAME, MB_ICONERROR);
+            ShowMessage(L"Failed to initialize BASS audio library.", APP_NAME, MessageIcon::Error);
             return false;
         }
     }
@@ -466,7 +429,7 @@ bool LoadURL(const wchar_t* url) {
         msg += L" (code ";
         msg += std::to_wstring(error);
         msg += L")";
-        MessageBoxW(GetMessageBoxOwner(), msg.c_str(), APP_NAME, MB_ICONERROR);
+        ShowMessage(msg.c_str(), APP_NAME, MessageIcon::Error);
         return false;
     }
 
@@ -503,7 +466,7 @@ bool LoadURL(const wchar_t* url) {
         BASS_StreamFree(g_stream);
         g_stream = 0;
         g_isLoading = false;
-        MessageBoxW(GetMessageBoxOwner(), L"Failed to create tempo processor.", APP_NAME, MB_ICONERROR);
+        ShowMessage(L"Failed to create tempo processor.", APP_NAME, MessageIcon::Error);
         return false;
     }
 
@@ -520,7 +483,7 @@ bool LoadURL(const wchar_t* url) {
         BASS_StreamFree(g_stream);
         g_stream = 0;
         g_isLoading = false;
-        MessageBoxW(GetMessageBoxOwner(), L"Failed to create tempo stream for URL.", APP_NAME, MB_ICONERROR);
+        ShowMessage(L"Failed to create tempo stream for URL.", APP_NAME, MessageIcon::Error);
         return false;
     }
 
@@ -865,7 +828,7 @@ bool LoadFile(const wchar_t* path) {
             msg += GetFileName(path);
             msg += L"\n\n";
             msg += errorMsg;
-            MessageBoxW(GetMessageBoxOwner(), msg.c_str(), APP_NAME, MB_ICONERROR);
+            ShowMessage(msg.c_str(), APP_NAME, MessageIcon::Error);
         }
         return false;
     }
@@ -914,7 +877,7 @@ bool LoadFile(const wchar_t* path) {
             g_stream = 0;
             g_isLoading = false;
             if (g_playlist.size() <= 1) {
-                MessageBoxW(GetMessageBoxOwner(), L"Failed to create tempo stream.", APP_NAME, MB_ICONERROR);
+                ShowMessage(L"Failed to create tempo stream.", APP_NAME, MessageIcon::Error);
             }
             return false;
         }
@@ -965,17 +928,20 @@ void CALLBACK OnTrackEnd(HSYNC handle, DWORD channel, DWORD data, void* user) {
     // Post message to main thread to advance track
     // Use a custom message if auto-advance is disabled to load but not play
     if (g_autoAdvance || g_repeatMode != 0) {
-        PostMessage(g_hwnd, WM_COMMAND, IDM_PLAY_NEXT, 0);
+        PostCommand(IDM_PLAY_NEXT, 0);
     } else {
         // Load next track but don't auto-play - use lParam=1 to indicate no auto-play
-        PostMessage(g_hwnd, WM_COMMAND, IDM_PLAY_NEXT, 1);
+        PostCommand(IDM_PLAY_NEXT, 1);
     }
 }
 
 // Sync callback when stream metadata changes (for internet radio)
 void CALLBACK OnMetaChange(HSYNC handle, DWORD channel, DWORD data, void* user) {
     // Post message to main thread to announce new track
-    PostMessage(g_hwnd, WM_META_CHANGED, 0, 0);
+    RunOnUiThread([]() {
+        AnnounceStreamMetadata();
+        UpdateWindowTitle();
+    });
 }
 
 // Called from main thread when metadata changes - announces new stream track
@@ -1636,10 +1602,10 @@ bool ReinitBass(int device) {
 
     BASS_Free();
 
-    if (!BASS_Init(device, 44100, 0, g_hwnd, nullptr)) {
+    if (!BASS_Init(device, 44100, 0, static_cast<HWND>(GetMainWindowHandle()), nullptr)) {
         // Try default device as fallback
         if (device != -1) {
-            if (BASS_Init(-1, 44100, 0, g_hwnd, nullptr)) {
+            if (BASS_Init(-1, 44100, 0, static_cast<HWND>(GetMainWindowHandle()), nullptr)) {
                 g_selectedDevice = -1;
                 g_selectedDeviceName.clear();
             }
@@ -2867,8 +2833,7 @@ void ToggleRecording() {
             g_encoder = BASS_Encode_MP3_StartFile(g_fxStream, options, BASS_ENCODE_AUTOFREE, fullPath.c_str());
             if (!g_encoder) {
                 // Fall back to WAV if MP3 encoding fails
-                MessageBoxW(GetMessageBoxOwner(), L"MP3 encoding failed.\nFalling back to WAV format.",
-                            APP_NAME, MB_ICONWARNING);
+                ShowMessage(L"MP3 encoding failed.\nFalling back to WAV format.", APP_NAME, MessageIcon::Warning);
                 fullPath = outputPath;
                 if (!fullPath.empty() && fullPath.back() != L'\\') fullPath += L'\\';
                 fullPath += GenerateRecordingFilename();
@@ -2883,8 +2848,7 @@ void ToggleRecording() {
             g_encoder = BASS_Encode_OGG_StartFile(g_fxStream, options, BASS_ENCODE_AUTOFREE, fullPath.c_str());
             if (!g_encoder) {
                 // Fall back to WAV if OGG encoding fails
-                MessageBoxW(GetMessageBoxOwner(), L"OGG encoding failed.\nFalling back to WAV format.",
-                            APP_NAME, MB_ICONWARNING);
+                ShowMessage(L"OGG encoding failed.\nFalling back to WAV format.", APP_NAME, MessageIcon::Warning);
                 fullPath = outputPath;
                 if (!fullPath.empty() && fullPath.back() != L'\\') fullPath += L'\\';
                 fullPath += GenerateRecordingFilename();
@@ -2897,8 +2861,7 @@ void ToggleRecording() {
             g_encoder = BASS_Encode_FLAC_StartFile(g_fxStream, nullptr, wavFlags, fullPath.c_str());
             if (!g_encoder) {
                 // Fall back to WAV if FLAC encoding fails
-                MessageBoxW(GetMessageBoxOwner(), L"FLAC encoding failed.\nFalling back to WAV format.",
-                            APP_NAME, MB_ICONWARNING);
+                ShowMessage(L"FLAC encoding failed.\nFalling back to WAV format.", APP_NAME, MessageIcon::Warning);
                 fullPath = outputPath;
                 if (!fullPath.empty() && fullPath.back() != L'\\') fullPath += L'\\';
                 fullPath += GenerateRecordingFilename();
@@ -2912,7 +2875,7 @@ void ToggleRecording() {
         int err = BASS_ErrorGetCode();
         wchar_t msg[256];
         swprintf(msg, 256, L"Failed to start recording (error %d)", err);
-        MessageBoxW(GetMessageBoxOwner(), msg, APP_NAME, MB_ICONERROR);
+        ShowMessage(msg, APP_NAME, MessageIcon::Error);
         return;
     }
 
