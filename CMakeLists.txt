@@ -91,6 +91,7 @@ endif()
 # (include/, lib/ and deps/); SQLite's amalgamation is src/sqlite3.c.
 
 set(FASTPLAY_SOURCES
+    src/bass_text.cpp
     src/center_cancel.cpp
     src/convolution.cpp
     src/database.cpp
@@ -141,9 +142,20 @@ set(FASTPLAY_SOURCES
 if(WIN32)
     list(APPEND FASTPLAY_SOURCES
         src/platform/file_assoc_windows.cpp
+        src/platform/ini_windows.cpp
+        src/platform/paths_windows.cpp
         src/platform/speech_windows.cpp
         src/platform/startup_windows.cpp
         res/fastplay.rc
+    )
+else()
+    list(APPEND FASTPLAY_SOURCES
+        src/platform/ini_portable.cpp
+    )
+endif()
+if(APPLE)
+    list(APPEND FASTPLAY_SOURCES
+        src/platform/paths_mac.cpp
     )
 endif()
 

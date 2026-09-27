@@ -3,6 +3,7 @@
 // exporting radio favorites. The Radio window is src/ui/radio_dialog.cpp.
 
 #include "radio.h"
+#include "ini.h"
 #include "database.h"
 #include "utils.h"
 
@@ -920,7 +921,7 @@ RadioImportResult ImportRadioFavorites(const std::wstring& playlistPath) {
             swprintf(titleKey, 32, L"Title%d", i);
 
             wchar_t url[4096] = {0}, title[512] = {0};
-            GetPrivateProfileStringW(L"playlist", fileKey, L"", url, 4096, playlistPath.c_str());
+            IniGetString(L"playlist", fileKey, L"", url, 4096, playlistPath.c_str());
             if (url[0] == L'\0') break;
 
             // Only import URLs (not local files)
@@ -928,7 +929,7 @@ RadioImportResult ImportRadioFavorites(const std::wstring& playlistPath) {
                 continue;
             }
 
-            GetPrivateProfileStringW(L"playlist", titleKey, L"", title, 512, playlistPath.c_str());
+            IniGetString(L"playlist", titleKey, L"", title, 512, playlistPath.c_str());
             std::wstring name = title[0] ? title : url;
 
             std::wstring key = urlKey(url);

@@ -2,7 +2,6 @@
 #ifndef FASTPLAY_PLAYER_H
 #define FASTPLAY_PLAYER_H
 
-#include <windows.h>
 #include <string>
 #include <vector>
 #include "bass.h"

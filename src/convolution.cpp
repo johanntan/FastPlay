@@ -1,4 +1,5 @@
 #include "convolution.h"
+#include "bass_text.h"
 #include "bass.h"
 #include <cmath>
 #include <algorithm>
@@ -55,8 +56,9 @@ ConvolutionReverb::~ConvolutionReverb() {
 // Load IR from any format BASS supports (WAV, FLAC, MP3, OGG, etc.)
 bool ConvolutionReverb::LoadIR(const wchar_t* path) {
     // Use BASS to decode the file (supports many formats)
-    HSTREAM stream = BASS_StreamCreateFile(FALSE, path, 0, 0,
-        BASS_STREAM_DECODE | BASS_SAMPLE_FLOAT | BASS_UNICODE);
+    BassFileName file(path);
+    HSTREAM stream = BASS_StreamCreateFile(FALSE, file.get(), 0, 0,
+        BASS_STREAM_DECODE | BASS_SAMPLE_FLOAT | file.flags());
     if (!stream) {
         return false;
     }

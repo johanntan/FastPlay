@@ -2,7 +2,6 @@
 #ifndef FASTPLAY_SETTINGS_H
 #define FASTPLAY_SETTINGS_H
 
-#include <windows.h>
 #include <string>
 
 // Config path initialization

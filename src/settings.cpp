@@ -1,4 +1,5 @@
 #include "settings.h"
+#include "ini.h"
 #include "globals.h"
 #include "player.h"
 #include "effects.h"
@@ -6,46 +7,15 @@
 #include "database.h"
 #include "accessibility.h"
 #include "tempo_processor.h"
-#include "updater.h"
+#include "paths.h"
+#include "utils.h"
 #include "commands.h"
+#include <cwchar>
 #include <cstdio>
-#include <shlobj.h>
 
 // Initialize config file path
 void InitConfigPath() {
-    if (IsInstalledMode()) {
-        // Installed mode: use AppData\Roaming\FastPlay
-        wchar_t appDataPath[MAX_PATH];
-        if (SUCCEEDED(SHGetFolderPathW(NULL, CSIDL_APPDATA, NULL, 0, appDataPath))) {
-            g_configPath = appDataPath;
-            g_configPath += L"\\FastPlay";
-
-            // Create directory if it doesn't exist
-            CreateDirectoryW(g_configPath.c_str(), NULL);
-
-            g_configPath += L"\\FastPlay.ini";
-        } else {
-            // Fallback to exe directory if AppData fails
-            wchar_t exePath[MAX_PATH];
-            GetModuleFileNameW(nullptr, exePath, MAX_PATH);
-            g_configPath = exePath;
-            size_t pos = g_configPath.find_last_of(L"\\/");
-            if (pos != std::wstring::npos) {
-                g_configPath = g_configPath.substr(0, pos + 1);
-            }
-            g_configPath += L"FastPlay.ini";
-        }
-    } else {
-        // Portable mode: use exe directory
-        wchar_t exePath[MAX_PATH];
-        GetModuleFileNameW(nullptr, exePath, MAX_PATH);
-        g_configPath = exePath;
-        size_t pos = g_configPath.find_last_of(L"\\/");
-        if (pos != std::wstring::npos) {
-            g_configPath = g_configPath.substr(0, pos + 1);
-        }
-        g_configPath += L"FastPlay.ini";
-    }
+    g_configPath = GetDataDirectory() + L"FastPlay.ini";
 }
 
 // Load settings from INI file
@@ -54,31 +24,31 @@ void LoadSettings() {
 
     // Load device name (empty means default device)
     wchar_t deviceName[256] = {0};
-    GetPrivateProfileStringW(L"Playback", L"DeviceName", L"", deviceName, 256, g_configPath.c_str());
+    IniGetString(L"Playback", L"DeviceName", L"", deviceName, 256, g_configPath.c_str());
     g_selectedDeviceName = deviceName;
     g_selectedDevice = -1;  // Will be resolved by name in InitBass
 
-    g_rewindOnPauseMs = GetPrivateProfileIntW(L"Playback", L"RewindOnPauseMs", 0, g_configPath.c_str());
+    g_rewindOnPauseMs = IniGetInt(L"Playback", L"RewindOnPauseMs", 0, g_configPath.c_str());
     if (g_rewindOnPauseMs < 0) g_rewindOnPauseMs = 0;
 
-    g_allowAmplify = GetPrivateProfileIntW(L"Playback", L"AllowAmplify", 0, g_configPath.c_str()) != 0;
-    g_rememberState = GetPrivateProfileIntW(L"Playback", L"RememberState", 0, g_configPath.c_str()) != 0;
-    g_rememberPosMinutes = GetPrivateProfileIntW(L"Playback", L"RememberPosMinutes", 0, g_configPath.c_str());
-    g_bringToFront = GetPrivateProfileIntW(L"Playback", L"BringToFront", 1, g_configPath.c_str()) != 0;
-    g_minimizeToTray = GetPrivateProfileIntW(L"Playback", L"MinimizeToTray", 1, g_configPath.c_str()) != 0;
-    g_loadFolder = GetPrivateProfileIntW(L"Playback", L"LoadFolder", 0, g_configPath.c_str()) != 0;
-    g_registerFileTypes = GetPrivateProfileIntW(L"Playback", L"RegisterFileTypes", 0, g_configPath.c_str()) != 0;
-    g_volumeStep = GetPrivateProfileIntW(L"Playback", L"VolumeStep", 2, g_configPath.c_str()) / 100.0f;
+    g_allowAmplify = IniGetInt(L"Playback", L"AllowAmplify", 0, g_configPath.c_str()) != 0;
+    g_rememberState = IniGetInt(L"Playback", L"RememberState", 0, g_configPath.c_str()) != 0;
+    g_rememberPosMinutes = IniGetInt(L"Playback", L"RememberPosMinutes", 0, g_configPath.c_str());
+    g_bringToFront = IniGetInt(L"Playback", L"BringToFront", 1, g_configPath.c_str()) != 0;
+    g_minimizeToTray = IniGetInt(L"Playback", L"MinimizeToTray", 1, g_configPath.c_str()) != 0;
+    g_loadFolder = IniGetInt(L"Playback", L"LoadFolder", 0, g_configPath.c_str()) != 0;
+    g_registerFileTypes = IniGetInt(L"Playback", L"RegisterFileTypes", 0, g_configPath.c_str()) != 0;
+    g_volumeStep = IniGetInt(L"Playback", L"VolumeStep", 2, g_configPath.c_str()) / 100.0f;
     if (g_volumeStep < 0.01f) g_volumeStep = 0.01f;
     if (g_volumeStep > 0.25f) g_volumeStep = 0.25f;
-    g_replayGainMode = GetPrivateProfileIntW(L"Playback", L"ReplayGainMode", 0, g_configPath.c_str());
+    g_replayGainMode = IniGetInt(L"Playback", L"ReplayGainMode", 0, g_configPath.c_str());
     if (g_replayGainMode < 0 || g_replayGainMode > 2) g_replayGainMode = 0;
-    g_replayGainPreamp = GetPrivateProfileIntW(L"Playback", L"ReplayGainPreamp", 0, g_configPath.c_str()) / 100.0f;
+    g_replayGainPreamp = IniGetInt(L"Playback", L"ReplayGainPreamp", 0, g_configPath.c_str()) / 100.0f;
     if (g_replayGainPreamp < -15.0f) g_replayGainPreamp = -15.0f;
     if (g_replayGainPreamp > 15.0f) g_replayGainPreamp = 15.0f;
-    g_replayGainPreventClip = GetPrivateProfileIntW(L"Playback", L"ReplayGainPreventClip", 1, g_configPath.c_str()) != 0;
-    g_showTitleInWindow = GetPrivateProfileIntW(L"Playback", L"ShowTitleInWindow", 1, g_configPath.c_str()) != 0;
-    g_volume = GetPrivateProfileIntW(L"Playback", L"Volume", 100, g_configPath.c_str()) / 100.0f;
+    g_replayGainPreventClip = IniGetInt(L"Playback", L"ReplayGainPreventClip", 1, g_configPath.c_str()) != 0;
+    g_showTitleInWindow = IniGetInt(L"Playback", L"ShowTitleInWindow", 1, g_configPath.c_str()) != 0;
+    g_volume = IniGetInt(L"Playback", L"Volume", 100, g_configPath.c_str()) / 100.0f;
 
     // Clamp volume
     float maxVol = g_allowAmplify ? MAX_VOLUME_AMPLIFY : MAX_VOLUME_NORMAL;
@@ -87,144 +57,144 @@ void LoadSettings() {
 
     // Load stream effect values (pitch, tempo, rate)
     wchar_t buf[32] = {0};
-    GetPrivateProfileStringW(L"Playback", L"Pitch", L"0", buf, 32, g_configPath.c_str());
-    g_pitch = static_cast<float>(_wtof(buf));
+    IniGetString(L"Playback", L"Pitch", L"0", buf, 32, g_configPath.c_str());
+    g_pitch = static_cast<float>(std::wcstod(buf, nullptr));
     if (g_pitch < -12.0f) g_pitch = -12.0f;
     if (g_pitch > 12.0f) g_pitch = 12.0f;
 
-    GetPrivateProfileStringW(L"Playback", L"Tempo", L"0", buf, 32, g_configPath.c_str());
-    g_tempo = static_cast<float>(_wtof(buf));
+    IniGetString(L"Playback", L"Tempo", L"0", buf, 32, g_configPath.c_str());
+    g_tempo = static_cast<float>(std::wcstod(buf, nullptr));
     if (g_tempo < -75.0f) g_tempo = -75.0f;
     if (g_tempo > 200.0f) g_tempo = 200.0f;
 
-    GetPrivateProfileStringW(L"Playback", L"Rate", L"1.0", buf, 32, g_configPath.c_str());
-    g_rate = static_cast<float>(_wtof(buf));
+    IniGetString(L"Playback", L"Rate", L"1.0", buf, 32, g_configPath.c_str());
+    g_rate = static_cast<float>(std::wcstod(buf, nullptr));
     if (g_rate < 0.25f) g_rate = 0.25f;
     if (g_rate > 4.0f) g_rate = 4.0f;
 
     // Load advanced settings (buffer)
-    g_bufferSize = GetPrivateProfileIntW(L"Advanced", L"BufferSize", 500, g_configPath.c_str());
+    g_bufferSize = IniGetInt(L"Advanced", L"BufferSize", 500, g_configPath.c_str());
     if (g_bufferSize < 100) g_bufferSize = 100;
     if (g_bufferSize > 5000) g_bufferSize = 5000;
 
-    g_updatePeriod = GetPrivateProfileIntW(L"Advanced", L"UpdatePeriod", 100, g_configPath.c_str());
+    g_updatePeriod = IniGetInt(L"Advanced", L"UpdatePeriod", 100, g_configPath.c_str());
     if (g_updatePeriod < 5) g_updatePeriod = 5;
     if (g_updatePeriod > 500) g_updatePeriod = 500;
 
-    g_tempoAlgorithm = GetPrivateProfileIntW(L"Advanced", L"TempoAlgorithm", 0, g_configPath.c_str());
+    g_tempoAlgorithm = IniGetInt(L"Advanced", L"TempoAlgorithm", 0, g_configPath.c_str());
     if (g_tempoAlgorithm < 0) g_tempoAlgorithm = 0;
     if (g_tempoAlgorithm >= static_cast<int>(TempoAlgorithm::COUNT)) g_tempoAlgorithm = 0;
 
-    g_legacyVolume = GetPrivateProfileIntW(L"Advanced", L"LegacyVolume", 0, g_configPath.c_str()) != 0;
-    g_disableBatchDelay = GetPrivateProfileIntW(L"Advanced", L"DisableBatchDelay", 0, g_configPath.c_str()) != 0;
+    g_legacyVolume = IniGetInt(L"Advanced", L"LegacyVolume", 0, g_configPath.c_str()) != 0;
+    g_disableBatchDelay = IniGetInt(L"Advanced", L"DisableBatchDelay", 0, g_configPath.c_str()) != 0;
 
     // Load SoundTouch settings
-    g_stAntiAliasFilter = GetPrivateProfileIntW(L"SoundTouch", L"AntiAliasFilter", 1, g_configPath.c_str()) != 0;
-    g_stAAFilterLength = GetPrivateProfileIntW(L"SoundTouch", L"AAFilterLength", 32, g_configPath.c_str());
+    g_stAntiAliasFilter = IniGetInt(L"SoundTouch", L"AntiAliasFilter", 1, g_configPath.c_str()) != 0;
+    g_stAAFilterLength = IniGetInt(L"SoundTouch", L"AAFilterLength", 32, g_configPath.c_str());
     if (g_stAAFilterLength < 8) g_stAAFilterLength = 8;
     if (g_stAAFilterLength > 128) g_stAAFilterLength = 128;
-    g_stQuickAlgorithm = GetPrivateProfileIntW(L"SoundTouch", L"QuickAlgorithm", 0, g_configPath.c_str()) != 0;
-    g_stSequenceMs = GetPrivateProfileIntW(L"SoundTouch", L"SequenceMs", 82, g_configPath.c_str());
+    g_stQuickAlgorithm = IniGetInt(L"SoundTouch", L"QuickAlgorithm", 0, g_configPath.c_str()) != 0;
+    g_stSequenceMs = IniGetInt(L"SoundTouch", L"SequenceMs", 82, g_configPath.c_str());
     if (g_stSequenceMs < 0) g_stSequenceMs = 0;
     if (g_stSequenceMs > 200) g_stSequenceMs = 200;
-    g_stSeekWindowMs = GetPrivateProfileIntW(L"SoundTouch", L"SeekWindowMs", 28, g_configPath.c_str());
+    g_stSeekWindowMs = IniGetInt(L"SoundTouch", L"SeekWindowMs", 28, g_configPath.c_str());
     if (g_stSeekWindowMs < 0) g_stSeekWindowMs = 0;
     if (g_stSeekWindowMs > 100) g_stSeekWindowMs = 100;
-    g_stOverlapMs = GetPrivateProfileIntW(L"SoundTouch", L"OverlapMs", 8, g_configPath.c_str());
+    g_stOverlapMs = IniGetInt(L"SoundTouch", L"OverlapMs", 8, g_configPath.c_str());
     if (g_stOverlapMs < 0) g_stOverlapMs = 0;
     if (g_stOverlapMs > 50) g_stOverlapMs = 50;
-    g_stPreventClick = GetPrivateProfileIntW(L"SoundTouch", L"PreventClick", 0, g_configPath.c_str()) != 0;
-    g_stAlgorithm = GetPrivateProfileIntW(L"SoundTouch", L"Algorithm", 1, g_configPath.c_str());
+    g_stPreventClick = IniGetInt(L"SoundTouch", L"PreventClick", 0, g_configPath.c_str()) != 0;
+    g_stAlgorithm = IniGetInt(L"SoundTouch", L"Algorithm", 1, g_configPath.c_str());
     if (g_stAlgorithm < 0) g_stAlgorithm = 0;
     if (g_stAlgorithm > 2) g_stAlgorithm = 2;
 
     // Load Speedy settings
-    g_speedyNonlinear = GetPrivateProfileIntW(L"Speedy", L"NonlinearSpeedup", 1, g_configPath.c_str()) != 0;
+    g_speedyNonlinear = IniGetInt(L"Speedy", L"NonlinearSpeedup", 1, g_configPath.c_str()) != 0;
 
     // Load Signalsmith Stretch settings
-    g_ssPreset = GetPrivateProfileIntW(L"Signalsmith", L"Preset", 0, g_configPath.c_str());
+    g_ssPreset = IniGetInt(L"Signalsmith", L"Preset", 0, g_configPath.c_str());
     if (g_ssPreset < 0) g_ssPreset = 0;
     if (g_ssPreset > 1) g_ssPreset = 1;
-    g_ssTonalityLimit = GetPrivateProfileIntW(L"Signalsmith", L"TonalityLimit", 0, g_configPath.c_str());
+    g_ssTonalityLimit = IniGetInt(L"Signalsmith", L"TonalityLimit", 0, g_configPath.c_str());
     if (g_ssTonalityLimit < 0) g_ssTonalityLimit = 0;
     if (g_ssTonalityLimit > 20000) g_ssTonalityLimit = 20000;
 
     // Load reverb algorithm (0=Off, 1=Simple, 2=Advanced; the old 2=DX8 and 3=I3DL2 become Advanced)
-    g_reverbAlgorithm = GetPrivateProfileIntW(L"Effects", L"ReverbAlgorithm", 0, g_configPath.c_str());
+    g_reverbAlgorithm = IniGetInt(L"Effects", L"ReverbAlgorithm", 0, g_configPath.c_str());
     if (g_reverbAlgorithm < 0) g_reverbAlgorithm = 0;
     if (g_reverbAlgorithm >= (int)ReverbAlgorithm::COUNT) g_reverbAlgorithm = (int)ReverbAlgorithm::Advanced;
 
     // Load MIDI settings
-    wchar_t midiBuf[MAX_PATH] = {0};
-    GetPrivateProfileStringW(L"MIDI", L"SoundFont", L"", midiBuf, MAX_PATH, g_configPath.c_str());
+    wchar_t midiBuf[kMaxPathChars] = {0};
+    IniGetString(L"MIDI", L"SoundFont", L"", midiBuf, kMaxPathChars, g_configPath.c_str());
     g_midiSoundFont = midiBuf;
-    g_midiMaxVoices = GetPrivateProfileIntW(L"MIDI", L"MaxVoices", 128, g_configPath.c_str());
+    g_midiMaxVoices = IniGetInt(L"MIDI", L"MaxVoices", 128, g_configPath.c_str());
     if (g_midiMaxVoices < 1) g_midiMaxVoices = 1;
     if (g_midiMaxVoices > 1000) g_midiMaxVoices = 1000;
-    g_midiSincInterp = GetPrivateProfileIntW(L"MIDI", L"SincInterp", 0, g_configPath.c_str()) != 0;
+    g_midiSincInterp = IniGetInt(L"MIDI", L"SincInterp", 0, g_configPath.c_str()) != 0;
 
-    // EQ frequencies loaded using string conversion (GetPrivateProfileFloatW defined later)
+    // EQ frequencies loaded using string conversion (IniGetFloat defined later)
     wchar_t eqBuf[32];
-    GetPrivateProfileStringW(L"Advanced", L"EQBassFreq", L"50", eqBuf, 32, g_configPath.c_str());
-    g_eqBassFreq = static_cast<float>(_wtof(eqBuf));
-    GetPrivateProfileStringW(L"Advanced", L"EQMidFreq", L"1000", eqBuf, 32, g_configPath.c_str());
-    g_eqMidFreq = static_cast<float>(_wtof(eqBuf));
-    GetPrivateProfileStringW(L"Advanced", L"EQTrebleFreq", L"12000", eqBuf, 32, g_configPath.c_str());
-    g_eqTrebleFreq = static_cast<float>(_wtof(eqBuf));
+    IniGetString(L"Advanced", L"EQBassFreq", L"50", eqBuf, 32, g_configPath.c_str());
+    g_eqBassFreq = static_cast<float>(std::wcstod(eqBuf, nullptr));
+    IniGetString(L"Advanced", L"EQMidFreq", L"1000", eqBuf, 32, g_configPath.c_str());
+    g_eqMidFreq = static_cast<float>(std::wcstod(eqBuf, nullptr));
+    IniGetString(L"Advanced", L"EQTrebleFreq", L"12000", eqBuf, 32, g_configPath.c_str());
+    g_eqTrebleFreq = static_cast<float>(std::wcstod(eqBuf, nullptr));
 
     // Load YouTube settings
     wchar_t ytBuf[512] = {0};
-    GetPrivateProfileStringW(L"YouTube", L"YtdlpPath", L"", ytBuf, 512, g_configPath.c_str());
+    IniGetString(L"YouTube", L"YtdlpPath", L"", ytBuf, 512, g_configPath.c_str());
     g_ytdlpPath = ytBuf;
-    GetPrivateProfileStringW(L"YouTube", L"ApiKey", L"", ytBuf, 512, g_configPath.c_str());
+    IniGetString(L"YouTube", L"ApiKey", L"", ytBuf, 512, g_configPath.c_str());
     g_ytApiKey = ytBuf;
 
     // Load downloads settings
     wchar_t dlBuf[512] = {0};
-    GetPrivateProfileStringW(L"Downloads", L"Path", L"", dlBuf, 512, g_configPath.c_str());
+    IniGetString(L"Downloads", L"Path", L"", dlBuf, 512, g_configPath.c_str());
     g_downloadPath = dlBuf;
-    g_downloadOrganizeByFeed = GetPrivateProfileIntW(L"Downloads", L"OrganizeByFeed", 0, g_configPath.c_str()) != 0;
+    g_downloadOrganizeByFeed = IniGetInt(L"Downloads", L"OrganizeByFeed", 0, g_configPath.c_str()) != 0;
 
     // Load recording settings
     wchar_t recBuf[512] = {0};
-    GetPrivateProfileStringW(L"Recording", L"Path", L"", recBuf, 512, g_configPath.c_str());
+    IniGetString(L"Recording", L"Path", L"", recBuf, 512, g_configPath.c_str());
     g_recordPath = recBuf;
-    GetPrivateProfileStringW(L"Recording", L"Template", L"%Y-%m-%d_%H-%M-%S", recBuf, 512, g_configPath.c_str());
+    IniGetString(L"Recording", L"Template", L"%Y-%m-%d_%H-%M-%S", recBuf, 512, g_configPath.c_str());
     g_recordTemplate = recBuf;
-    g_recordFormat = GetPrivateProfileIntW(L"Recording", L"Format", 0, g_configPath.c_str());
+    g_recordFormat = IniGetInt(L"Recording", L"Format", 0, g_configPath.c_str());
     if (g_recordFormat < 0) g_recordFormat = 0;
     if (g_recordFormat > 3) g_recordFormat = 3;
-    g_recordBitrate = GetPrivateProfileIntW(L"Recording", L"Bitrate", 192, g_configPath.c_str());
+    g_recordBitrate = IniGetInt(L"Recording", L"Bitrate", 192, g_configPath.c_str());
 
     // Load speech settings
-    g_speechTrackChange = GetPrivateProfileIntW(L"Speech", L"TrackChange", 0, g_configPath.c_str()) != 0;
-    g_speechVolume = GetPrivateProfileIntW(L"Speech", L"Volume", 1, g_configPath.c_str()) != 0;
-    g_speechEffect = GetPrivateProfileIntW(L"Speech", L"Effect", 1, g_configPath.c_str()) != 0;
+    g_speechTrackChange = IniGetInt(L"Speech", L"TrackChange", 0, g_configPath.c_str()) != 0;
+    g_speechVolume = IniGetInt(L"Speech", L"Volume", 1, g_configPath.c_str()) != 0;
+    g_speechEffect = IniGetInt(L"Speech", L"Effect", 1, g_configPath.c_str()) != 0;
 
     // Load shuffle and auto-advance settings
-    g_shuffle = GetPrivateProfileIntW(L"Playback", L"Shuffle", 0, g_configPath.c_str()) != 0;
-    g_autoAdvance = GetPrivateProfileIntW(L"Playback", L"AutoAdvance", 1, g_configPath.c_str()) != 0;
-    g_repeatMode = GetPrivateProfileIntW(L"Playback", L"RepeatMode", 0, g_configPath.c_str());
+    g_shuffle = IniGetInt(L"Playback", L"Shuffle", 0, g_configPath.c_str()) != 0;
+    g_autoAdvance = IniGetInt(L"Playback", L"AutoAdvance", 1, g_configPath.c_str()) != 0;
+    g_repeatMode = IniGetInt(L"Playback", L"RepeatMode", 0, g_configPath.c_str());
     if (g_repeatMode < 0 || g_repeatMode > 2) g_repeatMode = 0;
-    g_playlistFollowPlayback = GetPrivateProfileIntW(L"Playback", L"PlaylistFollow", 1, g_configPath.c_str()) != 0;
-    g_checkForUpdates = GetPrivateProfileIntW(L"Playback", L"CheckForUpdates", 1, g_configPath.c_str()) != 0;
-    g_allowMultipleInstances = GetPrivateProfileIntW(L"Playback", L"AllowMultipleInstances", 0, g_configPath.c_str()) != 0;
+    g_playlistFollowPlayback = IniGetInt(L"Playback", L"PlaylistFollow", 1, g_configPath.c_str()) != 0;
+    g_checkForUpdates = IniGetInt(L"Playback", L"CheckForUpdates", 1, g_configPath.c_str()) != 0;
+    g_allowMultipleInstances = IniGetInt(L"Playback", L"AllowMultipleInstances", 0, g_configPath.c_str()) != 0;
 
     // Load seek settings
-    g_seekEnabled[0] = GetPrivateProfileIntW(L"Movement", L"Seek1s", 0, g_configPath.c_str()) != 0;
-    g_seekEnabled[1] = GetPrivateProfileIntW(L"Movement", L"Seek5s", 1, g_configPath.c_str()) != 0;
-    g_seekEnabled[2] = GetPrivateProfileIntW(L"Movement", L"Seek10s", 0, g_configPath.c_str()) != 0;
-    g_seekEnabled[3] = GetPrivateProfileIntW(L"Movement", L"Seek30s", 0, g_configPath.c_str()) != 0;
-    g_seekEnabled[4] = GetPrivateProfileIntW(L"Movement", L"Seek1m", 0, g_configPath.c_str()) != 0;
-    g_seekEnabled[5] = GetPrivateProfileIntW(L"Movement", L"Seek5m", 0, g_configPath.c_str()) != 0;
-    g_seekEnabled[6] = GetPrivateProfileIntW(L"Movement", L"Seek10m", 0, g_configPath.c_str()) != 0;
-    g_seekEnabled[7] = GetPrivateProfileIntW(L"Movement", L"Seek30m", 0, g_configPath.c_str()) != 0;
-    g_seekEnabled[8] = GetPrivateProfileIntW(L"Movement", L"Seek1h", 0, g_configPath.c_str()) != 0;
-    g_seekEnabled[9] = GetPrivateProfileIntW(L"Movement", L"Seek1t", 0, g_configPath.c_str()) != 0;
-    g_seekEnabled[10] = GetPrivateProfileIntW(L"Movement", L"Seek5t", 0, g_configPath.c_str()) != 0;
-    g_seekEnabled[11] = GetPrivateProfileIntW(L"Movement", L"Seek10t", 0, g_configPath.c_str()) != 0;
-    g_chapterSeekEnabled = GetPrivateProfileIntW(L"Movement", L"ChapterSeek", 1, g_configPath.c_str()) != 0;
-    g_currentSeekIndex = GetPrivateProfileIntW(L"Movement", L"CurrentSeek", 1, g_configPath.c_str());
+    g_seekEnabled[0] = IniGetInt(L"Movement", L"Seek1s", 0, g_configPath.c_str()) != 0;
+    g_seekEnabled[1] = IniGetInt(L"Movement", L"Seek5s", 1, g_configPath.c_str()) != 0;
+    g_seekEnabled[2] = IniGetInt(L"Movement", L"Seek10s", 0, g_configPath.c_str()) != 0;
+    g_seekEnabled[3] = IniGetInt(L"Movement", L"Seek30s", 0, g_configPath.c_str()) != 0;
+    g_seekEnabled[4] = IniGetInt(L"Movement", L"Seek1m", 0, g_configPath.c_str()) != 0;
+    g_seekEnabled[5] = IniGetInt(L"Movement", L"Seek5m", 0, g_configPath.c_str()) != 0;
+    g_seekEnabled[6] = IniGetInt(L"Movement", L"Seek10m", 0, g_configPath.c_str()) != 0;
+    g_seekEnabled[7] = IniGetInt(L"Movement", L"Seek30m", 0, g_configPath.c_str()) != 0;
+    g_seekEnabled[8] = IniGetInt(L"Movement", L"Seek1h", 0, g_configPath.c_str()) != 0;
+    g_seekEnabled[9] = IniGetInt(L"Movement", L"Seek1t", 0, g_configPath.c_str()) != 0;
+    g_seekEnabled[10] = IniGetInt(L"Movement", L"Seek5t", 0, g_configPath.c_str()) != 0;
+    g_seekEnabled[11] = IniGetInt(L"Movement", L"Seek10t", 0, g_configPath.c_str()) != 0;
+    g_chapterSeekEnabled = IniGetInt(L"Movement", L"ChapterSeek", 1, g_configPath.c_str()) != 0;
+    g_currentSeekIndex = IniGetInt(L"Movement", L"CurrentSeek", 1, g_configPath.c_str());
 
     // Validate current seek index
     if (g_currentSeekIndex < 0 || g_currentSeekIndex >= g_seekAmountCount || !g_seekEnabled[g_currentSeekIndex]) {
@@ -239,12 +209,12 @@ void LoadSettings() {
     }
 
     // Load effect settings
-    g_effectEnabled[0] = GetPrivateProfileIntW(L"Effects", L"Volume", 1, g_configPath.c_str()) != 0;  // Volume enabled by default
-    g_effectEnabled[1] = GetPrivateProfileIntW(L"Effects", L"Pitch", 0, g_configPath.c_str()) != 0;
-    g_effectEnabled[2] = GetPrivateProfileIntW(L"Effects", L"Tempo", 0, g_configPath.c_str()) != 0;
-    g_effectEnabled[3] = GetPrivateProfileIntW(L"Effects", L"Rate", 0, g_configPath.c_str()) != 0;
-    g_currentEffectIndex = GetPrivateProfileIntW(L"Effects", L"CurrentEffect", 0, g_configPath.c_str());
-    g_rateStepMode = GetPrivateProfileIntW(L"Effects", L"RateStepMode", 0, g_configPath.c_str());
+    g_effectEnabled[0] = IniGetInt(L"Effects", L"Volume", 1, g_configPath.c_str()) != 0;  // Volume enabled by default
+    g_effectEnabled[1] = IniGetInt(L"Effects", L"Pitch", 0, g_configPath.c_str()) != 0;
+    g_effectEnabled[2] = IniGetInt(L"Effects", L"Tempo", 0, g_configPath.c_str()) != 0;
+    g_effectEnabled[3] = IniGetInt(L"Effects", L"Rate", 0, g_configPath.c_str()) != 0;
+    g_currentEffectIndex = IniGetInt(L"Effects", L"CurrentEffect", 0, g_configPath.c_str());
+    g_rateStepMode = IniGetInt(L"Effects", L"RateStepMode", 0, g_configPath.c_str());
     if (g_rateStepMode < 0 || g_rateStepMode > 1) g_rateStepMode = 0;
 
     // Validate current effect index
@@ -263,29 +233,29 @@ void LoadSettings() {
 }
 
 // Helper to read float from INI with default
-static float GetPrivateProfileFloatW(const wchar_t* section, const wchar_t* key, float defaultVal, const wchar_t* path) {
+static float IniGetFloat(const wchar_t* section, const wchar_t* key, float defaultVal, const wchar_t* path) {
     wchar_t buf[32] = {0};
-    GetPrivateProfileStringW(section, key, L"", buf, 32, path);
+    IniGetString(section, key, L"", buf, 32, path);
     if (buf[0] == L'\0') return defaultVal;
-    return static_cast<float>(_wtof(buf));
+    return static_cast<float>(std::wcstod(buf, nullptr));
 }
 
 // Load DSP effect settings (call after InitEffects)
 void LoadDSPSettings() {
     // Load DSP effect enabled states
-    EnableDSPEffect(DSPEffectType::Reverb, GetPrivateProfileIntW(L"DSPEffects", L"Reverb", 0, g_configPath.c_str()) != 0);
-    EnableDSPEffect(DSPEffectType::Echo, GetPrivateProfileIntW(L"DSPEffects", L"Echo", 0, g_configPath.c_str()) != 0);
-    EnableDSPEffect(DSPEffectType::EQ, GetPrivateProfileIntW(L"DSPEffects", L"EQ", 0, g_configPath.c_str()) != 0);
-    EnableDSPEffect(DSPEffectType::Compressor, GetPrivateProfileIntW(L"DSPEffects", L"Compressor", 0, g_configPath.c_str()) != 0);
-    EnableDSPEffect(DSPEffectType::StereoWidth, GetPrivateProfileIntW(L"DSPEffects", L"StereoWidth", 0, g_configPath.c_str()) != 0);
-    EnableDSPEffect(DSPEffectType::CenterCancel, GetPrivateProfileIntW(L"DSPEffects", L"CenterCancel", 0, g_configPath.c_str()) != 0);
-    EnableDSPEffect(DSPEffectType::Convolution, GetPrivateProfileIntW(L"DSPEffects", L"Convolution", 0, g_configPath.c_str()) != 0);
-    EnableDSPEffect(DSPEffectType::SpatialAudio, GetPrivateProfileIntW(L"DSPEffects", L"SpatialAudio", 0, g_configPath.c_str()) != 0);
+    EnableDSPEffect(DSPEffectType::Reverb, IniGetInt(L"DSPEffects", L"Reverb", 0, g_configPath.c_str()) != 0);
+    EnableDSPEffect(DSPEffectType::Echo, IniGetInt(L"DSPEffects", L"Echo", 0, g_configPath.c_str()) != 0);
+    EnableDSPEffect(DSPEffectType::EQ, IniGetInt(L"DSPEffects", L"EQ", 0, g_configPath.c_str()) != 0);
+    EnableDSPEffect(DSPEffectType::Compressor, IniGetInt(L"DSPEffects", L"Compressor", 0, g_configPath.c_str()) != 0);
+    EnableDSPEffect(DSPEffectType::StereoWidth, IniGetInt(L"DSPEffects", L"StereoWidth", 0, g_configPath.c_str()) != 0);
+    EnableDSPEffect(DSPEffectType::CenterCancel, IniGetInt(L"DSPEffects", L"CenterCancel", 0, g_configPath.c_str()) != 0);
+    EnableDSPEffect(DSPEffectType::Convolution, IniGetInt(L"DSPEffects", L"Convolution", 0, g_configPath.c_str()) != 0);
+    EnableDSPEffect(DSPEffectType::SpatialAudio, IniGetInt(L"DSPEffects", L"SpatialAudio", 0, g_configPath.c_str()) != 0);
 
     // Load convolution IR path
     {
-        wchar_t irPath[MAX_PATH] = {0};
-        GetPrivateProfileStringW(L"DSPEffects", L"ConvolutionIR", L"", irPath, MAX_PATH, g_configPath.c_str());
+        wchar_t irPath[kMaxPathChars] = {0};
+        IniGetString(L"DSPEffects", L"ConvolutionIR", L"", irPath, kMaxPathChars, g_configPath.c_str());
         g_convolutionIRPath = irPath;
         if (!g_convolutionIRPath.empty()) {
             ConvolutionReverb* conv = GetConvolutionReverb();
@@ -300,104 +270,104 @@ void LoadDSPSettings() {
 
     // Reverb parameters (each preset first: setting it overwrites the values after it)
     def = GetParamDef(ParamId::ReverbPreset);
-    SetParamValue(ParamId::ReverbPreset, GetPrivateProfileFloatW(L"DSPParams", L"ReverbPreset", def->defaultValue, g_configPath.c_str()));
+    SetParamValue(ParamId::ReverbPreset, IniGetFloat(L"DSPParams", L"ReverbPreset", def->defaultValue, g_configPath.c_str()));
     def = GetParamDef(ParamId::ReverbMix);
-    SetParamValue(ParamId::ReverbMix, GetPrivateProfileFloatW(L"DSPParams", L"ReverbMix", def->defaultValue, g_configPath.c_str()));
+    SetParamValue(ParamId::ReverbMix, IniGetFloat(L"DSPParams", L"ReverbMix", def->defaultValue, g_configPath.c_str()));
     def = GetParamDef(ParamId::ReverbRoom);
-    SetParamValue(ParamId::ReverbRoom, GetPrivateProfileFloatW(L"DSPParams", L"ReverbRoom", def->defaultValue, g_configPath.c_str()));
+    SetParamValue(ParamId::ReverbRoom, IniGetFloat(L"DSPParams", L"ReverbRoom", def->defaultValue, g_configPath.c_str()));
     def = GetParamDef(ParamId::ReverbDamp);
-    SetParamValue(ParamId::ReverbDamp, GetPrivateProfileFloatW(L"DSPParams", L"ReverbDamp", def->defaultValue, g_configPath.c_str()));
+    SetParamValue(ParamId::ReverbDamp, IniGetFloat(L"DSPParams", L"ReverbDamp", def->defaultValue, g_configPath.c_str()));
     def = GetParamDef(ParamId::ReverbWidth);
-    SetParamValue(ParamId::ReverbWidth, GetPrivateProfileFloatW(L"DSPParams", L"ReverbWidth", def->defaultValue, g_configPath.c_str()));
+    SetParamValue(ParamId::ReverbWidth, IniGetFloat(L"DSPParams", L"ReverbWidth", def->defaultValue, g_configPath.c_str()));
     def = GetParamDef(ParamId::ReverbPreDelay);
-    SetParamValue(ParamId::ReverbPreDelay, GetPrivateProfileFloatW(L"DSPParams", L"ReverbPreDelay", def->defaultValue, g_configPath.c_str()));
+    SetParamValue(ParamId::ReverbPreDelay, IniGetFloat(L"DSPParams", L"ReverbPreDelay", def->defaultValue, g_configPath.c_str()));
     def = GetParamDef(ParamId::ReverbLowCut);
-    SetParamValue(ParamId::ReverbLowCut, GetPrivateProfileFloatW(L"DSPParams", L"ReverbLowCut", def->defaultValue, g_configPath.c_str()));
+    SetParamValue(ParamId::ReverbLowCut, IniGetFloat(L"DSPParams", L"ReverbLowCut", def->defaultValue, g_configPath.c_str()));
     def = GetParamDef(ParamId::ReverbHighCut);
-    SetParamValue(ParamId::ReverbHighCut, GetPrivateProfileFloatW(L"DSPParams", L"ReverbHighCut", def->defaultValue, g_configPath.c_str()));
+    SetParamValue(ParamId::ReverbHighCut, IniGetFloat(L"DSPParams", L"ReverbHighCut", def->defaultValue, g_configPath.c_str()));
     def = GetParamDef(ParamId::AdvReverbPreset);
-    SetParamValue(ParamId::AdvReverbPreset, GetPrivateProfileFloatW(L"DSPParams", L"AdvReverbPreset", def->defaultValue, g_configPath.c_str()));
+    SetParamValue(ParamId::AdvReverbPreset, IniGetFloat(L"DSPParams", L"AdvReverbPreset", def->defaultValue, g_configPath.c_str()));
     def = GetParamDef(ParamId::AdvReverbMix);
-    SetParamValue(ParamId::AdvReverbMix, GetPrivateProfileFloatW(L"DSPParams", L"AdvReverbMix", def->defaultValue, g_configPath.c_str()));
+    SetParamValue(ParamId::AdvReverbMix, IniGetFloat(L"DSPParams", L"AdvReverbMix", def->defaultValue, g_configPath.c_str()));
     def = GetParamDef(ParamId::AdvReverbDecay);
-    SetParamValue(ParamId::AdvReverbDecay, GetPrivateProfileFloatW(L"DSPParams", L"AdvReverbDecay", def->defaultValue, g_configPath.c_str()));
+    SetParamValue(ParamId::AdvReverbDecay, IniGetFloat(L"DSPParams", L"AdvReverbDecay", def->defaultValue, g_configPath.c_str()));
     def = GetParamDef(ParamId::AdvReverbHFRatio);
-    SetParamValue(ParamId::AdvReverbHFRatio, GetPrivateProfileFloatW(L"DSPParams", L"AdvReverbHFRatio", def->defaultValue, g_configPath.c_str()));
+    SetParamValue(ParamId::AdvReverbHFRatio, IniGetFloat(L"DSPParams", L"AdvReverbHFRatio", def->defaultValue, g_configPath.c_str()));
     def = GetParamDef(ParamId::AdvReverbDensity);
-    SetParamValue(ParamId::AdvReverbDensity, GetPrivateProfileFloatW(L"DSPParams", L"AdvReverbDensity", def->defaultValue, g_configPath.c_str()));
+    SetParamValue(ParamId::AdvReverbDensity, IniGetFloat(L"DSPParams", L"AdvReverbDensity", def->defaultValue, g_configPath.c_str()));
     def = GetParamDef(ParamId::AdvReverbDiffusion);
-    SetParamValue(ParamId::AdvReverbDiffusion, GetPrivateProfileFloatW(L"DSPParams", L"AdvReverbDiffusion", def->defaultValue, g_configPath.c_str()));
+    SetParamValue(ParamId::AdvReverbDiffusion, IniGetFloat(L"DSPParams", L"AdvReverbDiffusion", def->defaultValue, g_configPath.c_str()));
     def = GetParamDef(ParamId::AdvReverbReflections);
-    SetParamValue(ParamId::AdvReverbReflections, GetPrivateProfileFloatW(L"DSPParams", L"AdvReverbReflections", def->defaultValue, g_configPath.c_str()));
+    SetParamValue(ParamId::AdvReverbReflections, IniGetFloat(L"DSPParams", L"AdvReverbReflections", def->defaultValue, g_configPath.c_str()));
     def = GetParamDef(ParamId::AdvReverbLate);
-    SetParamValue(ParamId::AdvReverbLate, GetPrivateProfileFloatW(L"DSPParams", L"AdvReverbLate", def->defaultValue, g_configPath.c_str()));
+    SetParamValue(ParamId::AdvReverbLate, IniGetFloat(L"DSPParams", L"AdvReverbLate", def->defaultValue, g_configPath.c_str()));
     def = GetParamDef(ParamId::AdvReverbReflDelay);
-    SetParamValue(ParamId::AdvReverbReflDelay, GetPrivateProfileFloatW(L"DSPParams", L"AdvReverbReflDelay", def->defaultValue, g_configPath.c_str()));
+    SetParamValue(ParamId::AdvReverbReflDelay, IniGetFloat(L"DSPParams", L"AdvReverbReflDelay", def->defaultValue, g_configPath.c_str()));
     def = GetParamDef(ParamId::AdvReverbLateDelay);
-    SetParamValue(ParamId::AdvReverbLateDelay, GetPrivateProfileFloatW(L"DSPParams", L"AdvReverbLateDelay", def->defaultValue, g_configPath.c_str()));
+    SetParamValue(ParamId::AdvReverbLateDelay, IniGetFloat(L"DSPParams", L"AdvReverbLateDelay", def->defaultValue, g_configPath.c_str()));
 
     def = GetParamDef(ParamId::EchoDelay);
-    SetParamValue(ParamId::EchoDelay, GetPrivateProfileFloatW(L"DSPParams", L"EchoDelay", def->defaultValue, g_configPath.c_str()));
+    SetParamValue(ParamId::EchoDelay, IniGetFloat(L"DSPParams", L"EchoDelay", def->defaultValue, g_configPath.c_str()));
     def = GetParamDef(ParamId::EchoFeedback);
-    SetParamValue(ParamId::EchoFeedback, GetPrivateProfileFloatW(L"DSPParams", L"EchoFeedback", def->defaultValue, g_configPath.c_str()));
+    SetParamValue(ParamId::EchoFeedback, IniGetFloat(L"DSPParams", L"EchoFeedback", def->defaultValue, g_configPath.c_str()));
     def = GetParamDef(ParamId::EchoMix);
-    SetParamValue(ParamId::EchoMix, GetPrivateProfileFloatW(L"DSPParams", L"EchoMix", def->defaultValue, g_configPath.c_str()));
+    SetParamValue(ParamId::EchoMix, IniGetFloat(L"DSPParams", L"EchoMix", def->defaultValue, g_configPath.c_str()));
 
     def = GetParamDef(ParamId::EQPreamp);
-    SetParamValue(ParamId::EQPreamp, GetPrivateProfileFloatW(L"DSPParams", L"EQPreamp", def->defaultValue, g_configPath.c_str()));
+    SetParamValue(ParamId::EQPreamp, IniGetFloat(L"DSPParams", L"EQPreamp", def->defaultValue, g_configPath.c_str()));
     def = GetParamDef(ParamId::EQBass);
-    SetParamValue(ParamId::EQBass, GetPrivateProfileFloatW(L"DSPParams", L"EQBass", def->defaultValue, g_configPath.c_str()));
+    SetParamValue(ParamId::EQBass, IniGetFloat(L"DSPParams", L"EQBass", def->defaultValue, g_configPath.c_str()));
     def = GetParamDef(ParamId::EQMid);
-    SetParamValue(ParamId::EQMid, GetPrivateProfileFloatW(L"DSPParams", L"EQMid", def->defaultValue, g_configPath.c_str()));
+    SetParamValue(ParamId::EQMid, IniGetFloat(L"DSPParams", L"EQMid", def->defaultValue, g_configPath.c_str()));
     def = GetParamDef(ParamId::EQTreble);
-    SetParamValue(ParamId::EQTreble, GetPrivateProfileFloatW(L"DSPParams", L"EQTreble", def->defaultValue, g_configPath.c_str()));
+    SetParamValue(ParamId::EQTreble, IniGetFloat(L"DSPParams", L"EQTreble", def->defaultValue, g_configPath.c_str()));
 
     def = GetParamDef(ParamId::CompThreshold);
-    SetParamValue(ParamId::CompThreshold, GetPrivateProfileFloatW(L"DSPParams", L"CompThreshold", def->defaultValue, g_configPath.c_str()));
+    SetParamValue(ParamId::CompThreshold, IniGetFloat(L"DSPParams", L"CompThreshold", def->defaultValue, g_configPath.c_str()));
     def = GetParamDef(ParamId::CompRatio);
-    SetParamValue(ParamId::CompRatio, GetPrivateProfileFloatW(L"DSPParams", L"CompRatio", def->defaultValue, g_configPath.c_str()));
+    SetParamValue(ParamId::CompRatio, IniGetFloat(L"DSPParams", L"CompRatio", def->defaultValue, g_configPath.c_str()));
     def = GetParamDef(ParamId::CompAttack);
-    SetParamValue(ParamId::CompAttack, GetPrivateProfileFloatW(L"DSPParams", L"CompAttack", def->defaultValue, g_configPath.c_str()));
+    SetParamValue(ParamId::CompAttack, IniGetFloat(L"DSPParams", L"CompAttack", def->defaultValue, g_configPath.c_str()));
     def = GetParamDef(ParamId::CompRelease);
-    SetParamValue(ParamId::CompRelease, GetPrivateProfileFloatW(L"DSPParams", L"CompRelease", def->defaultValue, g_configPath.c_str()));
+    SetParamValue(ParamId::CompRelease, IniGetFloat(L"DSPParams", L"CompRelease", def->defaultValue, g_configPath.c_str()));
     def = GetParamDef(ParamId::CompGain);
-    SetParamValue(ParamId::CompGain, GetPrivateProfileFloatW(L"DSPParams", L"CompGain", def->defaultValue, g_configPath.c_str()));
+    SetParamValue(ParamId::CompGain, IniGetFloat(L"DSPParams", L"CompGain", def->defaultValue, g_configPath.c_str()));
 
     def = GetParamDef(ParamId::StereoWidth);
-    SetParamValue(ParamId::StereoWidth, GetPrivateProfileFloatW(L"DSPParams", L"StereoWidth", def->defaultValue, g_configPath.c_str()));
+    SetParamValue(ParamId::StereoWidth, IniGetFloat(L"DSPParams", L"StereoWidth", def->defaultValue, g_configPath.c_str()));
 
     def = GetParamDef(ParamId::CenterCancel);
-    SetParamValue(ParamId::CenterCancel, GetPrivateProfileFloatW(L"DSPParams", L"CenterCancel", def->defaultValue, g_configPath.c_str()));
+    SetParamValue(ParamId::CenterCancel, IniGetFloat(L"DSPParams", L"CenterCancel", def->defaultValue, g_configPath.c_str()));
 
     def = GetParamDef(ParamId::ConvolutionMix);
-    SetParamValue(ParamId::ConvolutionMix, GetPrivateProfileFloatW(L"DSPParams", L"ConvolutionMix", def->defaultValue, g_configPath.c_str()));
+    SetParamValue(ParamId::ConvolutionMix, IniGetFloat(L"DSPParams", L"ConvolutionMix", def->defaultValue, g_configPath.c_str()));
     def = GetParamDef(ParamId::ConvolutionGain);
-    SetParamValue(ParamId::ConvolutionGain, GetPrivateProfileFloatW(L"DSPParams", L"ConvolutionGain", def->defaultValue, g_configPath.c_str()));
+    SetParamValue(ParamId::ConvolutionGain, IniGetFloat(L"DSPParams", L"ConvolutionGain", def->defaultValue, g_configPath.c_str()));
 
     def = GetParamDef(ParamId::SpatialBlend);
-    SetParamValue(ParamId::SpatialBlend, GetPrivateProfileFloatW(L"DSPParams", L"SpatialBlend", def->defaultValue, g_configPath.c_str()));
+    SetParamValue(ParamId::SpatialBlend, IniGetFloat(L"DSPParams", L"SpatialBlend", def->defaultValue, g_configPath.c_str()));
     def = GetParamDef(ParamId::SpatialWidth);
-    SetParamValue(ParamId::SpatialWidth, GetPrivateProfileFloatW(L"DSPParams", L"SpatialWidth", def->defaultValue, g_configPath.c_str()));
+    SetParamValue(ParamId::SpatialWidth, IniGetFloat(L"DSPParams", L"SpatialWidth", def->defaultValue, g_configPath.c_str()));
     def = GetParamDef(ParamId::SpatialRotation);
-    SetParamValue(ParamId::SpatialRotation, GetPrivateProfileFloatW(L"DSPParams", L"SpatialRotation", def->defaultValue, g_configPath.c_str()));
+    SetParamValue(ParamId::SpatialRotation, IniGetFloat(L"DSPParams", L"SpatialRotation", def->defaultValue, g_configPath.c_str()));
     def = GetParamDef(ParamId::SpatialMode);
-    SetParamValue(ParamId::SpatialMode, GetPrivateProfileFloatW(L"DSPParams", L"SpatialMode", def->defaultValue, g_configPath.c_str()));
+    SetParamValue(ParamId::SpatialMode, IniGetFloat(L"DSPParams", L"SpatialMode", def->defaultValue, g_configPath.c_str()));
     def = GetParamDef(ParamId::SpatialRearCenter);
-    SetParamValue(ParamId::SpatialRearCenter, GetPrivateProfileFloatW(L"DSPParams", L"SpatialRearCenter", def->defaultValue, g_configPath.c_str()));
+    SetParamValue(ParamId::SpatialRearCenter, IniGetFloat(L"DSPParams", L"SpatialRearCenter", def->defaultValue, g_configPath.c_str()));
     def = GetParamDef(ParamId::SpatialX);
-    SetParamValue(ParamId::SpatialX, GetPrivateProfileFloatW(L"DSPParams", L"SpatialX", def->defaultValue, g_configPath.c_str()));
+    SetParamValue(ParamId::SpatialX, IniGetFloat(L"DSPParams", L"SpatialX", def->defaultValue, g_configPath.c_str()));
     def = GetParamDef(ParamId::SpatialY);
-    SetParamValue(ParamId::SpatialY, GetPrivateProfileFloatW(L"DSPParams", L"SpatialY", def->defaultValue, g_configPath.c_str()));
+    SetParamValue(ParamId::SpatialY, IniGetFloat(L"DSPParams", L"SpatialY", def->defaultValue, g_configPath.c_str()));
     def = GetParamDef(ParamId::SpatialZ);
-    SetParamValue(ParamId::SpatialZ, GetPrivateProfileFloatW(L"DSPParams", L"SpatialZ", def->defaultValue, g_configPath.c_str()));
+    SetParamValue(ParamId::SpatialZ, IniGetFloat(L"DSPParams", L"SpatialZ", def->defaultValue, g_configPath.c_str()));
 
     // Load recent files
     g_recentFiles.clear();
     for (int i = 0; i < MAX_RECENT_FILES; i++) {
         wchar_t key[32];
         swprintf(key, 32, L"File%d", i);
-        wchar_t path[MAX_PATH] = {0};
-        GetPrivateProfileStringW(L"RecentFiles", key, L"", path, MAX_PATH, g_configPath.c_str());
+        wchar_t path[kMaxPathChars] = {0};
+        IniGetString(L"RecentFiles", key, L"", path, kMaxPathChars, g_configPath.c_str());
         if (path[0] != L'\0') {
             g_recentFiles.push_back(path);
         }
@@ -409,306 +379,306 @@ void SaveSettings() {
     wchar_t buf[32];
 
     // Save device name (empty for default device)
-    WritePrivateProfileStringW(L"Playback", L"DeviceName", g_selectedDeviceName.c_str(), g_configPath.c_str());
+    IniWriteString(L"Playback", L"DeviceName", g_selectedDeviceName.c_str(), g_configPath.c_str());
 
     swprintf(buf, 32, L"%d", g_rewindOnPauseMs);
-    WritePrivateProfileStringW(L"Playback", L"RewindOnPauseMs", buf, g_configPath.c_str());
+    IniWriteString(L"Playback", L"RewindOnPauseMs", buf, g_configPath.c_str());
 
-    WritePrivateProfileStringW(L"Playback", L"AllowAmplify", g_allowAmplify ? L"1" : L"0", g_configPath.c_str());
-    WritePrivateProfileStringW(L"Playback", L"RememberState", g_rememberState ? L"1" : L"0", g_configPath.c_str());
+    IniWriteString(L"Playback", L"AllowAmplify", g_allowAmplify ? L"1" : L"0", g_configPath.c_str());
+    IniWriteString(L"Playback", L"RememberState", g_rememberState ? L"1" : L"0", g_configPath.c_str());
 
     swprintf(buf, 32, L"%d", g_rememberPosMinutes);
-    WritePrivateProfileStringW(L"Playback", L"RememberPosMinutes", buf, g_configPath.c_str());
+    IniWriteString(L"Playback", L"RememberPosMinutes", buf, g_configPath.c_str());
 
-    WritePrivateProfileStringW(L"Playback", L"BringToFront", g_bringToFront ? L"1" : L"0", g_configPath.c_str());
-    WritePrivateProfileStringW(L"Playback", L"MinimizeToTray", g_minimizeToTray ? L"1" : L"0", g_configPath.c_str());
-    WritePrivateProfileStringW(L"Playback", L"LoadFolder", g_loadFolder ? L"1" : L"0", g_configPath.c_str());
-    WritePrivateProfileStringW(L"Playback", L"RegisterFileTypes", g_registerFileTypes ? L"1" : L"0", g_configPath.c_str());
+    IniWriteString(L"Playback", L"BringToFront", g_bringToFront ? L"1" : L"0", g_configPath.c_str());
+    IniWriteString(L"Playback", L"MinimizeToTray", g_minimizeToTray ? L"1" : L"0", g_configPath.c_str());
+    IniWriteString(L"Playback", L"LoadFolder", g_loadFolder ? L"1" : L"0", g_configPath.c_str());
+    IniWriteString(L"Playback", L"RegisterFileTypes", g_registerFileTypes ? L"1" : L"0", g_configPath.c_str());
 
     swprintf(buf, 32, L"%d", static_cast<int>(g_volumeStep * 100 + 0.5f));
-    WritePrivateProfileStringW(L"Playback", L"VolumeStep", buf, g_configPath.c_str());
-    WritePrivateProfileStringW(L"Playback", L"ShowTitleInWindow", g_showTitleInWindow ? L"1" : L"0", g_configPath.c_str());
+    IniWriteString(L"Playback", L"VolumeStep", buf, g_configPath.c_str());
+    IniWriteString(L"Playback", L"ShowTitleInWindow", g_showTitleInWindow ? L"1" : L"0", g_configPath.c_str());
 
     swprintf(buf, 32, L"%d", g_replayGainMode);
-    WritePrivateProfileStringW(L"Playback", L"ReplayGainMode", buf, g_configPath.c_str());
+    IniWriteString(L"Playback", L"ReplayGainMode", buf, g_configPath.c_str());
     swprintf(buf, 32, L"%d", static_cast<int>(g_replayGainPreamp * 100 + (g_replayGainPreamp >= 0 ? 0.5f : -0.5f)));
-    WritePrivateProfileStringW(L"Playback", L"ReplayGainPreamp", buf, g_configPath.c_str());
-    WritePrivateProfileStringW(L"Playback", L"ReplayGainPreventClip", g_replayGainPreventClip ? L"1" : L"0", g_configPath.c_str());
+    IniWriteString(L"Playback", L"ReplayGainPreamp", buf, g_configPath.c_str());
+    IniWriteString(L"Playback", L"ReplayGainPreventClip", g_replayGainPreventClip ? L"1" : L"0", g_configPath.c_str());
 
     swprintf(buf, 32, L"%d", static_cast<int>(g_volume * 100 + 0.5f));
-    WritePrivateProfileStringW(L"Playback", L"Volume", buf, g_configPath.c_str());
+    IniWriteString(L"Playback", L"Volume", buf, g_configPath.c_str());
 
     // Save stream effect values (pitch, tempo, rate)
     swprintf(buf, 32, L"%.1f", g_pitch);
-    WritePrivateProfileStringW(L"Playback", L"Pitch", buf, g_configPath.c_str());
+    IniWriteString(L"Playback", L"Pitch", buf, g_configPath.c_str());
     swprintf(buf, 32, L"%.1f", g_tempo);
-    WritePrivateProfileStringW(L"Playback", L"Tempo", buf, g_configPath.c_str());
+    IniWriteString(L"Playback", L"Tempo", buf, g_configPath.c_str());
     swprintf(buf, 32, L"%.2f", g_rate);
-    WritePrivateProfileStringW(L"Playback", L"Rate", buf, g_configPath.c_str());
+    IniWriteString(L"Playback", L"Rate", buf, g_configPath.c_str());
 
     // Save advanced settings (buffer)
     swprintf(buf, 32, L"%d", g_bufferSize);
-    WritePrivateProfileStringW(L"Advanced", L"BufferSize", buf, g_configPath.c_str());
+    IniWriteString(L"Advanced", L"BufferSize", buf, g_configPath.c_str());
     swprintf(buf, 32, L"%d", g_updatePeriod);
-    WritePrivateProfileStringW(L"Advanced", L"UpdatePeriod", buf, g_configPath.c_str());
+    IniWriteString(L"Advanced", L"UpdatePeriod", buf, g_configPath.c_str());
     swprintf(buf, 32, L"%d", g_tempoAlgorithm);
-    WritePrivateProfileStringW(L"Advanced", L"TempoAlgorithm", buf, g_configPath.c_str());
-    WritePrivateProfileStringW(L"Advanced", L"LegacyVolume", g_legacyVolume ? L"1" : L"0", g_configPath.c_str());
-    WritePrivateProfileStringW(L"Advanced", L"DisableBatchDelay", g_disableBatchDelay ? L"1" : L"0", g_configPath.c_str());
+    IniWriteString(L"Advanced", L"TempoAlgorithm", buf, g_configPath.c_str());
+    IniWriteString(L"Advanced", L"LegacyVolume", g_legacyVolume ? L"1" : L"0", g_configPath.c_str());
+    IniWriteString(L"Advanced", L"DisableBatchDelay", g_disableBatchDelay ? L"1" : L"0", g_configPath.c_str());
 
     // Save SoundTouch settings
-    WritePrivateProfileStringW(L"SoundTouch", L"AntiAliasFilter", g_stAntiAliasFilter ? L"1" : L"0", g_configPath.c_str());
+    IniWriteString(L"SoundTouch", L"AntiAliasFilter", g_stAntiAliasFilter ? L"1" : L"0", g_configPath.c_str());
     swprintf(buf, 32, L"%d", g_stAAFilterLength);
-    WritePrivateProfileStringW(L"SoundTouch", L"AAFilterLength", buf, g_configPath.c_str());
-    WritePrivateProfileStringW(L"SoundTouch", L"QuickAlgorithm", g_stQuickAlgorithm ? L"1" : L"0", g_configPath.c_str());
+    IniWriteString(L"SoundTouch", L"AAFilterLength", buf, g_configPath.c_str());
+    IniWriteString(L"SoundTouch", L"QuickAlgorithm", g_stQuickAlgorithm ? L"1" : L"0", g_configPath.c_str());
     swprintf(buf, 32, L"%d", g_stSequenceMs);
-    WritePrivateProfileStringW(L"SoundTouch", L"SequenceMs", buf, g_configPath.c_str());
+    IniWriteString(L"SoundTouch", L"SequenceMs", buf, g_configPath.c_str());
     swprintf(buf, 32, L"%d", g_stSeekWindowMs);
-    WritePrivateProfileStringW(L"SoundTouch", L"SeekWindowMs", buf, g_configPath.c_str());
+    IniWriteString(L"SoundTouch", L"SeekWindowMs", buf, g_configPath.c_str());
     swprintf(buf, 32, L"%d", g_stOverlapMs);
-    WritePrivateProfileStringW(L"SoundTouch", L"OverlapMs", buf, g_configPath.c_str());
-    WritePrivateProfileStringW(L"SoundTouch", L"PreventClick", g_stPreventClick ? L"1" : L"0", g_configPath.c_str());
+    IniWriteString(L"SoundTouch", L"OverlapMs", buf, g_configPath.c_str());
+    IniWriteString(L"SoundTouch", L"PreventClick", g_stPreventClick ? L"1" : L"0", g_configPath.c_str());
     swprintf(buf, 32, L"%d", g_stAlgorithm);
-    WritePrivateProfileStringW(L"SoundTouch", L"Algorithm", buf, g_configPath.c_str());
+    IniWriteString(L"SoundTouch", L"Algorithm", buf, g_configPath.c_str());
 
     // Save Speedy settings
-    WritePrivateProfileStringW(L"Speedy", L"NonlinearSpeedup", g_speedyNonlinear ? L"1" : L"0", g_configPath.c_str());
+    IniWriteString(L"Speedy", L"NonlinearSpeedup", g_speedyNonlinear ? L"1" : L"0", g_configPath.c_str());
 
     // Save Signalsmith Stretch settings
     swprintf(buf, 32, L"%d", g_ssPreset);
-    WritePrivateProfileStringW(L"Signalsmith", L"Preset", buf, g_configPath.c_str());
+    IniWriteString(L"Signalsmith", L"Preset", buf, g_configPath.c_str());
     swprintf(buf, 32, L"%d", g_ssTonalityLimit);
-    WritePrivateProfileStringW(L"Signalsmith", L"TonalityLimit", buf, g_configPath.c_str());
+    IniWriteString(L"Signalsmith", L"TonalityLimit", buf, g_configPath.c_str());
 
     // Save reverb algorithm
     swprintf(buf, 32, L"%d", g_reverbAlgorithm);
-    WritePrivateProfileStringW(L"Effects", L"ReverbAlgorithm", buf, g_configPath.c_str());
+    IniWriteString(L"Effects", L"ReverbAlgorithm", buf, g_configPath.c_str());
 
     // Save MIDI settings
-    WritePrivateProfileStringW(L"MIDI", L"SoundFont", g_midiSoundFont.c_str(), g_configPath.c_str());
+    IniWriteString(L"MIDI", L"SoundFont", g_midiSoundFont.c_str(), g_configPath.c_str());
     swprintf(buf, 32, L"%d", g_midiMaxVoices);
-    WritePrivateProfileStringW(L"MIDI", L"MaxVoices", buf, g_configPath.c_str());
-    WritePrivateProfileStringW(L"MIDI", L"SincInterp", g_midiSincInterp ? L"1" : L"0", g_configPath.c_str());
+    IniWriteString(L"MIDI", L"MaxVoices", buf, g_configPath.c_str());
+    IniWriteString(L"MIDI", L"SincInterp", g_midiSincInterp ? L"1" : L"0", g_configPath.c_str());
 
     swprintf(buf, 32, L"%.1f", g_eqBassFreq);
-    WritePrivateProfileStringW(L"Advanced", L"EQBassFreq", buf, g_configPath.c_str());
+    IniWriteString(L"Advanced", L"EQBassFreq", buf, g_configPath.c_str());
     swprintf(buf, 32, L"%.1f", g_eqMidFreq);
-    WritePrivateProfileStringW(L"Advanced", L"EQMidFreq", buf, g_configPath.c_str());
+    IniWriteString(L"Advanced", L"EQMidFreq", buf, g_configPath.c_str());
     swprintf(buf, 32, L"%.1f", g_eqTrebleFreq);
-    WritePrivateProfileStringW(L"Advanced", L"EQTrebleFreq", buf, g_configPath.c_str());
+    IniWriteString(L"Advanced", L"EQTrebleFreq", buf, g_configPath.c_str());
 
     // Save YouTube settings
-    WritePrivateProfileStringW(L"YouTube", L"YtdlpPath", g_ytdlpPath.c_str(), g_configPath.c_str());
-    WritePrivateProfileStringW(L"YouTube", L"ApiKey", g_ytApiKey.c_str(), g_configPath.c_str());
+    IniWriteString(L"YouTube", L"YtdlpPath", g_ytdlpPath.c_str(), g_configPath.c_str());
+    IniWriteString(L"YouTube", L"ApiKey", g_ytApiKey.c_str(), g_configPath.c_str());
 
     // Save downloads settings
-    WritePrivateProfileStringW(L"Downloads", L"Path", g_downloadPath.c_str(), g_configPath.c_str());
-    WritePrivateProfileStringW(L"Downloads", L"OrganizeByFeed", g_downloadOrganizeByFeed ? L"1" : L"0", g_configPath.c_str());
+    IniWriteString(L"Downloads", L"Path", g_downloadPath.c_str(), g_configPath.c_str());
+    IniWriteString(L"Downloads", L"OrganizeByFeed", g_downloadOrganizeByFeed ? L"1" : L"0", g_configPath.c_str());
 
     // Save recording settings
-    WritePrivateProfileStringW(L"Recording", L"Path", g_recordPath.c_str(), g_configPath.c_str());
-    WritePrivateProfileStringW(L"Recording", L"Template", g_recordTemplate.c_str(), g_configPath.c_str());
+    IniWriteString(L"Recording", L"Path", g_recordPath.c_str(), g_configPath.c_str());
+    IniWriteString(L"Recording", L"Template", g_recordTemplate.c_str(), g_configPath.c_str());
     swprintf(buf, 32, L"%d", g_recordFormat);
-    WritePrivateProfileStringW(L"Recording", L"Format", buf, g_configPath.c_str());
+    IniWriteString(L"Recording", L"Format", buf, g_configPath.c_str());
     swprintf(buf, 32, L"%d", g_recordBitrate);
-    WritePrivateProfileStringW(L"Recording", L"Bitrate", buf, g_configPath.c_str());
+    IniWriteString(L"Recording", L"Bitrate", buf, g_configPath.c_str());
 
     // Save speech settings
-    WritePrivateProfileStringW(L"Speech", L"TrackChange", g_speechTrackChange ? L"1" : L"0", g_configPath.c_str());
-    WritePrivateProfileStringW(L"Speech", L"Volume", g_speechVolume ? L"1" : L"0", g_configPath.c_str());
-    WritePrivateProfileStringW(L"Speech", L"Effect", g_speechEffect ? L"1" : L"0", g_configPath.c_str());
+    IniWriteString(L"Speech", L"TrackChange", g_speechTrackChange ? L"1" : L"0", g_configPath.c_str());
+    IniWriteString(L"Speech", L"Volume", g_speechVolume ? L"1" : L"0", g_configPath.c_str());
+    IniWriteString(L"Speech", L"Effect", g_speechEffect ? L"1" : L"0", g_configPath.c_str());
 
     // Save shuffle and auto-advance settings
-    WritePrivateProfileStringW(L"Playback", L"Shuffle", g_shuffle ? L"1" : L"0", g_configPath.c_str());
-    WritePrivateProfileStringW(L"Playback", L"AutoAdvance", g_autoAdvance ? L"1" : L"0", g_configPath.c_str());
+    IniWriteString(L"Playback", L"Shuffle", g_shuffle ? L"1" : L"0", g_configPath.c_str());
+    IniWriteString(L"Playback", L"AutoAdvance", g_autoAdvance ? L"1" : L"0", g_configPath.c_str());
     swprintf(buf, 32, L"%d", g_repeatMode);
-    WritePrivateProfileStringW(L"Playback", L"RepeatMode", buf, g_configPath.c_str());
-    WritePrivateProfileStringW(L"Playback", L"PlaylistFollow", g_playlistFollowPlayback ? L"1" : L"0", g_configPath.c_str());
-    WritePrivateProfileStringW(L"Playback", L"CheckForUpdates", g_checkForUpdates ? L"1" : L"0", g_configPath.c_str());
-    WritePrivateProfileStringW(L"Playback", L"AllowMultipleInstances", g_allowMultipleInstances ? L"1" : L"0", g_configPath.c_str());
+    IniWriteString(L"Playback", L"RepeatMode", buf, g_configPath.c_str());
+    IniWriteString(L"Playback", L"PlaylistFollow", g_playlistFollowPlayback ? L"1" : L"0", g_configPath.c_str());
+    IniWriteString(L"Playback", L"CheckForUpdates", g_checkForUpdates ? L"1" : L"0", g_configPath.c_str());
+    IniWriteString(L"Playback", L"AllowMultipleInstances", g_allowMultipleInstances ? L"1" : L"0", g_configPath.c_str());
 
     // Save seek settings
-    WritePrivateProfileStringW(L"Movement", L"Seek1s", g_seekEnabled[0] ? L"1" : L"0", g_configPath.c_str());
-    WritePrivateProfileStringW(L"Movement", L"Seek5s", g_seekEnabled[1] ? L"1" : L"0", g_configPath.c_str());
-    WritePrivateProfileStringW(L"Movement", L"Seek10s", g_seekEnabled[2] ? L"1" : L"0", g_configPath.c_str());
-    WritePrivateProfileStringW(L"Movement", L"Seek30s", g_seekEnabled[3] ? L"1" : L"0", g_configPath.c_str());
-    WritePrivateProfileStringW(L"Movement", L"Seek1m", g_seekEnabled[4] ? L"1" : L"0", g_configPath.c_str());
-    WritePrivateProfileStringW(L"Movement", L"Seek5m", g_seekEnabled[5] ? L"1" : L"0", g_configPath.c_str());
-    WritePrivateProfileStringW(L"Movement", L"Seek10m", g_seekEnabled[6] ? L"1" : L"0", g_configPath.c_str());
-    WritePrivateProfileStringW(L"Movement", L"Seek30m", g_seekEnabled[7] ? L"1" : L"0", g_configPath.c_str());
-    WritePrivateProfileStringW(L"Movement", L"Seek1h", g_seekEnabled[8] ? L"1" : L"0", g_configPath.c_str());
-    WritePrivateProfileStringW(L"Movement", L"Seek1t", g_seekEnabled[9] ? L"1" : L"0", g_configPath.c_str());
-    WritePrivateProfileStringW(L"Movement", L"Seek5t", g_seekEnabled[10] ? L"1" : L"0", g_configPath.c_str());
-    WritePrivateProfileStringW(L"Movement", L"Seek10t", g_seekEnabled[11] ? L"1" : L"0", g_configPath.c_str());
-    WritePrivateProfileStringW(L"Movement", L"ChapterSeek", g_chapterSeekEnabled ? L"1" : L"0", g_configPath.c_str());
+    IniWriteString(L"Movement", L"Seek1s", g_seekEnabled[0] ? L"1" : L"0", g_configPath.c_str());
+    IniWriteString(L"Movement", L"Seek5s", g_seekEnabled[1] ? L"1" : L"0", g_configPath.c_str());
+    IniWriteString(L"Movement", L"Seek10s", g_seekEnabled[2] ? L"1" : L"0", g_configPath.c_str());
+    IniWriteString(L"Movement", L"Seek30s", g_seekEnabled[3] ? L"1" : L"0", g_configPath.c_str());
+    IniWriteString(L"Movement", L"Seek1m", g_seekEnabled[4] ? L"1" : L"0", g_configPath.c_str());
+    IniWriteString(L"Movement", L"Seek5m", g_seekEnabled[5] ? L"1" : L"0", g_configPath.c_str());
+    IniWriteString(L"Movement", L"Seek10m", g_seekEnabled[6] ? L"1" : L"0", g_configPath.c_str());
+    IniWriteString(L"Movement", L"Seek30m", g_seekEnabled[7] ? L"1" : L"0", g_configPath.c_str());
+    IniWriteString(L"Movement", L"Seek1h", g_seekEnabled[8] ? L"1" : L"0", g_configPath.c_str());
+    IniWriteString(L"Movement", L"Seek1t", g_seekEnabled[9] ? L"1" : L"0", g_configPath.c_str());
+    IniWriteString(L"Movement", L"Seek5t", g_seekEnabled[10] ? L"1" : L"0", g_configPath.c_str());
+    IniWriteString(L"Movement", L"Seek10t", g_seekEnabled[11] ? L"1" : L"0", g_configPath.c_str());
+    IniWriteString(L"Movement", L"ChapterSeek", g_chapterSeekEnabled ? L"1" : L"0", g_configPath.c_str());
 
     swprintf(buf, 32, L"%d", g_currentSeekIndex);
-    WritePrivateProfileStringW(L"Movement", L"CurrentSeek", buf, g_configPath.c_str());
+    IniWriteString(L"Movement", L"CurrentSeek", buf, g_configPath.c_str());
 
     // Save effect settings
-    WritePrivateProfileStringW(L"Effects", L"Volume", g_effectEnabled[0] ? L"1" : L"0", g_configPath.c_str());
-    WritePrivateProfileStringW(L"Effects", L"Pitch", g_effectEnabled[1] ? L"1" : L"0", g_configPath.c_str());
-    WritePrivateProfileStringW(L"Effects", L"Tempo", g_effectEnabled[2] ? L"1" : L"0", g_configPath.c_str());
-    WritePrivateProfileStringW(L"Effects", L"Rate", g_effectEnabled[3] ? L"1" : L"0", g_configPath.c_str());
+    IniWriteString(L"Effects", L"Volume", g_effectEnabled[0] ? L"1" : L"0", g_configPath.c_str());
+    IniWriteString(L"Effects", L"Pitch", g_effectEnabled[1] ? L"1" : L"0", g_configPath.c_str());
+    IniWriteString(L"Effects", L"Tempo", g_effectEnabled[2] ? L"1" : L"0", g_configPath.c_str());
+    IniWriteString(L"Effects", L"Rate", g_effectEnabled[3] ? L"1" : L"0", g_configPath.c_str());
     swprintf(buf, 32, L"%d", g_currentEffectIndex);
-    WritePrivateProfileStringW(L"Effects", L"CurrentEffect", buf, g_configPath.c_str());
+    IniWriteString(L"Effects", L"CurrentEffect", buf, g_configPath.c_str());
     swprintf(buf, 32, L"%d", g_rateStepMode);
-    WritePrivateProfileStringW(L"Effects", L"RateStepMode", buf, g_configPath.c_str());
+    IniWriteString(L"Effects", L"RateStepMode", buf, g_configPath.c_str());
 
     // Save DSP effect settings
-    WritePrivateProfileStringW(L"DSPEffects", L"Reverb", IsDSPEffectEnabled(DSPEffectType::Reverb) ? L"1" : L"0", g_configPath.c_str());
-    WritePrivateProfileStringW(L"DSPEffects", L"Echo", IsDSPEffectEnabled(DSPEffectType::Echo) ? L"1" : L"0", g_configPath.c_str());
-    WritePrivateProfileStringW(L"DSPEffects", L"EQ", IsDSPEffectEnabled(DSPEffectType::EQ) ? L"1" : L"0", g_configPath.c_str());
-    WritePrivateProfileStringW(L"DSPEffects", L"Compressor", IsDSPEffectEnabled(DSPEffectType::Compressor) ? L"1" : L"0", g_configPath.c_str());
-    WritePrivateProfileStringW(L"DSPEffects", L"StereoWidth", IsDSPEffectEnabled(DSPEffectType::StereoWidth) ? L"1" : L"0", g_configPath.c_str());
-    WritePrivateProfileStringW(L"DSPEffects", L"CenterCancel", IsDSPEffectEnabled(DSPEffectType::CenterCancel) ? L"1" : L"0", g_configPath.c_str());
-    WritePrivateProfileStringW(L"DSPEffects", L"Convolution", IsDSPEffectEnabled(DSPEffectType::Convolution) ? L"1" : L"0", g_configPath.c_str());
-    WritePrivateProfileStringW(L"DSPEffects", L"ConvolutionIR", g_convolutionIRPath.c_str(), g_configPath.c_str());
-    WritePrivateProfileStringW(L"DSPEffects", L"SpatialAudio", IsDSPEffectEnabled(DSPEffectType::SpatialAudio) ? L"1" : L"0", g_configPath.c_str());
+    IniWriteString(L"DSPEffects", L"Reverb", IsDSPEffectEnabled(DSPEffectType::Reverb) ? L"1" : L"0", g_configPath.c_str());
+    IniWriteString(L"DSPEffects", L"Echo", IsDSPEffectEnabled(DSPEffectType::Echo) ? L"1" : L"0", g_configPath.c_str());
+    IniWriteString(L"DSPEffects", L"EQ", IsDSPEffectEnabled(DSPEffectType::EQ) ? L"1" : L"0", g_configPath.c_str());
+    IniWriteString(L"DSPEffects", L"Compressor", IsDSPEffectEnabled(DSPEffectType::Compressor) ? L"1" : L"0", g_configPath.c_str());
+    IniWriteString(L"DSPEffects", L"StereoWidth", IsDSPEffectEnabled(DSPEffectType::StereoWidth) ? L"1" : L"0", g_configPath.c_str());
+    IniWriteString(L"DSPEffects", L"CenterCancel", IsDSPEffectEnabled(DSPEffectType::CenterCancel) ? L"1" : L"0", g_configPath.c_str());
+    IniWriteString(L"DSPEffects", L"Convolution", IsDSPEffectEnabled(DSPEffectType::Convolution) ? L"1" : L"0", g_configPath.c_str());
+    IniWriteString(L"DSPEffects", L"ConvolutionIR", g_convolutionIRPath.c_str(), g_configPath.c_str());
+    IniWriteString(L"DSPEffects", L"SpatialAudio", IsDSPEffectEnabled(DSPEffectType::SpatialAudio) ? L"1" : L"0", g_configPath.c_str());
 
     // Save DSP effect parameter values
     // Reverb parameters
     swprintf(buf, 32, L"%.0f", GetParamValue(ParamId::ReverbPreset));
-    WritePrivateProfileStringW(L"DSPParams", L"ReverbPreset", buf, g_configPath.c_str());
+    IniWriteString(L"DSPParams", L"ReverbPreset", buf, g_configPath.c_str());
     swprintf(buf, 32, L"%.2f", GetParamValue(ParamId::ReverbMix));
-    WritePrivateProfileStringW(L"DSPParams", L"ReverbMix", buf, g_configPath.c_str());
+    IniWriteString(L"DSPParams", L"ReverbMix", buf, g_configPath.c_str());
     swprintf(buf, 32, L"%.2f", GetParamValue(ParamId::ReverbRoom));
-    WritePrivateProfileStringW(L"DSPParams", L"ReverbRoom", buf, g_configPath.c_str());
+    IniWriteString(L"DSPParams", L"ReverbRoom", buf, g_configPath.c_str());
     swprintf(buf, 32, L"%.2f", GetParamValue(ParamId::ReverbDamp));
-    WritePrivateProfileStringW(L"DSPParams", L"ReverbDamp", buf, g_configPath.c_str());
+    IniWriteString(L"DSPParams", L"ReverbDamp", buf, g_configPath.c_str());
     swprintf(buf, 32, L"%.2f", GetParamValue(ParamId::ReverbWidth));
-    WritePrivateProfileStringW(L"DSPParams", L"ReverbWidth", buf, g_configPath.c_str());
+    IniWriteString(L"DSPParams", L"ReverbWidth", buf, g_configPath.c_str());
     swprintf(buf, 32, L"%.2f", GetParamValue(ParamId::ReverbPreDelay));
-    WritePrivateProfileStringW(L"DSPParams", L"ReverbPreDelay", buf, g_configPath.c_str());
+    IniWriteString(L"DSPParams", L"ReverbPreDelay", buf, g_configPath.c_str());
     swprintf(buf, 32, L"%.2f", GetParamValue(ParamId::ReverbLowCut));
-    WritePrivateProfileStringW(L"DSPParams", L"ReverbLowCut", buf, g_configPath.c_str());
+    IniWriteString(L"DSPParams", L"ReverbLowCut", buf, g_configPath.c_str());
     swprintf(buf, 32, L"%.2f", GetParamValue(ParamId::ReverbHighCut));
-    WritePrivateProfileStringW(L"DSPParams", L"ReverbHighCut", buf, g_configPath.c_str());
+    IniWriteString(L"DSPParams", L"ReverbHighCut", buf, g_configPath.c_str());
     swprintf(buf, 32, L"%.0f", GetParamValue(ParamId::AdvReverbPreset));
-    WritePrivateProfileStringW(L"DSPParams", L"AdvReverbPreset", buf, g_configPath.c_str());
+    IniWriteString(L"DSPParams", L"AdvReverbPreset", buf, g_configPath.c_str());
     swprintf(buf, 32, L"%.2f", GetParamValue(ParamId::AdvReverbMix));
-    WritePrivateProfileStringW(L"DSPParams", L"AdvReverbMix", buf, g_configPath.c_str());
+    IniWriteString(L"DSPParams", L"AdvReverbMix", buf, g_configPath.c_str());
     swprintf(buf, 32, L"%.2f", GetParamValue(ParamId::AdvReverbDecay));
-    WritePrivateProfileStringW(L"DSPParams", L"AdvReverbDecay", buf, g_configPath.c_str());
+    IniWriteString(L"DSPParams", L"AdvReverbDecay", buf, g_configPath.c_str());
     swprintf(buf, 32, L"%.2f", GetParamValue(ParamId::AdvReverbHFRatio));
-    WritePrivateProfileStringW(L"DSPParams", L"AdvReverbHFRatio", buf, g_configPath.c_str());
+    IniWriteString(L"DSPParams", L"AdvReverbHFRatio", buf, g_configPath.c_str());
     swprintf(buf, 32, L"%.2f", GetParamValue(ParamId::AdvReverbDensity));
-    WritePrivateProfileStringW(L"DSPParams", L"AdvReverbDensity", buf, g_configPath.c_str());
+    IniWriteString(L"DSPParams", L"AdvReverbDensity", buf, g_configPath.c_str());
     swprintf(buf, 32, L"%.2f", GetParamValue(ParamId::AdvReverbDiffusion));
-    WritePrivateProfileStringW(L"DSPParams", L"AdvReverbDiffusion", buf, g_configPath.c_str());
+    IniWriteString(L"DSPParams", L"AdvReverbDiffusion", buf, g_configPath.c_str());
     swprintf(buf, 32, L"%.2f", GetParamValue(ParamId::AdvReverbReflections));
-    WritePrivateProfileStringW(L"DSPParams", L"AdvReverbReflections", buf, g_configPath.c_str());
+    IniWriteString(L"DSPParams", L"AdvReverbReflections", buf, g_configPath.c_str());
     swprintf(buf, 32, L"%.2f", GetParamValue(ParamId::AdvReverbLate));
-    WritePrivateProfileStringW(L"DSPParams", L"AdvReverbLate", buf, g_configPath.c_str());
+    IniWriteString(L"DSPParams", L"AdvReverbLate", buf, g_configPath.c_str());
     swprintf(buf, 32, L"%.2f", GetParamValue(ParamId::AdvReverbReflDelay));
-    WritePrivateProfileStringW(L"DSPParams", L"AdvReverbReflDelay", buf, g_configPath.c_str());
+    IniWriteString(L"DSPParams", L"AdvReverbReflDelay", buf, g_configPath.c_str());
     swprintf(buf, 32, L"%.2f", GetParamValue(ParamId::AdvReverbLateDelay));
-    WritePrivateProfileStringW(L"DSPParams", L"AdvReverbLateDelay", buf, g_configPath.c_str());
+    IniWriteString(L"DSPParams", L"AdvReverbLateDelay", buf, g_configPath.c_str());
 
     swprintf(buf, 32, L"%.2f", GetParamValue(ParamId::EchoDelay));
-    WritePrivateProfileStringW(L"DSPParams", L"EchoDelay", buf, g_configPath.c_str());
+    IniWriteString(L"DSPParams", L"EchoDelay", buf, g_configPath.c_str());
     swprintf(buf, 32, L"%.2f", GetParamValue(ParamId::EchoFeedback));
-    WritePrivateProfileStringW(L"DSPParams", L"EchoFeedback", buf, g_configPath.c_str());
+    IniWriteString(L"DSPParams", L"EchoFeedback", buf, g_configPath.c_str());
     swprintf(buf, 32, L"%.2f", GetParamValue(ParamId::EchoMix));
-    WritePrivateProfileStringW(L"DSPParams", L"EchoMix", buf, g_configPath.c_str());
+    IniWriteString(L"DSPParams", L"EchoMix", buf, g_configPath.c_str());
 
     swprintf(buf, 32, L"%.2f", GetParamValue(ParamId::EQPreamp));
-    WritePrivateProfileStringW(L"DSPParams", L"EQPreamp", buf, g_configPath.c_str());
+    IniWriteString(L"DSPParams", L"EQPreamp", buf, g_configPath.c_str());
     swprintf(buf, 32, L"%.2f", GetParamValue(ParamId::EQBass));
-    WritePrivateProfileStringW(L"DSPParams", L"EQBass", buf, g_configPath.c_str());
+    IniWriteString(L"DSPParams", L"EQBass", buf, g_configPath.c_str());
     swprintf(buf, 32, L"%.2f", GetParamValue(ParamId::EQMid));
-    WritePrivateProfileStringW(L"DSPParams", L"EQMid", buf, g_configPath.c_str());
+    IniWriteString(L"DSPParams", L"EQMid", buf, g_configPath.c_str());
     swprintf(buf, 32, L"%.2f", GetParamValue(ParamId::EQTreble));
-    WritePrivateProfileStringW(L"DSPParams", L"EQTreble", buf, g_configPath.c_str());
+    IniWriteString(L"DSPParams", L"EQTreble", buf, g_configPath.c_str());
 
     swprintf(buf, 32, L"%.2f", GetParamValue(ParamId::CompThreshold));
-    WritePrivateProfileStringW(L"DSPParams", L"CompThreshold", buf, g_configPath.c_str());
+    IniWriteString(L"DSPParams", L"CompThreshold", buf, g_configPath.c_str());
     swprintf(buf, 32, L"%.2f", GetParamValue(ParamId::CompRatio));
-    WritePrivateProfileStringW(L"DSPParams", L"CompRatio", buf, g_configPath.c_str());
+    IniWriteString(L"DSPParams", L"CompRatio", buf, g_configPath.c_str());
     swprintf(buf, 32, L"%.2f", GetParamValue(ParamId::CompAttack));
-    WritePrivateProfileStringW(L"DSPParams", L"CompAttack", buf, g_configPath.c_str());
+    IniWriteString(L"DSPParams", L"CompAttack", buf, g_configPath.c_str());
     swprintf(buf, 32, L"%.2f", GetParamValue(ParamId::CompRelease));
-    WritePrivateProfileStringW(L"DSPParams", L"CompRelease", buf, g_configPath.c_str());
+    IniWriteString(L"DSPParams", L"CompRelease", buf, g_configPath.c_str());
     swprintf(buf, 32, L"%.2f", GetParamValue(ParamId::CompGain));
-    WritePrivateProfileStringW(L"DSPParams", L"CompGain", buf, g_configPath.c_str());
+    IniWriteString(L"DSPParams", L"CompGain", buf, g_configPath.c_str());
 
     swprintf(buf, 32, L"%.2f", GetParamValue(ParamId::StereoWidth));
-    WritePrivateProfileStringW(L"DSPParams", L"StereoWidth", buf, g_configPath.c_str());
+    IniWriteString(L"DSPParams", L"StereoWidth", buf, g_configPath.c_str());
 
     swprintf(buf, 32, L"%.2f", GetParamValue(ParamId::CenterCancel));
-    WritePrivateProfileStringW(L"DSPParams", L"CenterCancel", buf, g_configPath.c_str());
+    IniWriteString(L"DSPParams", L"CenterCancel", buf, g_configPath.c_str());
 
     swprintf(buf, 32, L"%.2f", GetParamValue(ParamId::ConvolutionMix));
-    WritePrivateProfileStringW(L"DSPParams", L"ConvolutionMix", buf, g_configPath.c_str());
+    IniWriteString(L"DSPParams", L"ConvolutionMix", buf, g_configPath.c_str());
     swprintf(buf, 32, L"%.2f", GetParamValue(ParamId::ConvolutionGain));
-    WritePrivateProfileStringW(L"DSPParams", L"ConvolutionGain", buf, g_configPath.c_str());
+    IniWriteString(L"DSPParams", L"ConvolutionGain", buf, g_configPath.c_str());
 
     swprintf(buf, 32, L"%.2f", GetParamValue(ParamId::SpatialBlend));
-    WritePrivateProfileStringW(L"DSPParams", L"SpatialBlend", buf, g_configPath.c_str());
+    IniWriteString(L"DSPParams", L"SpatialBlend", buf, g_configPath.c_str());
     swprintf(buf, 32, L"%.2f", GetParamValue(ParamId::SpatialWidth));
-    WritePrivateProfileStringW(L"DSPParams", L"SpatialWidth", buf, g_configPath.c_str());
+    IniWriteString(L"DSPParams", L"SpatialWidth", buf, g_configPath.c_str());
     swprintf(buf, 32, L"%.2f", GetParamValue(ParamId::SpatialRotation));
-    WritePrivateProfileStringW(L"DSPParams", L"SpatialRotation", buf, g_configPath.c_str());
+    IniWriteString(L"DSPParams", L"SpatialRotation", buf, g_configPath.c_str());
     swprintf(buf, 32, L"%.2f", GetParamValue(ParamId::SpatialMode));
-    WritePrivateProfileStringW(L"DSPParams", L"SpatialMode", buf, g_configPath.c_str());
+    IniWriteString(L"DSPParams", L"SpatialMode", buf, g_configPath.c_str());
     swprintf(buf, 32, L"%.2f", GetParamValue(ParamId::SpatialRearCenter));
-    WritePrivateProfileStringW(L"DSPParams", L"SpatialRearCenter", buf, g_configPath.c_str());
+    IniWriteString(L"DSPParams", L"SpatialRearCenter", buf, g_configPath.c_str());
     swprintf(buf, 32, L"%.2f", GetParamValue(ParamId::SpatialX));
-    WritePrivateProfileStringW(L"DSPParams", L"SpatialX", buf, g_configPath.c_str());
+    IniWriteString(L"DSPParams", L"SpatialX", buf, g_configPath.c_str());
     swprintf(buf, 32, L"%.2f", GetParamValue(ParamId::SpatialY));
-    WritePrivateProfileStringW(L"DSPParams", L"SpatialY", buf, g_configPath.c_str());
+    IniWriteString(L"DSPParams", L"SpatialY", buf, g_configPath.c_str());
     swprintf(buf, 32, L"%.2f", GetParamValue(ParamId::SpatialZ));
-    WritePrivateProfileStringW(L"DSPParams", L"SpatialZ", buf, g_configPath.c_str());
+    IniWriteString(L"DSPParams", L"SpatialZ", buf, g_configPath.c_str());
 
     // Save recent files
     // First clear the section
-    WritePrivateProfileSectionW(L"RecentFiles", L"", g_configPath.c_str());
+    IniClearSection(L"RecentFiles", g_configPath.c_str());
     for (size_t i = 0; i < g_recentFiles.size() && i < MAX_RECENT_FILES; i++) {
         wchar_t key[32];
         swprintf(key, 32, L"File%d", static_cast<int>(i));
-        WritePrivateProfileStringW(L"RecentFiles", key, g_recentFiles[i].c_str(), g_configPath.c_str());
+        IniWriteString(L"RecentFiles", key, g_recentFiles[i].c_str(), g_configPath.c_str());
     }
 }
 
 // Save current playback state (file and position)
 void SavePlaybackState() {
     // Clear old playlist entries
-    WritePrivateProfileSectionW(L"Playlist", L"", g_configPath.c_str());
+    IniClearSection(L"Playlist", g_configPath.c_str());
 
     if (!g_rememberState) {
-        WritePrivateProfileStringW(L"State", L"LastFile", L"", g_configPath.c_str());
-        WritePrivateProfileStringW(L"State", L"LastPosition", L"0", g_configPath.c_str());
-        WritePrivateProfileStringW(L"State", L"TrackCount", L"0", g_configPath.c_str());
-        WritePrivateProfileStringW(L"State", L"CurrentTrack", L"0", g_configPath.c_str());
+        IniWriteString(L"State", L"LastFile", L"", g_configPath.c_str());
+        IniWriteString(L"State", L"LastPosition", L"0", g_configPath.c_str());
+        IniWriteString(L"State", L"TrackCount", L"0", g_configPath.c_str());
+        IniWriteString(L"State", L"CurrentTrack", L"0", g_configPath.c_str());
         return;
     }
 
     // Save playlist
     wchar_t buf[32];
     swprintf(buf, 32, L"%d", static_cast<int>(g_playlist.size()));
-    WritePrivateProfileStringW(L"State", L"TrackCount", buf, g_configPath.c_str());
+    IniWriteString(L"State", L"TrackCount", buf, g_configPath.c_str());
 
     for (size_t i = 0; i < g_playlist.size(); i++) {
         wchar_t key[32];
         swprintf(key, 32, L"Track%zu", i);
-        WritePrivateProfileStringW(L"Playlist", key, g_playlist[i].c_str(), g_configPath.c_str());
+        IniWriteString(L"Playlist", key, g_playlist[i].c_str(), g_configPath.c_str());
     }
 
     // Save current track index
     swprintf(buf, 32, L"%d", g_currentTrack);
-    WritePrivateProfileStringW(L"State", L"CurrentTrack", buf, g_configPath.c_str());
+    IniWriteString(L"State", L"CurrentTrack", buf, g_configPath.c_str());
 
     // Save current file (for backwards compatibility) and position
     if (g_currentTrack >= 0 && g_currentTrack < static_cast<int>(g_playlist.size())) {
-        WritePrivateProfileStringW(L"State", L"LastFile", g_playlist[g_currentTrack].c_str(), g_configPath.c_str());
+        IniWriteString(L"State", L"LastFile", g_playlist[g_currentTrack].c_str(), g_configPath.c_str());
 
         // Always save position with playback state (use GetCurrentPosition for tempo processor compatibility)
         double position = GetCurrentPosition();
         swprintf(buf, 32, L"%.2f", position);
-        WritePrivateProfileStringW(L"State", L"LastPosition", buf, g_configPath.c_str());
+        IniWriteString(L"State", L"LastPosition", buf, g_configPath.c_str());
     } else {
-        WritePrivateProfileStringW(L"State", L"LastFile", L"", g_configPath.c_str());
-        WritePrivateProfileStringW(L"State", L"LastPosition", L"0", g_configPath.c_str());
+        IniWriteString(L"State", L"LastFile", L"", g_configPath.c_str());
+        IniWriteString(L"State", L"LastPosition", L"0", g_configPath.c_str());
     }
 }
 
@@ -717,8 +687,8 @@ void LoadPlaybackState() {
     if (!g_rememberState) return;
 
     // Try to load full playlist first
-    int trackCount = GetPrivateProfileIntW(L"State", L"TrackCount", 0, g_configPath.c_str());
-    int currentTrack = GetPrivateProfileIntW(L"State", L"CurrentTrack", 0, g_configPath.c_str());
+    int trackCount = IniGetInt(L"State", L"TrackCount", 0, g_configPath.c_str());
+    int currentTrack = IniGetInt(L"State", L"CurrentTrack", 0, g_configPath.c_str());
 
     g_playlist.clear();
 
@@ -728,7 +698,7 @@ void LoadPlaybackState() {
             wchar_t key[32];
             swprintf(key, 32, L"Track%d", i);
             wchar_t filePath[2048] = {0};  // Larger buffer for URLs
-            GetPrivateProfileStringW(L"Playlist", key, L"", filePath, 2048, g_configPath.c_str());
+            IniGetString(L"Playlist", key, L"", filePath, 2048, g_configPath.c_str());
 
             // Add to playlist if non-empty (trust save code - don't validate files/URLs here)
             if (filePath[0] != L'\0') {
@@ -748,8 +718,8 @@ void LoadPlaybackState() {
                 // Restore position for seekable streams only (not live streams)
                 if (!g_isLiveStream) {
                     wchar_t posBuf[32] = {0};
-                    GetPrivateProfileStringW(L"State", L"LastPosition", L"0", posBuf, 32, g_configPath.c_str());
-                    double position = _wtof(posBuf);
+                    IniGetString(L"State", L"LastPosition", L"0", posBuf, 32, g_configPath.c_str());
+                    double position = std::wcstod(posBuf, nullptr);
 
                     if (position > 0) {
                         SeekToPosition(position);
@@ -762,7 +732,7 @@ void LoadPlaybackState() {
 
     // Fall back to single file (backwards compatibility)
     wchar_t lastFile[2048] = {0};  // Larger buffer for URLs
-    GetPrivateProfileStringW(L"State", L"LastFile", L"", lastFile, 2048, g_configPath.c_str());
+    IniGetString(L"State", L"LastFile", L"", lastFile, 2048, g_configPath.c_str());
 
     // Trust save code - don't validate files/URLs here
     if (lastFile[0] != L'\0') {
@@ -774,8 +744,8 @@ void LoadPlaybackState() {
             // Restore position for seekable streams only (not live streams)
             if (!g_isLiveStream) {
                 wchar_t posBuf[32] = {0};
-                GetPrivateProfileStringW(L"State", L"LastPosition", L"0", posBuf, 32, g_configPath.c_str());
-                double position = _wtof(posBuf);
+                IniGetString(L"State", L"LastPosition", L"0", posBuf, 32, g_configPath.c_str());
+                double position = std::wcstod(posBuf, nullptr);
 
                 if (position > 0) {
                     SeekToPosition(position);
@@ -929,7 +899,7 @@ void AddToRecentFiles(const std::wstring& filePath) {
 
     // Remove if already in list (to move to top)
     for (auto it = g_recentFiles.begin(); it != g_recentFiles.end(); ++it) {
-        if (_wcsicmp(it->c_str(), filePath.c_str()) == 0) {
+        if (WStrICmp(it->c_str(), filePath.c_str()) == 0) {
             g_recentFiles.erase(it);
             break;
         }
@@ -947,12 +917,6 @@ void AddToRecentFiles(const std::wstring& filePath) {
 // Whether "allow multiple instances" is on. Read before settings are loaded, from
 // FastPlay.ini beside the executable, to decide whether to hand files over.
 bool ReadAllowMultipleInstances() {
-    wchar_t configPath[MAX_PATH];
-    GetModuleFileNameW(nullptr, configPath, MAX_PATH);
-    wchar_t* configSlash = wcsrchr(configPath, L'\\');
-    if (configSlash) {
-        *(configSlash + 1) = L'\0';
-        wcscat_s(configPath, MAX_PATH, L"FastPlay.ini");
-    }
-    return GetPrivateProfileIntW(L"Playback", L"AllowMultipleInstances", 0, configPath) != 0;
+    std::wstring configPath = GetExecutableDir() + L"FastPlay.ini";
+    return IniGetInt(L"Playback", L"AllowMultipleInstances", 0, configPath.c_str()) != 0;
 }

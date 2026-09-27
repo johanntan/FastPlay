@@ -17,6 +17,7 @@
 #include "database.h"
 #include "file_assoc.h"
 
+#include <cwchar>
 #include <wx/notebook.h>
 #include <wx/filedlg.h>
 #include <wx/dirdlg.h>
@@ -786,7 +787,7 @@ void OptionsDialog::OnOK(wxCommandEvent&) {
         int rgSel = m_replayGainMode->GetSelection();
         if (rgSel >= 0 && rgSel <= 2) g_replayGainMode = rgSel;
 
-        float preamp = static_cast<float>(_wtof(WS(m_replayGainPreamp->GetValue()).c_str()));
+        float preamp = static_cast<float>(std::wcstod(WS(m_replayGainPreamp->GetValue()).c_str(), nullptr));
         if (preamp < -15.0f) preamp = -15.0f;
         if (preamp > 15.0f) preamp = 15.0f;
         g_replayGainPreamp = preamp;
@@ -906,13 +907,13 @@ void OptionsDialog::OnOK(wxCommandEvent&) {
         }
 
         // Get EQ frequencies
-        float bassFreq = static_cast<float>(_wtof(WS(m_eqBassFreq->GetValue()).c_str()));
+        float bassFreq = static_cast<float>(std::wcstod(WS(m_eqBassFreq->GetValue()).c_str(), nullptr));
         if (bassFreq >= 20.0f && bassFreq <= 500.0f) g_eqBassFreq = bassFreq;
 
-        float midFreq = static_cast<float>(_wtof(WS(m_eqMidFreq->GetValue()).c_str()));
+        float midFreq = static_cast<float>(std::wcstod(WS(m_eqMidFreq->GetValue()).c_str(), nullptr));
         if (midFreq >= 200.0f && midFreq <= 5000.0f) g_eqMidFreq = midFreq;
 
-        float trebleFreq = static_cast<float>(_wtof(WS(m_eqTrebleFreq->GetValue()).c_str()));
+        float trebleFreq = static_cast<float>(std::wcstod(WS(m_eqTrebleFreq->GetValue()).c_str(), nullptr));
         if (trebleFreq >= 2000.0f && trebleFreq <= 20000.0f) g_eqTrebleFreq = trebleFreq;
 
         // Get legacy volume setting
@@ -964,16 +965,16 @@ void OptionsDialog::OnOK(wxCommandEvent&) {
         g_stQuickAlgorithm = m_stQuickAlgo->GetValue();
         g_stPreventClick = m_stPreventClick->GetValue();
 
-        int aaLen = _wtoi(WS(m_stAALength->GetStringSelection()).c_str());
+        int aaLen = static_cast<int>(std::wcstol(WS(m_stAALength->GetStringSelection()).c_str(), nullptr, 10));
         if (aaLen >= 8 && aaLen <= 128) g_stAAFilterLength = aaLen;
 
-        int seq = _wtoi(WS(m_stSequence->GetValue()).c_str());
+        int seq = static_cast<int>(std::wcstol(WS(m_stSequence->GetValue()).c_str(), nullptr, 10));
         if (seq >= 0 && seq <= 200) g_stSequenceMs = seq;
 
-        int seek = _wtoi(WS(m_stSeekWindow->GetValue()).c_str());
+        int seek = static_cast<int>(std::wcstol(WS(m_stSeekWindow->GetValue()).c_str(), nullptr, 10));
         if (seek >= 0 && seek <= 100) g_stSeekWindowMs = seek;
 
-        int overlap = _wtoi(WS(m_stOverlap->GetValue()).c_str());
+        int overlap = static_cast<int>(std::wcstol(WS(m_stOverlap->GetValue()).c_str(), nullptr, 10));
         if (overlap >= 0 && overlap <= 50) g_stOverlapMs = overlap;
 
         int algoSel = m_stAlgorithm->GetSelection();
@@ -988,7 +989,7 @@ void OptionsDialog::OnOK(wxCommandEvent&) {
         int presetSel = m_ssPreset->GetSelection();
         if (presetSel >= 0 && presetSel <= 1) g_ssPreset = presetSel;
 
-        int tonality = _wtoi(WS(m_ssTonality->GetValue()).c_str());
+        int tonality = static_cast<int>(std::wcstol(WS(m_ssTonality->GetValue()).c_str(), nullptr, 10));
         if (tonality >= 0 && tonality <= 20000) g_ssTonalityLimit = tonality;
     }
 
@@ -996,7 +997,7 @@ void OptionsDialog::OnOK(wxCommandEvent&) {
     {
         g_midiSoundFont = WS(m_midiSoundFont->GetValue());
 
-        int voices = _wtoi(WS(m_midiVoices->GetValue()).c_str());
+        int voices = static_cast<int>(std::wcstol(WS(m_midiVoices->GetValue()).c_str(), nullptr, 10));
         if (voices >= 1 && voices <= 1000) g_midiMaxVoices = voices;
 
         g_midiSincInterp = m_midiSinc->GetValue();

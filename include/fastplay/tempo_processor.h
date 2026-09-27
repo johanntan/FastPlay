@@ -2,7 +2,6 @@
 #ifndef FASTPLAY_TEMPO_PROCESSOR_H
 #define FASTPLAY_TEMPO_PROCESSOR_H
 
-#include <windows.h>
 #include "bass.h"
 
 // Tempo/pitch algorithm types

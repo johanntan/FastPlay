@@ -1,4 +1,5 @@
 #include "effects.h"
+#include "ini.h"
 #include "globals.h"
 #include "accessibility.h"
 #include "app_ui.h"
@@ -9,6 +10,7 @@
 #include "reverb/reverb.h"
 #include "reverb/efx_reverb.h"
 #include "spatial_audio.h"
+#include <cwchar>
 #include <cstdio>
 #include <vector>
 #include <cmath>
@@ -1438,21 +1440,21 @@ static std::wstring PresetSectionName(const std::wstring& name) {
     return L"Preset_" + name;
 }
 
-static float GetPrivateProfileFloatW_Preset(const wchar_t* section, const wchar_t* key, float defaultVal) {
+static float IniGetFloatPreset(const wchar_t* section, const wchar_t* key, float defaultVal) {
     wchar_t buf[64] = {0};
-    GetPrivateProfileStringW(section, key, L"", buf, 64, g_configPath.c_str());
+    IniGetString(section, key, L"", buf, 64, g_configPath.c_str());
     if (buf[0] == L'\0') return defaultVal;
-    return (float)_wtof(buf);
+    return (float)std::wcstod(buf, nullptr);
 }
 
 std::vector<std::wstring> GetEffectPresetNames() {
     std::vector<std::wstring> names;
-    int count = GetPrivateProfileIntW(L"Presets", L"Count", 0, g_configPath.c_str());
+    int count = IniGetInt(L"Presets", L"Count", 0, g_configPath.c_str());
     for (int i = 0; i < count; i++) {
         wchar_t key[32];
         swprintf(key, 32, L"Name%d", i);
         wchar_t buf[128] = {0};
-        GetPrivateProfileStringW(L"Presets", key, L"", buf, 128, g_configPath.c_str());
+        IniGetString(L"Presets", key, L"", buf, 128, g_configPath.c_str());
         if (buf[0] != L'\0') names.push_back(buf);
     }
     return names;
@@ -1460,19 +1462,19 @@ std::vector<std::wstring> GetEffectPresetNames() {
 
 static void WritePresetNameList(const std::vector<std::wstring>& names) {
     // Clear old name entries first
-    int oldCount = GetPrivateProfileIntW(L"Presets", L"Count", 0, g_configPath.c_str());
+    int oldCount = IniGetInt(L"Presets", L"Count", 0, g_configPath.c_str());
     for (int i = 0; i < oldCount; i++) {
         wchar_t key[32];
         swprintf(key, 32, L"Name%d", i);
-        WritePrivateProfileStringW(L"Presets", key, nullptr, g_configPath.c_str());
+        IniWriteString(L"Presets", key, nullptr, g_configPath.c_str());
     }
     wchar_t buf[32];
     swprintf(buf, 32, L"%d", (int)names.size());
-    WritePrivateProfileStringW(L"Presets", L"Count", buf, g_configPath.c_str());
+    IniWriteString(L"Presets", L"Count", buf, g_configPath.c_str());
     for (size_t i = 0; i < names.size(); i++) {
         wchar_t key[32];
         swprintf(key, 32, L"Name%zu", i);
-        WritePrivateProfileStringW(L"Presets", key, names[i].c_str(), g_configPath.c_str());
+        IniWriteString(L"Presets", key, names[i].c_str(), g_configPath.c_str());
     }
 }
 
@@ -1486,26 +1488,26 @@ bool SaveEffectPreset(const std::wstring& name) {
     for (int i = 0; i < 4; i++) {
         wchar_t key[32];
         swprintf(key, 32, L"StreamEnabled%d", i);
-        WritePrivateProfileStringW(section.c_str(), key, g_effectEnabled[i] ? L"1" : L"0", g_configPath.c_str());
+        IniWriteString(section.c_str(), key, g_effectEnabled[i] ? L"1" : L"0", g_configPath.c_str());
     }
 
     // Stream effect values (pitch, tempo, rate — volume intentionally excluded)
     swprintf(buf, 64, L"%.4f", g_pitch);
-    WritePrivateProfileStringW(section.c_str(), L"Pitch", buf, g_configPath.c_str());
+    IniWriteString(section.c_str(), L"Pitch", buf, g_configPath.c_str());
     swprintf(buf, 64, L"%.4f", g_tempo);
-    WritePrivateProfileStringW(section.c_str(), L"Tempo", buf, g_configPath.c_str());
+    IniWriteString(section.c_str(), L"Tempo", buf, g_configPath.c_str());
     swprintf(buf, 64, L"%.4f", g_rate);
-    WritePrivateProfileStringW(section.c_str(), L"Rate", buf, g_configPath.c_str());
+    IniWriteString(section.c_str(), L"Rate", buf, g_configPath.c_str());
 
     // Reverb algorithm
     swprintf(buf, 64, L"%d", g_reverbAlgorithm);
-    WritePrivateProfileStringW(section.c_str(), L"ReverbAlgorithm", buf, g_configPath.c_str());
+    IniWriteString(section.c_str(), L"ReverbAlgorithm", buf, g_configPath.c_str());
 
     // DSP effect enabled flags
     for (int i = 0; i < (int)DSPEffectType::COUNT; i++) {
         wchar_t key[32];
         swprintf(key, 32, L"DSPEnabled%d", i);
-        WritePrivateProfileStringW(section.c_str(), key,
+        IniWriteString(section.c_str(), key,
             g_dspEnabled[i] ? L"1" : L"0", g_configPath.c_str());
     }
 
@@ -1517,7 +1519,7 @@ bool SaveEffectPreset(const std::wstring& name) {
         wchar_t key[64];
         swprintf(key, 64, L"Param%d", (int)def.id);
         swprintf(buf, 64, L"%.6f", g_paramValues[(int)def.id]);
-        WritePrivateProfileStringW(section.c_str(), key, buf, g_configPath.c_str());
+        IniWriteString(section.c_str(), key, buf, g_configPath.c_str());
     }
 
     // Add to name list if not already present
@@ -1537,28 +1539,28 @@ bool LoadEffectPreset(const std::wstring& name) {
 
     // Quick existence check
     wchar_t test[8] = {0};
-    GetPrivateProfileStringW(section.c_str(), L"Pitch", L"__MISSING__", test, 8, g_configPath.c_str());
+    IniGetString(section.c_str(), L"Pitch", L"__MISSING__", test, 8, g_configPath.c_str());
     if (wcscmp(test, L"__MISSING__") == 0) return false;
 
     // Stream effect values
     wchar_t buf[64] = {0};
-    GetPrivateProfileStringW(section.c_str(), L"Pitch", L"0", buf, 64, g_configPath.c_str());
-    g_pitch = (float)_wtof(buf);
-    GetPrivateProfileStringW(section.c_str(), L"Tempo", L"0", buf, 64, g_configPath.c_str());
-    g_tempo = (float)_wtof(buf);
-    GetPrivateProfileStringW(section.c_str(), L"Rate", L"1", buf, 64, g_configPath.c_str());
-    g_rate = (float)_wtof(buf);
+    IniGetString(section.c_str(), L"Pitch", L"0", buf, 64, g_configPath.c_str());
+    g_pitch = (float)std::wcstod(buf, nullptr);
+    IniGetString(section.c_str(), L"Tempo", L"0", buf, 64, g_configPath.c_str());
+    g_tempo = (float)std::wcstod(buf, nullptr);
+    IniGetString(section.c_str(), L"Rate", L"1", buf, 64, g_configPath.c_str());
+    g_rate = (float)std::wcstod(buf, nullptr);
 
     // Stream effect enabled flags
     for (int i = 0; i < 4; i++) {
         wchar_t key[32];
         swprintf(key, 32, L"StreamEnabled%d", i);
-        g_effectEnabled[i] = GetPrivateProfileIntW(section.c_str(), key,
+        g_effectEnabled[i] = IniGetInt(section.c_str(), key,
             g_effectEnabled[i] ? 1 : 0, g_configPath.c_str()) != 0;
     }
 
     // Reverb algorithm
-    int ra = GetPrivateProfileIntW(section.c_str(), L"ReverbAlgorithm", g_reverbAlgorithm, g_configPath.c_str());
+    int ra = IniGetInt(section.c_str(), L"ReverbAlgorithm", g_reverbAlgorithm, g_configPath.c_str());
     if (ra < 0) ra = 0;
     if (ra >= (int)ReverbAlgorithm::COUNT) ra = (int)ReverbAlgorithm::Advanced;  // old DX8 / I3DL2
     SetReverbAlgorithm(ra);
@@ -1568,7 +1570,7 @@ bool LoadEffectPreset(const std::wstring& name) {
         if ((DSPEffectType)i == DSPEffectType::Reverb) continue;  // controlled by algorithm
         wchar_t key[32];
         swprintf(key, 32, L"DSPEnabled%d", i);
-        bool en = GetPrivateProfileIntW(section.c_str(), key,
+        bool en = IniGetInt(section.c_str(), key,
             g_dspEnabled[i] ? 1 : 0, g_configPath.c_str()) != 0;
         EnableDSPEffect((DSPEffectType)i, en);
     }
@@ -1579,7 +1581,7 @@ bool LoadEffectPreset(const std::wstring& name) {
         if (def.id == ParamId::Volume) continue;
         wchar_t key[64];
         swprintf(key, 64, L"Param%d", (int)def.id);
-        float val = GetPrivateProfileFloatW_Preset(section.c_str(), key, g_paramValues[(int)def.id]);
+        float val = IniGetFloatPreset(section.c_str(), key, g_paramValues[(int)def.id]);
         SetParamValue(def.id, val);
     }
 
@@ -1590,7 +1592,7 @@ bool DeleteEffectPreset(const std::wstring& name) {
     if (name.empty()) return false;
     std::wstring section = PresetSectionName(name);
     // Wipe the preset's entire section
-    WritePrivateProfileStringW(section.c_str(), nullptr, nullptr, g_configPath.c_str());
+    IniWriteString(section.c_str(), nullptr, nullptr, g_configPath.c_str());
 
     auto names = GetEffectPresetNames();
     bool found = false;

@@ -16,8 +16,10 @@
 #include "bassenc_ogg.h"
 #include "bassenc_flac.h"
 #include "tempo_processor.h"
+#include "bass_text.h"
+#include "paths.h"
 #include <ctime>
-#include <shlobj.h>
+#include <filesystem>
 #include <map>
 #include <algorithm>
 #include <cmath>
@@ -89,19 +91,11 @@ static std::vector<std::wstring> g_loadedPlugins;
 static std::vector<std::wstring> g_failedPlugins;
 
 void LoadBassPlugins() {
-    wchar_t exePath[MAX_PATH];
-    GetModuleFileNameW(nullptr, exePath, MAX_PATH);
-
-    // Get directory
-    wchar_t* lastSlash = wcsrchr(exePath, L'\\');
-    if (lastSlash) {
-        *(lastSlash + 1) = L'\0';
-    }
-
-    std::wstring libPath = exePath;
-    libPath += L"lib\\";
+    std::wstring exeDir = GetExecutableDir();
+    std::wstring libPath = GetLibraryDir();
 
     // List of plugins to load (playback-related)
+#ifdef _WIN32
     const wchar_t* plugins[] = {
         L"bassflac.dll",   // FLAC
         L"bassopus.dll",   // Opus
@@ -116,15 +110,27 @@ void LoadBassPlugins() {
         L"bassmix.dll",    // Mixer (for some stream types)
         L"bass_aac.dll",   // AAC/M4A (if available)
     };
+#else
+    // macOS decodes AAC, ALAC and MP4 itself through Core Audio.
+    const wchar_t* plugins[] = {
+        L"libbassflac.dylib",  // FLAC
+        L"libbassopus.dylib",  // Opus
+        L"libbasswv.dylib",    // WavPack
+        L"libbassape.dylib",   // Monkey's Audio (APE)
+        L"libbassmidi.dylib",  // MIDI
+        L"libbassdsd.dylib",   // DSD
+        L"libbasshls.dylib",   // HLS streaming
+        L"libbassmix.dylib",   // Mixer (for some stream types)
+    };
+#endif
 
     for (const wchar_t* plugin : plugins) {
-        std::wstring fullPath = libPath + plugin;
-        HPLUGIN hPlugin = BASS_PluginLoad(reinterpret_cast<const char*>(fullPath.c_str()), BASS_UNICODE);
-        // If lib\ path failed, try same directory as exe
+        BassFileName fullPath(libPath + plugin);
+        HPLUGIN hPlugin = BASS_PluginLoad(fullPath.get(), fullPath.flags());
+        // If the library folder failed, try the executable's folder
         if (!hPlugin) {
-            std::wstring altPath = exePath;
-            altPath += plugin;
-            hPlugin = BASS_PluginLoad(reinterpret_cast<const char*>(altPath.c_str()), BASS_UNICODE);
+            BassFileName altPath(exeDir + plugin);
+            hPlugin = BASS_PluginLoad(altPath.get(), altPath.flags());
         }
 
         if (hPlugin) {
@@ -161,14 +167,7 @@ int FindDeviceByName(const std::wstring& name) {
     BASS_DEVICEINFO info;
     for (int i = 1; BASS_GetDeviceInfo(i, &info); i++) {
         if (info.flags & BASS_DEVICE_ENABLED) {
-            // Convert device name to wide string for comparison
-            int len = MultiByteToWideChar(CP_ACP, 0, info.name, -1, nullptr, 0);
-            std::wstring wideName(len, 0);
-            MultiByteToWideChar(CP_ACP, 0, info.name, -1, &wideName[0], len);
-            // Remove null terminator from wstring for comparison
-            if (!wideName.empty() && wideName.back() == L'\0') {
-                wideName.pop_back();
-            }
+            std::wstring wideName = BassTextToWide(info.name);
             if (wideName == name) {
                 return i;
             }
@@ -183,13 +182,7 @@ std::wstring GetDeviceName(int device) {
 
     BASS_DEVICEINFO info;
     if (BASS_GetDeviceInfo(device, &info)) {
-        int len = MultiByteToWideChar(CP_ACP, 0, info.name, -1, nullptr, 0);
-        std::wstring wideName(len, 0);
-        MultiByteToWideChar(CP_ACP, 0, info.name, -1, &wideName[0], len);
-        // Remove null terminator
-        if (!wideName.empty() && wideName.back() == L'\0') {
-            wideName.pop_back();
-        }
+        std::wstring wideName = BassTextToWide(info.name);
         return wideName;
     }
     return L"";
@@ -201,13 +194,7 @@ std::vector<AudioDeviceInfo> GetAudioDevices() {
     BASS_DEVICEINFO info;
     for (int i = 1; BASS_GetDeviceInfo(i, &info); i++) {
         if (info.flags & BASS_DEVICE_ENABLED) {
-            // Convert device name to wide string
-            int len = MultiByteToWideChar(CP_ACP, 0, info.name, -1, nullptr, 0);
-            std::wstring wideName(len, 0);
-            MultiByteToWideChar(CP_ACP, 0, info.name, -1, &wideName[0], len);
-            if (!wideName.empty() && wideName.back() == L'\0') {
-                wideName.pop_back();
-            }
+            std::wstring wideName = BassTextToWide(info.name);
 
             AudioDeviceInfo dev;
             dev.index = i;
@@ -244,8 +231,8 @@ void SelectAudioDevice(int deviceIndex) {
 static bool IsMidiFile(const wchar_t* path) {
     const wchar_t* ext = wcsrchr(path, L'.');
     if (!ext) return false;
-    return (_wcsicmp(ext, L".mid") == 0 || _wcsicmp(ext, L".midi") == 0 ||
-            _wcsicmp(ext, L".kar") == 0 || _wcsicmp(ext, L".rmi") == 0);
+    return (WStrICmp(ext, L".mid") == 0 || WStrICmp(ext, L".midi") == 0 ||
+            WStrICmp(ext, L".kar") == 0 || WStrICmp(ext, L".rmi") == 0);
 }
 
 // Apply MIDI settings (SoundFont, max voices)
@@ -261,7 +248,8 @@ void ApplyMidiSettings() {
 
     // Load SoundFont if configured
     if (!g_midiSoundFont.empty()) {
-        g_hSoundFont = BASS_MIDI_FontInit(g_midiSoundFont.c_str(), 0);
+        BassFileName fontFile(g_midiSoundFont);
+        g_hSoundFont = BASS_MIDI_FontInit(fontFile.get(), fontFile.flags());
         if (g_hSoundFont) {
             // Set as default SoundFont for all MIDI streams
             BASS_MIDI_FONT font;
@@ -335,9 +323,9 @@ void FreeBass() {
 // Check if a path is a URL
 bool IsURL(const wchar_t* path) {
     if (!path) return false;
-    return (_wcsnicmp(path, L"http://", 7) == 0 ||
-            _wcsnicmp(path, L"https://", 8) == 0 ||
-            _wcsnicmp(path, L"ftp://", 6) == 0);
+    return (WStrNICmp(path, L"http://", 7) == 0 ||
+            WStrNICmp(path, L"https://", 8) == 0 ||
+            WStrNICmp(path, L"ftp://", 6) == 0);
 }
 
 // Load and play a URL stream
@@ -795,9 +783,10 @@ bool LoadFile(const wchar_t* path) {
     }
 
     // Create source stream (use MIDI-specific function for MIDI files if sinc interp enabled)
+    BassFileName file(path);
     if (IsMidiFile(path) && g_midiSincInterp) {
-        DWORD flags = BASS_UNICODE | BASS_STREAM_DECODE | BASS_SAMPLE_FLOAT | BASS_MIDI_SINCINTER;
-        g_stream = BASS_MIDI_StreamCreateFile(FALSE, path, 0, 0, flags, 0);
+        DWORD flags = file.flags() | BASS_STREAM_DECODE | BASS_SAMPLE_FLOAT | BASS_MIDI_SINCINTER;
+        g_stream = BASS_MIDI_StreamCreateFile(FALSE, file.get(), 0, 0, flags, 0);
         // Apply SoundFont to this specific stream if loaded
         if (g_stream && g_hSoundFont) {
             BASS_MIDI_FONT font;
@@ -807,7 +796,7 @@ bool LoadFile(const wchar_t* path) {
             BASS_MIDI_StreamSetFonts(g_stream, &font, 1);
         }
     } else {
-        g_stream = BASS_StreamCreateFile(FALSE, path, 0, 0, BASS_UNICODE | BASS_STREAM_DECODE | BASS_SAMPLE_FLOAT);
+        g_stream = BASS_StreamCreateFile(FALSE, file.get(), 0, 0, file.flags() | BASS_STREAM_DECODE | BASS_SAMPLE_FLOAT);
     }
     if (!g_stream) {
         g_isLoading = false;
@@ -1427,12 +1416,7 @@ void PlayTrack(int index, bool autoPlay) {
                 } else {
                     // Fall back to filename
                     std::wstring path = g_playlist[g_currentTrack];
-                    const wchar_t* lastSlash = wcsrchr(path.c_str(), L'\\');
-                    if (!lastSlash) lastSlash = wcsrchr(path.c_str(), L'/');
-                    std::wstring filename = lastSlash ? (lastSlash + 1) : path;
-                    char buf[512];
-                    WideCharToMultiByte(CP_UTF8, 0, filename.c_str(), -1, buf, sizeof(buf), nullptr, nullptr);
-                    Speak(buf);
+                    Speak(WideToUtf8(GetFileName(path)));
                 }
             }
         }
@@ -1698,13 +1682,7 @@ static std::string ParseID3v2TextFrame(const unsigned char* data, size_t size) {
         for (size_t i = 0; i < textLen; i++) {
             wstr += static_cast<wchar_t>(text[i]);
         }
-        int utf8Len = WideCharToMultiByte(CP_UTF8, 0, wstr.c_str(), -1, nullptr, 0, nullptr, nullptr);
-        if (utf8Len > 0) {
-            std::string result(utf8Len - 1, '\0');
-            WideCharToMultiByte(CP_UTF8, 0, wstr.c_str(), -1, &result[0], utf8Len, nullptr, nullptr);
-            return result;
-        }
-        return std::string((const char*)text, textLen);
+        return WideToUtf8(wstr);
     } else if (encoding == 1) {
         // UTF-16 with BOM
         if (textLen < 2) return "";
@@ -1719,10 +1697,10 @@ static std::string ParseID3v2TextFrame(const unsigned char* data, size_t size) {
 
         size_t charCount = byteCount / 2;
 
-        // Build wstring, handling endianness
-        std::wstring wstr;
+        // Collect the UTF-16 units, handling endianness
+        std::u16string wstr;
         for (size_t i = 0; i < charCount; i++) {
-            wchar_t ch;
+            char16_t ch;
             if (bigEndian) {
                 ch = (textStart[i * 2] << 8) | textStart[i * 2 + 1];
             } else {
@@ -1733,13 +1711,7 @@ static std::string ParseID3v2TextFrame(const unsigned char* data, size_t size) {
         }
 
         // Convert to UTF-8
-        int utf8Len = WideCharToMultiByte(CP_UTF8, 0, wstr.c_str(), -1, nullptr, 0, nullptr, nullptr);
-        if (utf8Len > 0) {
-            std::string result(utf8Len - 1, '\0');
-            WideCharToMultiByte(CP_UTF8, 0, wstr.c_str(), -1, &result[0], utf8Len, nullptr, nullptr);
-            return result;
-        }
-        return "";
+        return Utf16ToUtf8(wstr);
     } else if (encoding == 2) {
         // UTF-16BE without BOM
         // Remove trailing null WORDS (2 bytes at a time)
@@ -1748,19 +1720,13 @@ static std::string ParseID3v2TextFrame(const unsigned char* data, size_t size) {
         }
 
         size_t charCount = textLen / 2;
-        std::wstring wstr;
+        std::u16string wstr;
         for (size_t i = 0; i < charCount; i++) {
-            wchar_t ch = (text[i * 2] << 8) | text[i * 2 + 1];
+            char16_t ch = static_cast<char16_t>((text[i * 2] << 8) | text[i * 2 + 1]);
             if (ch == 0) break;
             wstr += ch;
         }
-        int utf8Len = WideCharToMultiByte(CP_UTF8, 0, wstr.c_str(), -1, nullptr, 0, nullptr, nullptr);
-        if (utf8Len > 0) {
-            std::string result(utf8Len - 1, '\0');
-            WideCharToMultiByte(CP_UTF8, 0, wstr.c_str(), -1, &result[0], utf8Len, nullptr, nullptr);
-            return result;
-        }
-        return "";
+        return Utf16ToUtf8(wstr);
     } else if (encoding == 3) {
         // UTF-8 - remove trailing nulls (single-byte null terminator)
         while (textLen > 0 && text[textLen - 1] == 0) textLen--;
@@ -2783,30 +2749,30 @@ void ToggleRecording() {
     // Determine output path
     std::wstring outputPath;
     if (g_recordPath.empty()) {
-        // Default to Music folder
-        wchar_t musicPath[MAX_PATH];
-        if (SUCCEEDED(SHGetFolderPathW(nullptr, CSIDL_MYMUSIC, nullptr, 0, musicPath))) {
-            outputPath = musicPath;
-        } else {
-            // Fall back to current directory
-            wchar_t currentDir[MAX_PATH];
-            GetCurrentDirectoryW(MAX_PATH, currentDir);
-            outputPath = currentDir;
+        // Default to Music folder, falling back to the current directory
+        outputPath = GetUserMusicDir();
+        if (outputPath.empty()) {
+            std::error_code ec;
+            outputPath = std::filesystem::current_path(ec).wstring();
         }
     } else {
         outputPath = g_recordPath;
     }
 
     // Ensure output directory exists
-    CreateDirectoryW(outputPath.c_str(), nullptr);
+    {
+        std::error_code ec;
+        std::filesystem::create_directory(std::filesystem::path(outputPath), ec);
+    }
 
     // Generate filename
     std::wstring filename = GenerateRecordingFilename();
     std::wstring fullPath = outputPath;
     if (!fullPath.empty() && fullPath.back() != L'\\' && fullPath.back() != L'/') {
-        fullPath += L'\\';
+        fullPath += kPathSeparator;
     }
     fullPath += filename;
+    BassFileName outFile(fullPath);
 
     // Get stream info for encoder setup
     BASS_CHANNELINFO info;
@@ -2823,21 +2789,21 @@ void ToggleRecording() {
     switch (g_recordFormat) {
         case 0: {
             // WAV - use BASS_Encode_StartPCMFile for direct WAV output
-            g_encoder = BASS_Encode_StartPCMFile(g_fxStream, wavFlags, fullPath.c_str());
+            g_encoder = BASS_Encode_StartPCMFile(g_fxStream, wavFlags | outFile.flags(), outFile.get());
             break;
         }
         case 1: {
             // MP3 - use bassenc_mp3
             wchar_t options[64];
             swprintf(options, 64, L"--preset cbr %d", g_recordBitrate);
-            g_encoder = BASS_Encode_MP3_StartFile(g_fxStream, options, BASS_ENCODE_AUTOFREE, fullPath.c_str());
+            g_encoder = BASS_Encode_MP3_StartFile(g_fxStream, BassFileName(options).get(), BASS_ENCODE_AUTOFREE | outFile.flags(), outFile.get());
             if (!g_encoder) {
                 // Fall back to WAV if MP3 encoding fails
                 ShowMessage(L"MP3 encoding failed.\nFalling back to WAV format.", APP_NAME, MessageIcon::Warning);
                 fullPath = outputPath;
                 if (!fullPath.empty() && fullPath.back() != L'\\') fullPath += L'\\';
                 fullPath += GenerateRecordingFilename();
-                g_encoder = BASS_Encode_StartPCMFile(g_fxStream, wavFlags, fullPath.c_str());
+                g_encoder = BASS_Encode_StartPCMFile(g_fxStream, wavFlags | outFile.flags(), outFile.get());
             }
             break;
         }
@@ -2845,27 +2811,27 @@ void ToggleRecording() {
             // OGG - use bassenc_ogg
             wchar_t options[64];
             swprintf(options, 64, L"--bitrate %d", g_recordBitrate);
-            g_encoder = BASS_Encode_OGG_StartFile(g_fxStream, options, BASS_ENCODE_AUTOFREE, fullPath.c_str());
+            g_encoder = BASS_Encode_OGG_StartFile(g_fxStream, BassFileName(options).get(), BASS_ENCODE_AUTOFREE | outFile.flags(), outFile.get());
             if (!g_encoder) {
                 // Fall back to WAV if OGG encoding fails
                 ShowMessage(L"OGG encoding failed.\nFalling back to WAV format.", APP_NAME, MessageIcon::Warning);
                 fullPath = outputPath;
                 if (!fullPath.empty() && fullPath.back() != L'\\') fullPath += L'\\';
                 fullPath += GenerateRecordingFilename();
-                g_encoder = BASS_Encode_StartPCMFile(g_fxStream, wavFlags, fullPath.c_str());
+                g_encoder = BASS_Encode_StartPCMFile(g_fxStream, wavFlags | outFile.flags(), outFile.get());
             }
             break;
         }
         case 3: {
             // FLAC - use bassenc_flac (also needs FP conversion)
-            g_encoder = BASS_Encode_FLAC_StartFile(g_fxStream, nullptr, wavFlags, fullPath.c_str());
+            g_encoder = BASS_Encode_FLAC_StartFile(g_fxStream, nullptr, wavFlags | outFile.flags(), outFile.get());
             if (!g_encoder) {
                 // Fall back to WAV if FLAC encoding fails
                 ShowMessage(L"FLAC encoding failed.\nFalling back to WAV format.", APP_NAME, MessageIcon::Warning);
                 fullPath = outputPath;
                 if (!fullPath.empty() && fullPath.back() != L'\\') fullPath += L'\\';
                 fullPath += GenerateRecordingFilename();
-                g_encoder = BASS_Encode_StartPCMFile(g_fxStream, wavFlags, fullPath.c_str());
+                g_encoder = BASS_Encode_StartPCMFile(g_fxStream, wavFlags | outFile.flags(), outFile.get());
             }
             break;
         }

@@ -2,7 +2,6 @@
 #ifndef FASTPLAY_TYPES_H
 #define FASTPLAY_TYPES_H
 
-#include <windows.h>
 #include <functional>
 #include <string>
 
@@ -28,15 +27,15 @@ struct HotkeyAction {
 // Global hotkey storage
 struct GlobalHotkey {
     int id;         // Unique ID for RegisterHotKey
-    UINT modifiers; // MOD_ALT, MOD_CONTROL, MOD_SHIFT, MOD_WIN
-    UINT vk;        // Virtual key code
+    unsigned modifiers; // MOD_ALT, MOD_CONTROL, MOD_SHIFT, MOD_WIN
+    unsigned vk;        // Virtual key code
     int actionIdx;  // Index into g_hotkeyActions
 };
 
 // Hotkey dialog data
 struct HotkeyDlgData {
-    UINT modifiers;
-    UINT vk;
+    unsigned modifiers;
+    unsigned vk;
     int actionIdx;
     bool isEdit;
 };

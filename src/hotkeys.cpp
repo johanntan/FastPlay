@@ -1,4 +1,5 @@
 #include "hotkeys.h"
+#include "ini.h"
 #include "globals.h"
 #include "types.h"
 #include <cstdio>
@@ -38,16 +39,16 @@ std::wstring FormatHotkey(UINT modifiers, UINT vk) {
 
 // Load hotkeys from INI file
 void LoadHotkeys() {
-    g_hotkeysEnabled = GetPrivateProfileIntW(L"Hotkeys", L"Enabled", 1, g_configPath.c_str()) != 0;
+    g_hotkeysEnabled = IniGetInt(L"Hotkeys", L"Enabled", 1, g_configPath.c_str()) != 0;
     g_hotkeys.clear();
-    int count = GetPrivateProfileIntW(L"Hotkeys", L"Count", 0, g_configPath.c_str());
+    int count = IniGetInt(L"Hotkeys", L"Count", 0, g_configPath.c_str());
 
     for (int i = 0; i < count; i++) {
         wchar_t key[32];
         wchar_t value[64] = {0};
 
         swprintf(key, 32, L"Hotkey%d", i);
-        GetPrivateProfileStringW(L"Hotkeys", key, L"", value, 64, g_configPath.c_str());
+        IniGetString(L"Hotkeys", key, L"", value, 64, g_configPath.c_str());
 
         // Parse "modifiers,vk,actionIdx"
         UINT mods = 0, vk = 0;
@@ -69,16 +70,16 @@ void LoadHotkeys() {
 void SaveHotkeys() {
     wchar_t buf[64];
 
-    WritePrivateProfileStringW(L"Hotkeys", L"Enabled", g_hotkeysEnabled ? L"1" : L"0", g_configPath.c_str());
+    IniWriteString(L"Hotkeys", L"Enabled", g_hotkeysEnabled ? L"1" : L"0", g_configPath.c_str());
 
     swprintf(buf, 64, L"%d", static_cast<int>(g_hotkeys.size()));
-    WritePrivateProfileStringW(L"Hotkeys", L"Count", buf, g_configPath.c_str());
+    IniWriteString(L"Hotkeys", L"Count", buf, g_configPath.c_str());
 
     for (size_t i = 0; i < g_hotkeys.size(); i++) {
         wchar_t key[32];
         swprintf(key, 32, L"Hotkey%zu", i);
         swprintf(buf, 64, L"%u,%u,%d", g_hotkeys[i].modifiers, g_hotkeys[i].vk, g_hotkeys[i].actionIdx);
-        WritePrivateProfileStringW(L"Hotkeys", key, buf, g_configPath.c_str());
+        IniWriteString(L"Hotkeys", key, buf, g_configPath.c_str());
     }
 }
 

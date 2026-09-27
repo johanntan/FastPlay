@@ -2,7 +2,6 @@
 #ifndef FASTPLAY_GLOBALS_H
 #define FASTPLAY_GLOBALS_H
 
-#include <windows.h>
 #include <vector>
 #include <string>
 #include "bass.h"
@@ -17,8 +16,8 @@ struct CycleItem;
 extern const wchar_t* APP_NAME;
 extern const wchar_t* MUTEX_NAME;
 constexpr double SEEK_AMOUNT = 5.0;
-constexpr UINT UPDATE_INTERVAL = 250;
-constexpr UINT BATCH_DELAY = 300;
+constexpr unsigned UPDATE_INTERVAL = 250;
+constexpr unsigned BATCH_DELAY = 300;
 constexpr float MAX_VOLUME_NORMAL = 1.0f;
 constexpr float MAX_VOLUME_AMPLIFY = 4.0f;
 

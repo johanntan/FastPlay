@@ -4,6 +4,7 @@
 #include "ui/ui_common.h"
 
 #include "updater.h"
+#include "paths.h"
 #include "version.h"
 #include "accessibility.h"
 #include "app_ui.h"

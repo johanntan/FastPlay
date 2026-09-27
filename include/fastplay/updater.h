@@ -2,7 +2,6 @@
 #ifndef FASTPLAY_UPDATER_H
 #define FASTPLAY_UPDATER_H
 
-#include <windows.h>
 #include <string>
 #include <functional>
 
@@ -16,9 +15,6 @@ struct UpdateInfo {
     std::string releaseNotes;
     std::string errorMessage;
 };
-
-// Check if app was installed (vs portable)
-bool IsInstalledMode();
 
 // Progress callback: (bytesDownloaded, totalBytes) -> bool (return false to cancel)
 using DownloadProgressCallback = std::function<bool(size_t, size_t)>;

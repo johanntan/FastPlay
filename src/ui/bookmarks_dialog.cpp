@@ -3,6 +3,7 @@
 
 #include "ui/dialogs.h"
 #include "ui/ui_common.h"
+#include "utils.h"
 
 #include "globals.h"
 #include "player.h"
@@ -20,7 +21,7 @@ void JumpToBookmark(const Bookmark& bm) {
     // Check if the file is in the current playlist
     int trackIndex = -1;
     for (size_t i = 0; i < g_playlist.size(); i++) {
-        if (_wcsicmp(g_playlist[i].c_str(), bm.filePath.c_str()) == 0) {
+        if (WStrICmp(g_playlist[i].c_str(), bm.filePath.c_str()) == 0) {
             trackIndex = static_cast<int>(i);
             break;
         }
@@ -113,7 +114,7 @@ private:
         m_dialogBookmarks.clear();
         wxArrayString items;
         for (const auto& bm : m_allBookmarks) {
-            if (showAll || _wcsicmp(bm.filePath.c_str(), m_currentFilePath.c_str()) == 0) {
+            if (showAll || WStrICmp(bm.filePath.c_str(), m_currentFilePath.c_str()) == 0) {
                 m_dialogBookmarks.push_back(bm);
                 items.Add(WX(bm.displayName));
             }

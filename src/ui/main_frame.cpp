@@ -91,7 +91,7 @@ bool MainFrame::Initialize() {
 
     m_titleTimer.Start(kTitleIntervalMs);
     m_schedulerTimer.Start(kSchedulerIntervalMs);
-    g_startupTime = GetTickCount();
+    g_startupTime = TickCountMs();
 
     if (!g_playlist.empty()) {
         int startIndex = 0;
@@ -759,7 +759,7 @@ void MainFrame::ReceiveFile(const std::wstring& path) {
 
     // Files arriving just after startup belong to the batch the program was started
     // with (Explorer starts one FastPlay per selected file and they hand over here).
-    DWORD elapsed = GetTickCount() - g_startupTime;
+    DWORD elapsed = TickCountMs() - g_startupTime;
     if (!g_disableBatchDelay && elapsed < BATCH_DELAY && !g_playlist.empty()) {
         AddPathTo(g_playlist, path);
     } else {

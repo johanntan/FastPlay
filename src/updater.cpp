@@ -344,14 +344,6 @@ static std::wstring GetAppDirectory() {
     return L".";
 }
 
-// Check if app was installed (vs portable) by looking for installed.txt marker
-bool IsInstalledMode() {
-    std::wstring appDir = GetAppDirectory();
-    std::wstring markerPath = appDir + L"\\installed.txt";
-    DWORD attrs = GetFileAttributesW(markerPath.c_str());
-    return (attrs != INVALID_FILE_ATTRIBUTES);
-}
-
 // Get path to downloaded installer
 static std::wstring GetUpdateInstallerPath() {
     wchar_t tempPath[MAX_PATH];

@@ -3,6 +3,7 @@
 
 #include "ui/dialogs.h"
 #include "ui/ui_common.h"
+#include "utils.h"
 
 #include "globals.h"
 #include "player.h"
@@ -361,11 +362,12 @@ private:
         if (path.empty()) return;
 
         std::wstring filePath = WS(path);
-        FILE* f = _wfopen(filePath.c_str(), L"w, ccs=UTF-8");
+        // UTF-8 with a byte order mark, one entry per line
+        FILE* f = FileOpen(filePath, "w");
         if (f) {
-            fwprintf(f, L"#EXTM3U\n");
+            fputs("\xEF\xBB\xBF#EXTM3U\n", f);
             for (const auto& path : g_playlist) {
-                fwprintf(f, L"%s\n", path.c_str());
+                fputs((WideToUtf8(path) + "\n").c_str(), f);
             }
             fclose(f);
             Speak("Playlist saved");
