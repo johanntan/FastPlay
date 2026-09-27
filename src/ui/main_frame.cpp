@@ -19,6 +19,9 @@
 #include "scheduler.h"
 #include "tempo_processor.h"
 #include "utils.h"
+#ifdef __WXOSX__
+#include "system_keys.h"
+#endif
 
 #include <wx/filename.h>
 #include <wx/stdpaths.h>
@@ -386,12 +389,19 @@ void MainFrame::RunCommand(int id, int param) {
             break;
         case IDM_HELP_UPDATES: ShowCheckForUpdatesDialog(false); break;
         case IDM_HELP_README: {
+#ifdef __WXOSX__
+            // Inside the app bundle, in Contents/Resources/docs.
+            wxFileName readme(wxStandardPaths::Get().GetResourcesDir(), "readme.txt");
+            readme.AppendDir("docs");
+            const char* missing = "Could not open readme.txt.";
+#else
             wxFileName readme(wxStandardPaths::Get().GetExecutablePath());
             readme.AppendDir("docs");
             readme.SetFullName("readme.txt");
+            const char* missing = "Could not open readme.txt. Make sure the docs folder is present alongside FastPlay.exe.";
+#endif
             if (!readme.FileExists() || !wxLaunchDefaultApplication(readme.GetFullPath())) {
-                wxMessageBox("Could not open readme.txt. Make sure the docs folder is present alongside FastPlay.exe.",
-                             "Readme", wxOK | wxICON_WARNING, this);
+                wxMessageBox(missing, "Readme", wxOK | wxICON_WARNING, this);
             }
             break;
         }
@@ -582,17 +592,29 @@ void MainFrame::ShowAudioDeviceMenu() {
 void MainFrame::UpdateTitle() {
     std::wstring title = APP_NAME;
 
-    if (g_showTitleInWindow && g_currentTrack >= 0 && g_currentTrack < static_cast<int>(g_playlist.size())) {
-        title += L" - ";
+    bool haveTrack = g_currentTrack >= 0 && g_currentTrack < static_cast<int>(g_playlist.size());
+#ifdef __WXOSX__
+    bool wantTrackTitle = haveTrack;  // Control Center shows it too
+#else
+    bool wantTrackTitle = haveTrack && g_showTitleInWindow;
+#endif
+    std::wstring trackTitle;
+    if (wantTrackTitle) {
         // Try to get metadata (artist - title) first
         std::wstring tagTitle = GetTagTitle();
         if (!tagTitle.empty() && tagTitle != L"No title" && tagTitle != L"Nothing playing") {
-            title += tagTitle;
+            trackTitle = tagTitle;
         } else {
             // Fall back to filename
-            title += GetFileName(g_playlist[g_currentTrack]);
+            trackTitle = GetFileName(g_playlist[g_currentTrack]);
         }
     }
+    if (g_showTitleInWindow && haveTrack) {
+        title += L" - " + trackTitle;
+    }
+#ifdef __WXOSX__
+    m_nowPlayingTitle = trackTitle;
+#endif
 
     SetTitle(WX(title));
 }
@@ -606,14 +628,18 @@ void MainFrame::UpdateStatus() {
     std::wstring stateText;
 
     if (g_fxStream) {
+        double pos = 0, len = 0;
         TempoProcessor* processor = GetTempoProcessor();
         if (processor && processor->IsActive()) {
-            double pos = processor->GetPosition();
-            double len = processor->GetLength();
+            pos = processor->GetPosition();
+            len = processor->GetLength();
             if (len > 0) {
                 posText = FormatTime(pos) + L" / " + FormatTime(len);
             }
         }
+#ifdef __WXOSX__
+        UpdateNowPlaying(m_nowPlayingTitle, len, pos, BASS_ChannelIsActive(g_fxStream) == BASS_ACTIVE_PLAYING);
+#endif
 
         switch (BASS_ChannelIsActive(g_fxStream)) {
             case BASS_ACTIVE_PLAYING: stateText = L"Playing"; break;
@@ -709,6 +735,18 @@ void MainFrame::RegisterGlobalHotkeys() {
         }
     }
     m_hotkeysRegistered = true;
+#elif defined(__WXOSX__)
+    // The media keys arrive through the system's Now Playing controls.
+    StartMediaKeys([](int commandId) { PostCommand(commandId); });
+    SetSystemHotkeyHandler([](int id) {
+        if (MainFrame* frame = GetMainFrame()) frame->RunHotkey(id);
+    });
+    if (g_hotkeysEnabled) {
+        for (const auto& hk : g_hotkeys) {
+            RegisterSystemHotkey(hk.id, hk.modifiers, hk.vk);
+        }
+    }
+    m_hotkeysRegistered = true;
 #endif
 }
 
@@ -723,18 +761,28 @@ void MainFrame::UnregisterGlobalHotkeys() {
         UnregisterHotKey(hk.id);
     }
     m_hotkeysRegistered = false;
+#elif defined(__WXOSX__)
+    if (!m_hotkeysRegistered) return;
+    for (const auto& hk : g_hotkeys) {
+        UnregisterSystemHotkey(hk.id);
+    }
+    m_hotkeysRegistered = false;
 #endif
 }
 
 void MainFrame::OnHotkey(wxKeyEvent& event) {
-    switch (event.GetId()) {
+    RunHotkey(event.GetId());
+}
+
+void MainFrame::RunHotkey(int id) {
+    switch (id) {
         case kHotkeyMediaPlayPause: PostCommand(IDM_PLAY_PLAYPAUSE); return;
         case kHotkeyMediaStop: PostCommand(IDM_PLAY_STOP); return;
         case kHotkeyMediaPrev: PostCommand(IDM_PLAY_PREV); return;
         case kHotkeyMediaNext: PostCommand(IDM_PLAY_NEXT); return;
     }
     for (const auto& hk : g_hotkeys) {
-        if (hk.id == event.GetId()) {
+        if (hk.id == id) {
             PostCommand(g_hotkeyActions[hk.actionIdx].commandId);
             break;
         }
@@ -819,6 +867,9 @@ void MainFrame::OnClose(wxCloseEvent&) {
         m_tray.release()->Destroy();
     }
     UnregisterGlobalHotkeys();
+#ifdef __WXOSX__
+    StopMediaKeys();  // and leave Control Center's Now Playing
+#endif
     StopRecording();  // Stop recording on exit
     if (g_fxStream && g_currentTrack >= 0 && g_currentTrack < static_cast<int>(g_playlist.size())) {
         SaveFilePosition(g_playlist[g_currentTrack]);

@@ -25,6 +25,13 @@
 #include <cmath>
 #include <cstdlib>
 
+// BASS_Init's window: an HWND on Windows, an opaque pointer elsewhere.
+#ifdef _WIN32
+static HWND BassWindow(void* handle) { return static_cast<HWND>(handle); }
+#else
+static void* BassWindow(void* handle) { return handle; }
+#endif
+
 // Forward declarations for tag reading helpers (defined later in file)
 static std::string GetMetadataTag(HSTREAM stream, const char* tagName);
 static std::string GetStreamTitle(HSTREAM stream);
@@ -274,10 +281,10 @@ bool InitBass(void* windowHandle) {
     int device = FindDeviceByName(g_selectedDeviceName);
     g_selectedDevice = device;
 
-    if (!BASS_Init(device, 44100, 0, static_cast<HWND>(windowHandle), nullptr)) {
+    if (!BASS_Init(device, 44100, 0, BassWindow(windowHandle), nullptr)) {
         // Try default device as fallback
         if (device != -1) {
-            if (BASS_Init(-1, 44100, 0, static_cast<HWND>(windowHandle), nullptr)) {
+            if (BASS_Init(-1, 44100, 0, BassWindow(windowHandle), nullptr)) {
                 g_selectedDevice = -1;
                 g_selectedDeviceName.clear();
             } else {
@@ -1586,10 +1593,10 @@ bool ReinitBass(int device) {
 
     BASS_Free();
 
-    if (!BASS_Init(device, 44100, 0, static_cast<HWND>(GetMainWindowHandle()), nullptr)) {
+    if (!BASS_Init(device, 44100, 0, BassWindow(GetMainWindowHandle()), nullptr)) {
         // Try default device as fallback
         if (device != -1) {
-            if (BASS_Init(-1, 44100, 0, static_cast<HWND>(GetMainWindowHandle()), nullptr)) {
+            if (BASS_Init(-1, 44100, 0, BassWindow(GetMainWindowHandle()), nullptr)) {
                 g_selectedDevice = -1;
                 g_selectedDeviceName.clear();
             }
@@ -2699,7 +2706,7 @@ static std::wstring GenerateRecordingFilename() {
     // Get current time
     time_t now = time(nullptr);
     struct tm localTime;
-    localtime_s(&localTime, &now);
+    LocalTime(now, localTime);
 
     // Format using the template
     wchar_t buffer[256];

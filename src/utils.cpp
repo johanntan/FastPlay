@@ -151,6 +151,14 @@ int StrICmp(const char* a, const char* b) {
     return StrNICmp(a, b, static_cast<size_t>(-1));
 }
 
+void LocalTime(std::time_t t, std::tm& out) {
+#ifdef _WIN32
+    localtime_s(&out, &t);
+#else
+    localtime_r(&t, &out);
+#endif
+}
+
 FILE* FileOpen(const std::wstring& path, const char* mode) {
 #ifdef _WIN32
     std::wstring wmode(mode, mode + std::char_traits<char>::length(mode));

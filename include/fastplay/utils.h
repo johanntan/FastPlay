@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <ctime>
 #include <string>
 
 // String conversion (wchar_t is UTF-16 on Windows and UTF-32 elsewhere; both are handled)
@@ -27,6 +28,9 @@ int StrNICmp(const char* a, const char* b, size_t count);
 
 // Room for a path in a fixed-size buffer
 constexpr unsigned kMaxPathChars = 4096;
+
+// The local time for a time_t (as localtime_s / localtime_r)
+void LocalTime(std::time_t t, std::tm& out);
 
 // Open a file by its wide path (fopen modes: "rb", "wb", "a"...)
 FILE* FileOpen(const std::wstring& path, const char* mode);

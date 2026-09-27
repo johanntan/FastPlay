@@ -6,8 +6,21 @@
 #include "globals.h"
 #include "hotkeys.h"
 #include "accessibility.h"
+#include "keycodes.h"
+#ifdef __WXOSX__
+#include "system_keys.h"
+#endif
 
 namespace {
+
+#ifdef __WXOSX__
+const unsigned kAllowedModifiers = MOD_CONTROL | MOD_ALT | MOD_SHIFT | MOD_WIN;
+const char* const kModifierRequired =
+    "Global hotkeys require at least one modifier key (Command, Option, Control, or Shift).";
+#else
+const unsigned kAllowedModifiers = MOD_CONTROL | MOD_ALT | MOD_SHIFT;
+const char* const kModifierRequired = "Global hotkeys require at least one modifier key (Ctrl, Alt, or Shift).";
+#endif
 
 class HotkeyDialog : public wxDialog {
 public:
@@ -41,10 +54,11 @@ public:
         buttons->Add(new wxButton(this, wxID_CANCEL, "Cancel"));
         sizer->Add(buttons, 0, wxALIGN_RIGHT | wxLEFT | wxRIGHT | wxBOTTOM, 10);
 
-        // Set hotkey field (only Ctrl, Alt and Shift can be entered)
+        // Set hotkey field (only Ctrl, Alt and Shift can be entered; on macOS
+        // Command, Option, Shift and Control)
         if (data.vk != 0) {
             m_vk = data.vk;
-            m_modifiers = data.modifiers & (MOD_CONTROL | MOD_ALT | MOD_SHIFT);
+            m_modifiers = data.modifiers & kAllowedModifiers;
         }
         ShowKey();
 
@@ -57,8 +71,8 @@ public:
     }
 
     int GetActionIdx() const { return m_action->GetSelection(); }
-    UINT GetModifiers() const { return m_modifiers; }
-    UINT GetVk() const { return m_vk; }
+    unsigned GetModifiers() const { return m_modifiers; }
+    unsigned GetVk() const { return m_vk; }
 
 private:
     void ShowKey() {
@@ -67,7 +81,7 @@ private:
 
     // Set (or with vk 0, clear) the hotkey, and say it: a screen reader does not
     // announce a read-only field changing.
-    void SetKey(UINT modifiers, UINT vk) {
+    void SetKey(unsigned modifiers, unsigned vk) {
         m_modifiers = (vk != 0) ? modifiers : 0;
         m_vk = vk;
         ShowKey();
@@ -93,6 +107,9 @@ private:
             case WXK_ALT:
             case WXK_WINDOWS_LEFT:
             case WXK_WINDOWS_RIGHT:
+#ifdef __WXOSX__
+            case WXK_RAW_CONTROL:  // Control; WXK_CONTROL is Command
+#endif
                 event.Skip();
                 return;
 
@@ -110,15 +127,28 @@ private:
 
 #ifdef __WXMSW__
         // Global hotkeys are registered with Windows virtual key codes
-        UINT vk = static_cast<UINT>(event.GetRawKeyCode()) & 0xFF;
+        unsigned vk = static_cast<unsigned>(event.GetRawKeyCode()) & 0xFF;
         if (vk == 0) {
             event.Skip();
             return;
         }
-        UINT modifiers = 0;
+        unsigned modifiers = 0;
         if (event.ControlDown()) modifiers |= MOD_CONTROL;
         if (event.AltDown()) modifiers |= MOD_ALT;
         if (event.ShiftDown()) modifiers |= MOD_SHIFT;
+        SetKey(modifiers, vk);
+#elif defined(__WXOSX__)
+        // Stored as Windows virtual key codes on every system (keycodes.h)
+        unsigned vk = MacKeyCodeToVirtualKey(static_cast<unsigned>(event.GetRawKeyCode()));
+        if (vk == 0) {
+            event.Skip();
+            return;
+        }
+        unsigned modifiers = 0;
+        if (event.ControlDown()) modifiers |= MOD_CONTROL;  // Command
+        if (event.AltDown()) modifiers |= MOD_ALT;          // Option
+        if (event.ShiftDown()) modifiers |= MOD_SHIFT;
+        if (event.RawControlDown()) modifiers |= MOD_WIN;   // Control
         SetKey(modifiers, vk);
 #else
         event.Skip();
@@ -132,8 +162,7 @@ private:
             return;
         }
         if (m_modifiers == 0) {
-            wxMessageBox("Global hotkeys require at least one modifier key (Ctrl, Alt, or Shift).", "Error",
-                         wxOK | wxICON_WARNING, this);
+            wxMessageBox(kModifierRequired, "Error", wxOK | wxICON_WARNING, this);
             return;
         }
         EndModal(wxID_OK);
@@ -141,8 +170,8 @@ private:
 
     wxChoice* m_action;
     wxTextCtrl* m_key;
-    UINT m_modifiers = 0;
-    UINT m_vk = 0;
+    unsigned m_modifiers = 0;
+    unsigned m_vk = 0;
 };
 
 }  // namespace

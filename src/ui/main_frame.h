@@ -53,6 +53,7 @@ private:
     void OnIconize(wxIconizeEvent& event);
     void OnClose(wxCloseEvent& event);
     void OnHotkey(wxKeyEvent& event);
+    void RunHotkey(int id);
     void OnBatchTimer(wxTimerEvent& event);
     void SeekBackOrForward(int direction);
 #ifdef __WXMSW__
@@ -70,6 +71,9 @@ private:
     wxTimer m_durationTimer;
     std::unique_ptr<TrayIcon> m_tray;
     bool m_hotkeysRegistered = false;
+#ifdef __WXOSX__
+    std::wstring m_nowPlayingTitle;  // for Control Center's Now Playing
+#endif
 };
 
 #endif // FASTPLAY_MAIN_FRAME_H

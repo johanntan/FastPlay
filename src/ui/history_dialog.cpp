@@ -6,6 +6,7 @@
 
 #include "database.h"
 #include "accessibility.h"
+#include "utils.h"
 
 #include <ctime>
 #include <cwchar>
@@ -17,7 +18,7 @@ namespace {
 std::wstring FormatHistoryTimestamp(int64_t ts) {
     time_t t = static_cast<time_t>(ts);
     struct tm local;
-    localtime_s(&local, &t);
+    LocalTime(t, local);
     wchar_t buf[64];
     wcsftime(buf, 64, L"%Y-%m-%d %H:%M:%S", &local);
     return buf;

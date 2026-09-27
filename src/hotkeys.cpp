@@ -1,17 +1,74 @@
 #include "hotkeys.h"
 #include "ini.h"
 #include "globals.h"
+#include "keycodes.h"
 #include "types.h"
 #include <cstdio>
 
+#ifndef _WIN32
+// The name of a key, by its Windows virtual key code.
+static std::wstring KeyName(unsigned vk) {
+    if ((vk >= '0' && vk <= '9') || (vk >= 'A' && vk <= 'Z')) return std::wstring(1, static_cast<wchar_t>(vk));
+    if (vk >= VK_F1 && vk <= VK_F24) return L"F" + std::to_wstring(vk - VK_F1 + 1);
+    if (vk >= VK_NUMPAD0 && vk <= VK_NUMPAD9) return L"Num " + std::to_wstring(vk - VK_NUMPAD0);
+    switch (vk) {
+        case VK_BACK: return L"Delete";
+        case VK_TAB: return L"Tab";
+        case VK_CLEAR: return L"Clear";
+        case VK_RETURN: return L"Return";
+        case VK_ESCAPE: return L"Escape";
+        case VK_SPACE: return L"Space";
+        case VK_PRIOR: return L"Page Up";
+        case VK_NEXT: return L"Page Down";
+        case VK_END: return L"End";
+        case VK_HOME: return L"Home";
+        case VK_LEFT: return L"Left";
+        case VK_UP: return L"Up";
+        case VK_RIGHT: return L"Right";
+        case VK_DOWN: return L"Down";
+        case VK_INSERT: return L"Help";
+        case VK_DELETE: return L"Forward Delete";
+        case VK_MULTIPLY: return L"Num *";
+        case VK_ADD: return L"Num +";
+        case VK_SUBTRACT: return L"Num -";
+        case VK_DECIMAL: return L"Num .";
+        case VK_DIVIDE: return L"Num /";
+        case VK_OEM_1: return L";";
+        case VK_OEM_PLUS: return L"=";
+        case VK_OEM_COMMA: return L",";
+        case VK_OEM_MINUS: return L"-";
+        case VK_OEM_PERIOD: return L".";
+        case VK_OEM_2: return L"/";
+        case VK_OEM_3: return L"`";
+        case VK_OEM_4: return L"[";
+        case VK_OEM_5: return L"\\";
+        case VK_OEM_6: return L"]";
+        case VK_OEM_7: return L"'";
+        case VK_OEM_102: return L"\u00a7";
+    }
+    wchar_t buf[16];
+    swprintf(buf, 16, L"0x%02X", vk);
+    return buf;
+}
+#endif
+
 // Format hotkey for display (e.g., "Ctrl+Shift+P")
-std::wstring FormatHotkey(UINT modifiers, UINT vk) {
+std::wstring FormatHotkey(unsigned modifiers, unsigned vk) {
     std::wstring result;
+#ifdef __APPLE__
+    // In the order macOS shows them. Stored Ctrl is Command, and Win is Control.
+    if (modifiers & MOD_WIN) result += L"Ctrl+";
+    if (modifiers & MOD_ALT) result += L"Option+";
+    if (modifiers & MOD_SHIFT) result += L"Shift+";
+    if (modifiers & MOD_CONTROL) result += L"Cmd+";
+#else
     if (modifiers & MOD_CONTROL) result += L"Ctrl+";
     if (modifiers & MOD_ALT) result += L"Alt+";
     if (modifiers & MOD_SHIFT) result += L"Shift+";
     if (modifiers & MOD_WIN) result += L"Win+";
+#endif
 
+#ifdef _WIN32
     // Get key name
     UINT scanCode = MapVirtualKeyW(vk, MAPVK_VK_TO_VSC);
     LONG keyParam = static_cast<LONG>(scanCode << 16);
@@ -34,6 +91,9 @@ std::wstring FormatHotkey(UINT modifiers, UINT vk) {
         swprintf(buf, 16, L"0x%02X", vk);
         result += buf;
     }
+#else
+    result += KeyName(vk);
+#endif
     return result;
 }
 
@@ -51,7 +111,7 @@ void LoadHotkeys() {
         IniGetString(L"Hotkeys", key, L"", value, 64, g_configPath.c_str());
 
         // Parse "modifiers,vk,actionIdx"
-        UINT mods = 0, vk = 0;
+        unsigned mods = 0, vk = 0;
         int actionIdx = 0;
         if (swscanf(value, L"%u,%u,%d", &mods, &vk, &actionIdx) == 3) {
             if (actionIdx >= 0 && actionIdx < g_hotkeyActionCount) {

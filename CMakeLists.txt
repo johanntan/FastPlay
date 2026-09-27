@@ -1,6 +1,13 @@
 cmake_minimum_required(VERSION 3.21)
 
+# macOS: one universal app for Apple silicon and Intel Macs. Set before project().
+set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Oldest macOS FastPlay runs on")
+set(CMAKE_OSX_ARCHITECTURES "arm64;x86_64" CACHE STRING "Architectures to build for")
+
 project(FastPlay LANGUAGES C CXX)
+if(APPLE)
+    enable_language(OBJCXX)  # the macOS platform files are Objective-C++
+endif()
 
 # ---------------------------------------------------------------------------
 # Toolchain
@@ -22,6 +29,9 @@ if(MSVC)
     )
     # Statically link the CRT so FastPlay.exe needs no redistributable.
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+    set(FASTPLAY_NO_WARNINGS /w)
+else()
+    set(FASTPLAY_NO_WARNINGS -w)
 endif()
 
 include(FetchContent)
@@ -47,7 +57,12 @@ set(wxBUILD_USE_STATIC_RUNTIME ON CACHE INTERNAL "")
 set(wxBUILD_TESTS OFF CACHE INTERNAL "")
 set(wxBUILD_SAMPLES OFF CACHE INTERNAL "")
 set(wxBUILD_DEMOS OFF CACHE INTERNAL "")
-set(wxBUILD_PRECOMP ON CACHE INTERNAL "")
+if(APPLE)
+    # A precompiled header is built for one architecture; the app is universal.
+    set(wxBUILD_PRECOMP OFF CACHE INTERNAL "")
+else()
+    set(wxBUILD_PRECOMP ON CACHE INTERNAL "")
+endif()
 set(wxUSE_STL ON CACHE INTERNAL "")
 # FastPlay links core, base, adv and net; the rest of wxWidgets is most of the
 # build for code that is never called.
@@ -161,15 +176,19 @@ else()
 endif()
 if(APPLE)
     list(APPEND FASTPLAY_SOURCES
+        src/platform/file_assoc_mac.cpp
         src/platform/paths_mac.cpp
+        src/platform/speech_mac.mm
+        src/platform/startup_mac.cpp
+        src/platform/system_keys_mac.mm
     )
 endif()
 
-add_executable(FastPlay WIN32 ${FASTPLAY_SOURCES})
+add_executable(FastPlay WIN32 MACOSX_BUNDLE ${FASTPLAY_SOURCES})
 
 # The upstream C libraries' warnings are not ours to fix.
 set_source_files_properties(src/sqlite3.c deps/speedy/speedy.c deps/speedy/soniclib.c
-    deps/sonic/sonic.c deps/kissfft/kiss_fft.c src/spatial/pffft/pffft.c PROPERTIES COMPILE_OPTIONS "/w")
+    deps/sonic/sonic.c deps/kissfft/kiss_fft.c src/spatial/pffft/pffft.c PROPERTIES COMPILE_OPTIONS ${FASTPLAY_NO_WARNINGS})
 
 target_include_directories(FastPlay PRIVATE
     src
@@ -227,7 +246,7 @@ if(WIN32 AND FASTPLAY_SPEECH)
     # Old C code whose warnings are upstream's, not ours.
     set_source_files_properties(${US_SOURCES} PROPERTIES
         COMPILE_DEFINITIONS "UNIVERSAL_SPEECH_STATIC;UNIVERSAL_SPEECH_BUILDING"
-        COMPILE_OPTIONS "/w")
+        COMPILE_OPTIONS ${FASTPLAY_NO_WARNINGS})
     target_compile_definitions(FastPlay PRIVATE UNIVERSAL_SPEECH_STATIC)
 
     # The screen reader client DLLs are loaded at run time by UniversalSpeech.
@@ -255,4 +274,36 @@ if(WIN32)
         RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
         RUNTIME_OUTPUT_DIRECTORY_RELEASE ${CMAKE_CURRENT_SOURCE_DIR}
         RUNTIME_OUTPUT_DIRECTORY_DEBUG ${CMAKE_CURRENT_SOURCE_DIR})
+endif()
+
+if(APPLE)
+    # BASS and friends come from lib/mac (download-deps.sh). Their install names are
+    # @rpath/<name>, found in FastPlay.app/Contents/Frameworks.
+    set(FASTPLAY_MAC_LIB_DIR ${CMAKE_CURRENT_SOURCE_DIR}/lib/mac)
+    foreach(name bass bass_fx bass_aac bassmidi bassenc bassenc_mp3 bassenc_ogg bassenc_flac)
+        target_link_libraries(FastPlay PRIVATE ${FASTPLAY_MAC_LIB_DIR}/lib${name}.dylib)
+    endforeach()
+    target_link_libraries(FastPlay PRIVATE
+        "-framework AppKit" "-framework AVFoundation" "-framework Carbon"
+        "-framework CoreServices" "-framework MediaPlayer")
+    set_source_files_properties(src/platform/speech_mac.mm src/platform/system_keys_mac.mm
+        PROPERTIES COMPILE_OPTIONS -fobjc-arc)
+
+    # The app bundle: Info.plist with the version from version.h, the libraries in
+    # Contents/Frameworks and the documentation in Contents/Resources/docs.
+    file(STRINGS include/fastplay/version.h FASTPLAY_VERSION_LINE REGEX "#define APP_VERSION ")
+    string(REGEX REPLACE ".*\"([^\"]+)\".*" "\\1" FASTPLAY_VERSION "${FASTPLAY_VERSION_LINE}")
+    configure_file(res/mac/Info.plist.in ${CMAKE_CURRENT_BINARY_DIR}/Info.plist @ONLY)
+    set_target_properties(FastPlay PROPERTIES
+        MACOSX_BUNDLE_INFO_PLIST ${CMAKE_CURRENT_BINARY_DIR}/Info.plist
+        BUILD_WITH_INSTALL_RPATH TRUE
+        INSTALL_RPATH "@executable_path/../Frameworks")
+
+    file(GLOB FASTPLAY_MAC_DYLIBS ${FASTPLAY_MAC_LIB_DIR}/*.dylib)
+    add_custom_command(TARGET FastPlay POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_BUNDLE_CONTENT_DIR:FastPlay>/Frameworks
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different ${FASTPLAY_MAC_DYLIBS}
+            $<TARGET_BUNDLE_CONTENT_DIR:FastPlay>/Frameworks
+        COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_CURRENT_SOURCE_DIR}/docs
+            $<TARGET_BUNDLE_CONTENT_DIR:FastPlay>/Resources/docs)
 endif()

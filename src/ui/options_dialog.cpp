@@ -1032,8 +1032,12 @@ void OptionsDialog::OnRecFormat(wxCommandEvent&) {
 }
 
 void OptionsDialog::OnYtdlpBrowse(wxCommandEvent&) {
-    wxFileDialog dlg(this, "Select yt-dlp executable", wxEmptyString, wxEmptyString,
-                     "Executables (*.exe)|*.exe|All Files (*.*)|*.*",
+#ifdef __WXMSW__
+    const char* filter = "Executables (*.exe)|*.exe|All Files (*.*)|*.*";
+#else
+    const char* filter = "All Files (*)|*";
+#endif
+    wxFileDialog dlg(this, "Select yt-dlp executable", wxEmptyString, wxEmptyString, filter,
                      wxFD_OPEN | wxFD_FILE_MUST_EXIST);
     if (dlg.ShowModal() == wxID_OK) {
         m_ytdlpPath->SetValue(dlg.GetPath());

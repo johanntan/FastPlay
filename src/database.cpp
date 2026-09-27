@@ -634,7 +634,7 @@ bool ResetPodcastSortOrder() {
 static std::wstring FormatScheduleTime(int64_t timestamp) {
     time_t t = static_cast<time_t>(timestamp);
     struct tm tm;
-    localtime_s(&tm, &t);
+    LocalTime(t, tm);
     wchar_t buf[64];
     wcsftime(buf, 64, L"%Y-%m-%d %H:%M", &tm);
     return buf;

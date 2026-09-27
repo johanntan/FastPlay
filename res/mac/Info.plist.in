@@ -1,0 +1,183 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>en</string>
+    <key>CFBundleExecutable</key>
+    <string>FastPlay</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.fastplay.macos</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string>FastPlay</string>
+    <key>CFBundleDisplayName</key>
+    <string>FastPlay</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>@FASTPLAY_VERSION@</string>
+    <key>CFBundleVersion</key>
+    <string>@FASTPLAY_VERSION@</string>
+    <key>LSApplicationCategoryType</key>
+    <string>public.app-category.music</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>@CMAKE_OSX_DEPLOYMENT_TARGET@</string>
+    <key>NSPrincipalClass</key>
+    <string>NSApplication</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>NSSupportsAutomaticTermination</key>
+    <false/>
+    <key>NSSupportsSuddenTermination</key>
+    <false/>
+
+    <!-- What FastPlay opens. It becomes the default app for these only when
+         "Register file types" is turned on in Options. -->
+    <key>CFBundleDocumentTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>Audio</string>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+            <key>LSHandlerRank</key>
+            <string>Alternate</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>public.audio</string>
+                <string>public.mpeg-4</string>
+            </array>
+        </dict>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>Playlist</string>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+            <key>LSHandlerRank</key>
+            <string>Alternate</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>public.m3u-playlist</string>
+                <string>public.pls-playlist</string>
+            </array>
+        </dict>
+    </array>
+
+    <!-- Formats macOS does not know itself, so Finder can tell they are audio. -->
+    <key>UTImportedTypeDeclarations</key>
+    <array>
+        <dict>
+            <key>UTTypeIdentifier</key>
+            <string>org.xiph.flac</string>
+            <key>UTTypeDescription</key>
+            <string>FLAC Audio</string>
+            <key>UTTypeConformsTo</key>
+            <array><string>public.audio</string></array>
+            <key>UTTypeTagSpecification</key>
+            <dict>
+                <key>public.filename-extension</key>
+                <array><string>flac</string></array>
+                <key>public.mime-type</key>
+                <array><string>audio/flac</string></array>
+            </dict>
+        </dict>
+        <dict>
+            <key>UTTypeIdentifier</key>
+            <string>org.xiph.ogg-audio</string>
+            <key>UTTypeDescription</key>
+            <string>Ogg Audio</string>
+            <key>UTTypeConformsTo</key>
+            <array><string>public.audio</string></array>
+            <key>UTTypeTagSpecification</key>
+            <dict>
+                <key>public.filename-extension</key>
+                <array><string>ogg</string><string>oga</string></array>
+                <key>public.mime-type</key>
+                <array><string>audio/ogg</string></array>
+            </dict>
+        </dict>
+        <dict>
+            <key>UTTypeIdentifier</key>
+            <string>org.xiph.opus</string>
+            <key>UTTypeDescription</key>
+            <string>Opus Audio</string>
+            <key>UTTypeConformsTo</key>
+            <array><string>public.audio</string></array>
+            <key>UTTypeTagSpecification</key>
+            <dict>
+                <key>public.filename-extension</key>
+                <array><string>opus</string></array>
+                <key>public.mime-type</key>
+                <array><string>audio/opus</string></array>
+            </dict>
+        </dict>
+        <dict>
+            <key>UTTypeIdentifier</key>
+            <string>com.wavpack.wavpack-audio</string>
+            <key>UTTypeDescription</key>
+            <string>WavPack Audio</string>
+            <key>UTTypeConformsTo</key>
+            <array><string>public.audio</string></array>
+            <key>UTTypeTagSpecification</key>
+            <dict>
+                <key>public.filename-extension</key>
+                <array><string>wv</string></array>
+            </dict>
+        </dict>
+        <dict>
+            <key>UTTypeIdentifier</key>
+            <string>com.monkeysaudio.ape-audio</string>
+            <key>UTTypeDescription</key>
+            <string>Monkey's Audio</string>
+            <key>UTTypeConformsTo</key>
+            <array><string>public.audio</string></array>
+            <key>UTTypeTagSpecification</key>
+            <dict>
+                <key>public.filename-extension</key>
+                <array><string>ape</string></array>
+            </dict>
+        </dict>
+        <dict>
+            <key>UTTypeIdentifier</key>
+            <string>com.sony.dsd-audio</string>
+            <key>UTTypeDescription</key>
+            <string>DSD Audio</string>
+            <key>UTTypeConformsTo</key>
+            <array><string>public.audio</string></array>
+            <key>UTTypeTagSpecification</key>
+            <dict>
+                <key>public.filename-extension</key>
+                <array><string>dsf</string><string>dff</string></array>
+            </dict>
+        </dict>
+        <dict>
+            <key>UTTypeIdentifier</key>
+            <string>public.m3u-playlist</string>
+            <key>UTTypeDescription</key>
+            <string>M3U Playlist</string>
+            <key>UTTypeConformsTo</key>
+            <array><string>public.plain-text</string></array>
+            <key>UTTypeTagSpecification</key>
+            <dict>
+                <key>public.filename-extension</key>
+                <array><string>m3u</string><string>m3u8</string></array>
+            </dict>
+        </dict>
+        <dict>
+            <key>UTTypeIdentifier</key>
+            <string>public.pls-playlist</string>
+            <key>UTTypeDescription</key>
+            <string>PLS Playlist</string>
+            <key>UTTypeConformsTo</key>
+            <array><string>public.plain-text</string></array>
+            <key>UTTypeTagSpecification</key>
+            <dict>
+                <key>public.filename-extension</key>
+                <array><string>pls</string></array>
+            </dict>
+        </dict>
+    </array>
+</dict>
+</plist>

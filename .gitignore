@@ -24,6 +24,7 @@ include/prism.h
 
 # Dependencies (downloaded/external)
 lib/*.dll
+lib/mac/
 deps/
 src/sqlite3.c
 

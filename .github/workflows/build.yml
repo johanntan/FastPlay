@@ -2,7 +2,7 @@ name: Build
 
 on:
   push:
-    branches: [master]
+    branches: [master, mac-port]
   workflow_dispatch:
 
 permissions:
@@ -63,8 +63,49 @@ jobs:
           name: windows-installer
           path: FastPlayInstaller.exe
 
+  build-macos:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download dependencies
+        run: |
+          chmod +x download-deps.sh
+          ./download-deps.sh
+
+      # As on Windows: keep the fetched and built wxWidgets between runs.
+      - name: Cache CMake dependencies
+        uses: actions/cache@v4
+        with:
+          path: build
+          key: cmake-deps-${{ runner.os }}-${{ hashFiles('CMakeLists.txt') }}
+
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build FastPlay.app
+        run: cmake --build build --parallel
+
+      # Ad-hoc signed (no Developer ID): the libraries first, then the app itself.
+      - name: Sign and zip
+        run: |
+          APP=build/FastPlay.app
+          codesign --force --sign - "$APP"/Contents/Frameworks/*.dylib
+          codesign --force --sign - "$APP"
+          codesign --verify --verbose "$APP"
+          ditto -c -k --keepParent "$APP" FastPlay-macOS.zip
+
+      - name: Upload app artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-app
+          path: FastPlay-macOS.zip
+
   release:
     needs: [build-windows]
+    if: github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
 
     steps:

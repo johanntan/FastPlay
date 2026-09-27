@@ -59,6 +59,13 @@ class FastPlayApp : public wxApp {
 public:
     bool OnInit() override;
     int OnExit() override;
+#ifdef __WXOSX__
+    // macOS keeps one FastPlay running and opens files in it (Finder, the Dock,
+    // "open"), including the files FastPlay is launched with.
+    void MacOpenFiles(const wxArrayString& fileNames) override;
+    // Clicking the Dock icon brings back a window hidden to the menu bar.
+    void MacReopenApp() override;
+#endif
 
 private:
     std::vector<std::wstring> ExistingPathArgs() const;
@@ -104,6 +111,7 @@ bool FastPlayApp::OnInit() {
     // - multiple instances allowed and started with files: hand the files over
     // - multiple instances allowed and started without files: start a new one
     std::vector<std::wstring> files = ExistingPathArgs();
+#ifndef __WXOSX__
     bool useSingleInstance = !ReadAllowMultipleInstances() || !files.empty();
 
     m_instance = std::make_unique<wxSingleInstanceChecker>();
@@ -116,6 +124,7 @@ bool FastPlayApp::OnInit() {
     // handoff still works after the first of several instances has closed.
     m_server = std::make_unique<FileServer>();
     m_server->Create(kIpcService);
+#endif
 
     LoadSettings();
     if (g_registerFileTypes) {
@@ -147,6 +156,20 @@ bool FastPlayApp::OnInit() {
     }
     return true;
 }
+
+#ifdef __WXOSX__
+void FastPlayApp::MacOpenFiles(const wxArrayString& fileNames) {
+    MainFrame* frame = GetMainFrame();
+    if (!frame) return;
+    for (const auto& name : fileNames) {
+        frame->ReceiveFile(WS(name));
+    }
+}
+
+void FastPlayApp::MacReopenApp() {
+    if (MainFrame* frame = GetMainFrame()) frame->RestoreFromTray();
+}
+#endif
 
 int FastPlayApp::OnExit() {
     m_server.reset();

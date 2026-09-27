@@ -27,7 +27,7 @@ void CalculateNextScheduleTime(int id, int64_t lastRun, ScheduleRepeat repeat) {
 
     time_t now = time(nullptr);
     struct tm tm;
-    localtime_s(&tm, &now);
+    LocalTime(now, tm);
 
     // Start from the current scheduled time and add appropriate interval
     int64_t nextTime = lastRun;
@@ -46,7 +46,7 @@ void CalculateNextScheduleTime(int id, int64_t lastRun, ScheduleRepeat repeat) {
             time_t t = static_cast<time_t>(nextTime);
             do {
                 t += 24 * 60 * 60;
-                localtime_s(&tm, &t);
+                LocalTime(t, tm);
             } while (tm.tm_wday == 0 || tm.tm_wday == 6);  // Skip Sun=0, Sat=6
             nextTime = static_cast<int64_t>(t);
             break;
@@ -57,7 +57,7 @@ void CalculateNextScheduleTime(int id, int64_t lastRun, ScheduleRepeat repeat) {
             time_t t = static_cast<time_t>(nextTime);
             do {
                 t += 24 * 60 * 60;
-                localtime_s(&tm, &t);
+                LocalTime(t, tm);
             } while (tm.tm_wday != 0 && tm.tm_wday != 6);  // Find Sun=0 or Sat=6
             nextTime = static_cast<int64_t>(t);
             break;
@@ -66,7 +66,7 @@ void CalculateNextScheduleTime(int id, int64_t lastRun, ScheduleRepeat repeat) {
         case ScheduleRepeat::Monthly: {
             // Same day next month
             time_t t = static_cast<time_t>(nextTime);
-            localtime_s(&tm, &t);
+            LocalTime(t, tm);
             tm.tm_mon += 1;
             if (tm.tm_mon > 11) {
                 tm.tm_mon = 0;
