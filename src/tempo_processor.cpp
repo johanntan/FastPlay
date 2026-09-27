@@ -6,6 +6,8 @@
 #include <vector>
 #include <mutex>
 #include <deque>
+#include <algorithm>
+#include <cstring>
 
 // Include Speedy/Sonic
 #ifdef USE_SPEEDY
@@ -152,234 +154,231 @@ public:
 };
 
 // ============================================================================
-// Speedy (Google) Implementation - Push-based stream approach
+// Push-based processors (Speedy, Signalsmith)
 // ============================================================================
-#ifdef USE_SPEEDY
+// These decode the source themselves and feed a BASS user stream. The base class owns everything
+// that is common to both and that BASS_FX does for SoundTouch internally:
+//   - the output FIFO feeding the STREAMPROC,
+//   - draining the engine at the end of the source, so the last part of the file is heard,
+//   - seeking: reposition the source, restart the engine, and throw away the audio already
+//     sitting in the output stream's playback buffer, so the new position is heard at once,
+//   - position: a map from output frames to source time, read at the output stream's playback
+//     position, so the reported position is what is heard rather than how far the decoder has
+//     read (which runs ahead by the playback buffer times the speed).
+#if defined(USE_SPEEDY) || defined(USE_SIGNALSMITH)
 
-class SpeedyProcessor : public TempoProcessor {
-private:
+class PushTempoProcessor : public TempoProcessor {
+protected:
     HSTREAM m_sourceStream = 0;
     HSTREAM m_outputStream = 0;
-    sonicStream m_sonicStream = nullptr;
     float m_sampleRate = 44100.0f;
     int m_channels = 2;
     float m_tempo = 0.0f;   // percentage
     float m_pitch = 0.0f;   // semitones
     float m_rate = 1.0f;    // multiplier
-    bool m_sourceEnded = false;
-    bool m_nonlinearEnabled = true;  // Use Speedy's nonlinear speedup
 
+    // Engine and FIFO state, shared between the STREAMPROC and the UI thread.
     mutable std::mutex m_mutex;
-
-    // Buffers
     std::vector<float> m_decodeBuffer;
-    std::deque<float> m_outputQueue;
+    std::vector<float> m_queue;         // interleaved output not yet handed to BASS
+    size_t m_queueRead = 0;
+    bool m_inputEnded = false;          // the source has no more data
+    bool m_drained = false;             // the engine's tail has been flushed into the queue
 
-    static constexpr size_t DECODE_BLOCK_SIZE = 2048;
-    static constexpr size_t MAX_OUTPUT_QUEUE = 65536;
+    // Source time of the start of the current run (set on seek) and frames of real source
+    // audio decoded since then.
+    double m_runStart = 0.0;
+    QWORD m_runFrames = 0;
 
-    // Convert tempo percentage to speed multiplier
-    float TempoToSpeed() const {
-        float speed = (100.0f + m_tempo) / 100.0f * m_rate;
-        if (speed < 0.1f) speed = 0.1f;
-        if (speed > 6.0f) speed = 6.0f;  // Speedy supports up to 6X
+    static constexpr int DECODE_BLOCK_FRAMES = 1024;
+
+    double Speed() const {
+        double speed = (100.0 + m_tempo) / 100.0 * m_rate;
+        if (speed < 0.1) speed = 0.1;
+        if (speed > 6.0) speed = 6.0;
         return speed;
     }
 
-    // Convert semitones to pitch multiplier
-    float SemitonesToPitch() const {
-        return powf(2.0f, m_pitch / 12.0f);
+    double RunTime(double frames) const {
+        return m_runStart + frames / m_sampleRate;
     }
 
-    // Process more audio from source through Speedy
-    bool ProcessMoreAudio() {
-        if (m_sourceEnded || !m_sonicStream) return false;
-
-        // Decode a block from source
-        DWORD bytesNeeded = DECODE_BLOCK_SIZE * m_channels * sizeof(float);
-        m_decodeBuffer.resize(DECODE_BLOCK_SIZE * m_channels);
-
-        DWORD bytesRead = BASS_ChannelGetData(m_sourceStream, m_decodeBuffer.data(),
-            bytesNeeded | BASS_DATA_FLOAT);
-
-        if (bytesRead == (DWORD)-1 || bytesRead == 0) {
-            m_sourceEnded = true;
-            sonicFlushStream(m_sonicStream);
-            // Read any remaining output
-            std::vector<float> tempOut(4096 * m_channels);
-            int samplesRead;
-            while ((samplesRead = sonicReadFloatFromStream(m_sonicStream, tempOut.data(), 4096)) > 0) {
-                for (int i = 0; i < samplesRead * m_channels; i++) {
-                    m_outputQueue.push_back(tempOut[i]);
-                }
-            }
-            return false;
+    // Read up to `frames` interleaved frames from the source into m_decodeBuffer.
+    // Returns frames read; sets m_inputEnded at the end of the source.
+    int DecodeSource(int frames) {
+        m_decodeBuffer.resize(static_cast<size_t>(frames) * m_channels);
+        DWORD want = static_cast<DWORD>(m_decodeBuffer.size() * sizeof(float));
+        DWORD got = 0;
+        while (got < want) {
+            DWORD r = BASS_ChannelGetData(m_sourceStream,
+                reinterpret_cast<BYTE*>(m_decodeBuffer.data()) + got, (want - got) | BASS_DATA_FLOAT);
+            if (r == (DWORD)-1) { m_inputEnded = true; break; }
+            if (r == 0) break;  // nothing available right now
+            got += r;
         }
-
-        int samplesDecoded = bytesRead / sizeof(float) / m_channels;
-
-        // Write to Speedy
-        sonicWriteFloatToStream(m_sonicStream, m_decodeBuffer.data(), samplesDecoded);
-
-        // Read processed output
-        std::vector<float> tempOut(4096 * m_channels);
-        int samplesRead;
-        while ((samplesRead = sonicReadFloatFromStream(m_sonicStream, tempOut.data(), 4096)) > 0) {
-            for (int i = 0; i < samplesRead * m_channels; i++) {
-                m_outputQueue.push_back(tempOut[i]);
-            }
-        }
-
-        return true;
+        int read = static_cast<int>(got / (sizeof(float) * m_channels));
+        m_runFrames += read;
+        return read;
     }
 
-    // BASS stream callback
-    static DWORD CALLBACK StreamProc(HSTREAM handle, void* buffer, DWORD length, void* user) {
-        SpeedyProcessor* proc = static_cast<SpeedyProcessor*>(user);
+    // Engine hooks, called with m_mutex held.
+    // Start the engine at the source's current position (m_runStart). May decode pre-roll.
+    virtual void EngineStart() = 0;
+    // Process `frames` interleaved frames from m_decodeBuffer and Emit() the output.
+    virtual void EngineFeed(int frames) = 0;
+    // The source has ended: Emit() whatever the engine still holds.
+    virtual void EngineDrain() = 0;
+
+    // Append output to the FIFO and map it to source time up to `srcEnd` seconds.
+    void Emit(const float* interleaved, int frames, double srcEnd) {
+        if (frames <= 0) return;
+        m_queue.insert(m_queue.end(), interleaved, interleaved + static_cast<size_t>(frames) * m_channels);
+
+        std::lock_guard<std::mutex> lock(m_mapMutex);
+        Segment seg;
+        seg.outStart = m_outProduced;
+        seg.outEnd = m_outProduced + frames;
+        seg.srcStart = m_mapEnd;
+        seg.srcEnd = srcEnd > m_mapEnd ? srcEnd : m_mapEnd;
+        m_segments.push_back(seg);
+        m_outProduced = seg.outEnd;
+        m_mapEnd = seg.srcEnd;
+        // Drop segments that have been played; keep a bound if nobody is asking.
+        QWORD played = m_lastPlayedFrame;
+        while (m_segments.size() > 1 && (m_segments.front().outEnd <= played || m_segments.size() > 4096)) {
+            m_segments.pop_front();
+        }
+    }
+
+private:
+    struct Segment {
+        QWORD outStart, outEnd;     // output frames since the last reset
+        double srcStart, srcEnd;    // source seconds
+    };
+    mutable std::mutex m_mapMutex;  // separate from m_mutex so GetPosition never waits on processing
+    std::deque<Segment> m_segments;
+    QWORD m_outProduced = 0;
+    double m_mapEnd = 0.0;
+    mutable QWORD m_lastPlayedFrame = 0;
+
+    void ResetMap(double start) {
+        std::lock_guard<std::mutex> lock(m_mapMutex);
+        m_segments.clear();
+        m_outProduced = 0;
+        m_mapEnd = start;
+        m_lastPlayedFrame = 0;
+    }
+
+    // Restart the run at the source's current position. m_mutex held.
+    void Restart() {
+        m_queue.clear();
+        m_queueRead = 0;
+        m_inputEnded = false;
+        m_drained = false;
+        QWORD pos = BASS_ChannelGetPosition(m_sourceStream, BASS_POS_BYTE);
+        m_runStart = (pos == (QWORD)-1) ? 0.0 : BASS_ChannelBytes2Seconds(m_sourceStream, pos);
+        m_runFrames = 0;
+        ResetMap(m_runStart);
+        EngineStart();
+    }
+
+    DWORD Fill(float* out, DWORD length) {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        const size_t samplesNeeded = length / sizeof(float);
+        size_t written = 0;
+
+        while (written < samplesNeeded) {
+            size_t avail = m_queue.size() - m_queueRead;
+            if (avail > 0) {
+                size_t n = std::min(samplesNeeded - written, avail);
+                memcpy(out + written, m_queue.data() + m_queueRead, n * sizeof(float));
+                written += n;
+                m_queueRead += n;
+                continue;
+            }
+            m_queue.clear();
+            m_queueRead = 0;
+            if (m_drained) break;
+            if (m_inputEnded) {
+                EngineDrain();
+                m_drained = true;
+                continue;
+            }
+            int frames = DecodeSource(DECODE_BLOCK_FRAMES);
+            if (frames > 0) {
+                EngineFeed(frames);
+            } else if (!m_inputEnded) {
+                break;  // source has nothing right now; try again on the next call
+            }
+        }
+
+        // Keep the FIFO from growing without bound through repeated partial reads.
+        if (m_queueRead > 0 && m_queueRead * 2 > m_queue.size()) {
+            m_queue.erase(m_queue.begin(), m_queue.begin() + m_queueRead);
+            m_queueRead = 0;
+        }
+
+        DWORD bytes = static_cast<DWORD>(written * sizeof(float));
+        if (m_drained && m_queue.size() == m_queueRead) {
+            bytes |= BASS_STREAMPROC_END;
+        }
+        return bytes;
+    }
+
+    static DWORD CALLBACK StreamProc(HSTREAM, void* buffer, DWORD length, void* user) {
+        PushTempoProcessor* proc = static_cast<PushTempoProcessor*>(user);
         if (!proc) return BASS_STREAMPROC_END;
-
-        std::lock_guard<std::mutex> lock(proc->m_mutex);
-
-        float* outBuf = static_cast<float*>(buffer);
-        DWORD samplesNeeded = length / sizeof(float);
-        DWORD samplesWritten = 0;
-
-        while (samplesWritten < samplesNeeded) {
-            if (!proc->m_outputQueue.empty()) {
-                size_t canCopy = std::min((size_t)(samplesNeeded - samplesWritten),
-                                         proc->m_outputQueue.size());
-                for (size_t i = 0; i < canCopy; i++) {
-                    outBuf[samplesWritten++] = proc->m_outputQueue.front();
-                    proc->m_outputQueue.pop_front();
-                }
-            } else if (!proc->m_sourceEnded) {
-                if (!proc->ProcessMoreAudio()) {
-                    if (proc->m_outputQueue.empty()) break;
-                }
-            } else {
-                break;
-            }
-        }
-
-        while (samplesWritten < samplesNeeded) {
-            outBuf[samplesWritten++] = 0.0f;
-        }
-
-        if (proc->m_sourceEnded && proc->m_outputQueue.empty()) {
-            return samplesWritten * sizeof(float) | BASS_STREAMPROC_END;
-        }
-
-        return samplesWritten * sizeof(float);
+        return proc->Fill(static_cast<float*>(buffer), length);
     }
 
 public:
-    SpeedyProcessor() = default;
-
-    ~SpeedyProcessor() override {
-        Shutdown();
-    }
+    ~PushTempoProcessor() override = default;
 
     HSTREAM Initialize(HSTREAM sourceStream, float sampleRate) override {
         std::lock_guard<std::mutex> lock(m_mutex);
-
+        BASS_CHANNELINFO info;
+        if (!BASS_ChannelGetInfo(sourceStream, &info) || info.chans == 0) {
+            return 0;
+        }
         m_sourceStream = sourceStream;
         m_sampleRate = sampleRate;
-        m_sourceEnded = false;
-        m_outputQueue.clear();
-        m_nonlinearEnabled = g_speedyNonlinear;  // Use global setting
-
-        // Get channel info
-        BASS_CHANNELINFO info;
-        if (!BASS_ChannelGetInfo(sourceStream, &info)) {
+        m_channels = static_cast<int>(info.chans);
+        if (!EngineCreate()) {
+            m_sourceStream = 0;
             return 0;
         }
-        m_channels = info.chans;
+        Restart();
 
-        // Create Speedy/Sonic stream
-        m_sonicStream = sonicCreateStream(static_cast<int>(m_sampleRate), m_channels);
-        if (!m_sonicStream) {
-            return 0;
-        }
-
-        // Enable Speedy's nonlinear speedup for speech
-        if (m_nonlinearEnabled) {
-            sonicEnableNonlinearSpeedup(m_sonicStream, 1.0f);
-        }
-
-        // Apply current settings
-        UpdateSonicParams();
-
-        // Create output stream
-        m_outputStream = BASS_StreamCreate(
-            static_cast<DWORD>(m_sampleRate),
-            m_channels,
-            BASS_SAMPLE_FLOAT,
-            StreamProc,
-            this
-        );
-
+        m_outputStream = BASS_StreamCreate(static_cast<DWORD>(m_sampleRate), m_channels,
+                                           BASS_SAMPLE_FLOAT, StreamProc, this);
         if (!m_outputStream) {
-            sonicDestroyStream(m_sonicStream);
-            m_sonicStream = nullptr;
+            EngineDestroy();
+            m_sourceStream = 0;
             return 0;
         }
-
         return m_outputStream;
     }
 
     void Shutdown() override {
-        std::lock_guard<std::mutex> lock(m_mutex);
+        // Free the output stream before taking the lock: BASS_StreamFree waits for a running
+        // STREAMPROC, which itself needs the lock.
+        HSTREAM out = m_outputStream;
+        m_outputStream = 0;
+        if (out) BASS_StreamFree(out);
 
-        if (m_outputStream) {
-            BASS_StreamFree(m_outputStream);
-            m_outputStream = 0;
-        }
-        if (m_sonicStream) {
-            sonicDestroyStream(m_sonicStream);
-            m_sonicStream = nullptr;
-        }
+        std::lock_guard<std::mutex> lock(m_mutex);
+        EngineDestroy();
         m_sourceStream = 0;
-        m_outputQueue.clear();
+        m_queue.clear();
+        m_queueRead = 0;
     }
 
-    void SetTempo(float tempoPercent) override {
-        std::lock_guard<std::mutex> lock(m_mutex);
-        m_tempo = tempoPercent;
-        UpdateSonicParams();
-    }
-
-    void SetPitch(float semitones) override {
-        std::lock_guard<std::mutex> lock(m_mutex);
-        m_pitch = semitones;
-        UpdateSonicParams();
-    }
-
-    void SetRate(float rate) override {
-        std::lock_guard<std::mutex> lock(m_mutex);
-        m_rate = rate;
-        UpdateSonicParams();
-    }
-
-    float GetTempo() const override {
-        std::lock_guard<std::mutex> lock(m_mutex);
-        return m_tempo;
-    }
-    float GetPitch() const override {
-        std::lock_guard<std::mutex> lock(m_mutex);
-        return m_pitch;
-    }
-    float GetRate() const override {
-        std::lock_guard<std::mutex> lock(m_mutex);
-        return m_rate;
-    }
-    bool IsActive() const override {
-        std::lock_guard<std::mutex> lock(m_mutex);
-        return m_sonicStream != nullptr;
-    }
-    TempoAlgorithm GetAlgorithm() const override { return TempoAlgorithm::Speedy; }
+    float GetTempo() const override { return m_tempo; }
+    float GetPitch() const override { return m_pitch; }
+    float GetRate() const override { return m_rate; }
+    bool IsActive() const override { return m_outputStream != 0; }
 
     double GetLength() const override {
-        std::lock_guard<std::mutex> lock(m_mutex);
         if (!m_sourceStream) return 0.0;
         QWORD bytes = BASS_ChannelGetLength(m_sourceStream, BASS_POS_BYTE);
         if (bytes == (QWORD)-1) return 0.0;
@@ -387,349 +386,306 @@ public:
     }
 
     double GetPosition() const override {
-        std::lock_guard<std::mutex> lock(m_mutex);
-        if (!m_sourceStream) return 0.0;
-        QWORD bytes = BASS_ChannelGetPosition(m_sourceStream, BASS_POS_BYTE);
-        if (bytes == (QWORD)-1) return 0.0;
-        return BASS_ChannelBytes2Seconds(m_sourceStream, bytes);
+        if (!m_outputStream) return 0.0;
+        QWORD bytes = BASS_ChannelGetPosition(m_outputStream, BASS_POS_BYTE);
+        QWORD played = (bytes == (QWORD)-1) ? 0 : bytes / (sizeof(float) * m_channels);
+
+        std::lock_guard<std::mutex> lock(m_mapMutex);
+        m_lastPlayedFrame = played;
+        if (m_segments.empty()) return m_mapEnd;
+        const Segment& first = m_segments.front();
+        if (played <= first.outStart) return first.srcStart;
+        for (const Segment& seg : m_segments) {
+            if (played < seg.outEnd) {
+                double t = static_cast<double>(played - seg.outStart) / static_cast<double>(seg.outEnd - seg.outStart);
+                return seg.srcStart + (seg.srcEnd - seg.srcStart) * t;
+            }
+        }
+        return m_segments.back().srcEnd;
     }
 
     void SetPosition(double seconds) override {
-        std::lock_guard<std::mutex> lock(m_mutex);
-        if (!m_sourceStream || !m_sonicStream) return;
+        if (!m_sourceStream || !m_outputStream) return;
 
-        QWORD bytes = BASS_ChannelSeconds2Bytes(m_sourceStream, seconds);
-        BASS_ChannelSetPosition(m_sourceStream, bytes, BASS_POS_BYTE | BASS_POS_FLUSH);
+        // Keep the STREAMPROC out while the source, engine and playback buffer are reset together.
+        BASS_ChannelLock(m_outputStream, TRUE);
+        {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            QWORD bytes = BASS_ChannelSeconds2Bytes(m_sourceStream, seconds);
+            if (BASS_ChannelSetPosition(m_sourceStream, bytes, BASS_POS_BYTE)) {
+                Restart();
+            } else {
+                // Past the end (or unseekable): end the stream so playback moves on.
+                m_queue.clear();
+                m_queueRead = 0;
+                m_inputEnded = true;
+                m_drained = true;
+                ResetMap(seconds);
+            }
+        }
+        // Resetting a user stream to 0 discards its playback buffer, so the new position is heard
+        // straight away instead of after the buffer of old audio plays out.
+        BASS_ChannelSetPosition(m_outputStream, 0, BASS_POS_BYTE);
+        BASS_ChannelLock(m_outputStream, FALSE);
+    }
 
-        // Recreate sonic stream to reset state
-        sonicDestroyStream(m_sonicStream);
+    HSTREAM GetSourceStream() const override { return m_sourceStream; }
+
+protected:
+    virtual bool EngineCreate() = 0;
+    virtual void EngineDestroy() = 0;
+};
+
+#endif // USE_SPEEDY || USE_SIGNALSMITH
+
+// ============================================================================
+// Speedy (Google)
+// ============================================================================
+#ifdef USE_SPEEDY
+
+class SpeedyProcessor : public PushTempoProcessor {
+private:
+    sonicStream m_sonicStream = nullptr;
+    bool m_nonlinearEnabled = true;
+    std::vector<float> m_scratch;
+    QWORD m_alignedFrames = 0;     // source frames of this run that the emitted output covers
+
+    // Sonic and Speedy hold some input back before it comes out: Speedy looks ahead
+    // kTemporalHysteresisFuture 10 ms frames plus its 15 ms analysis window, and Sonic keeps
+    // up to two pitch periods. Output is mapped to the input this far behind what was written.
+    double LatencyFrames() const {
+        return m_sampleRate * (m_nonlinearEnabled ? 0.19 : 0.03);
+    }
+
+    void UpdateSonicParams() {
+        if (!m_sonicStream) return;
+        sonicSetSpeed(m_sonicStream, static_cast<float>(Speed()));
+        // sonicSetPitch is not wrapped by sonic2.h, use internal function
+        sonicIntSetPitch(m_sonicStream, powf(2.0f, m_pitch / 12.0f));
+    }
+
+    void ReadOutput(double srcEnd) {
+        const int chunk = 4096;
+        m_scratch.resize(static_cast<size_t>(chunk) * m_channels);
+        int got;
+        while ((got = sonicReadFloatFromStream(m_sonicStream, m_scratch.data(), chunk)) > 0) {
+            Emit(m_scratch.data(), got, srcEnd);
+        }
+    }
+
+protected:
+    bool EngineCreate() override {
+        m_nonlinearEnabled = g_speedyNonlinear;
+        m_sonicStream = sonicCreateStream(static_cast<int>(m_sampleRate), m_channels);
+        return m_sonicStream != nullptr;
+    }
+
+    void EngineDestroy() override {
+        if (m_sonicStream) {
+            sonicDestroyStream(m_sonicStream);
+            m_sonicStream = nullptr;
+        }
+    }
+
+    void EngineStart() override {
+        // A fresh stream per run: Sonic and Speedy have no reset of their own.
+        EngineDestroy();
         m_sonicStream = sonicCreateStream(static_cast<int>(m_sampleRate), m_channels);
         if (m_sonicStream && m_nonlinearEnabled) {
             sonicEnableNonlinearSpeedup(m_sonicStream, 1.0f);
         }
         UpdateSonicParams();
-        m_outputQueue.clear();
-        m_sourceEnded = false;
+        m_alignedFrames = 0;
+        if (!m_sonicStream) m_drained = true;  // nothing we can play
     }
 
-    HSTREAM GetSourceStream() const override {
-        std::lock_guard<std::mutex> lock(m_mutex);
-        return m_sourceStream;
-    }
-
-private:
-    void UpdateSonicParams() {
+    void EngineFeed(int frames) override {
         if (!m_sonicStream) return;
+        // Speedy's shim converts to 16 bit with a bare cast, which wraps at full scale.
+        float* samples = m_decodeBuffer.data();
+        const size_t count = static_cast<size_t>(frames) * m_channels;
+        for (size_t i = 0; i < count; i++) {
+            if (samples[i] > 0.99996f) samples[i] = 0.99996f;
+            else if (samples[i] < -1.0f) samples[i] = -1.0f;
+        }
+        sonicWriteFloatToStream(m_sonicStream, samples, frames);
 
-        float speed = TempoToSpeed();
-        float pitch = SemitonesToPitch();
+        double aligned = static_cast<double>(m_runFrames) - LatencyFrames();
+        if (aligned > static_cast<double>(m_alignedFrames)) m_alignedFrames = static_cast<QWORD>(aligned);
+        ReadOutput(RunTime(static_cast<double>(m_alignedFrames)));
+    }
 
-        sonicSetSpeed(m_sonicStream, speed);
-        // sonicSetPitch is not wrapped by sonic2.h, use internal function
-        sonicIntSetPitch(m_sonicStream, pitch);
+    void EngineDrain() override {
+        if (!m_sonicStream) return;
+        if (m_nonlinearEnabled) {
+            // Speedy's flush only passes on complete 10 ms buffers; top up the last partial one
+            // with silence so the final few milliseconds are not dropped.
+            std::vector<float> silence(static_cast<size_t>(m_sampleRate / 100.0f + 1) * m_channels, 0.0f);
+            sonicWriteFloatToStream(m_sonicStream, silence.data(), static_cast<int>(silence.size() / m_channels));
+        }
+        sonicFlushStream(m_sonicStream);
+        m_alignedFrames = m_runFrames;
+        ReadOutput(RunTime(static_cast<double>(m_runFrames)));
+    }
+
+public:
+    ~SpeedyProcessor() override { Shutdown(); }
+
+    TempoAlgorithm GetAlgorithm() const override { return TempoAlgorithm::Speedy; }
+
+    void SetTempo(float tempoPercent) override {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        m_tempo = tempoPercent;
+        UpdateSonicParams();
+    }
+
+    void SetPitch(float semitones) override {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        m_pitch = semitones;
+        UpdateSonicParams();
+    }
+
+    void SetRate(float rate) override {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        m_rate = rate;
+        UpdateSonicParams();
     }
 };
 
 #endif // USE_SPEEDY
 
 // ============================================================================
-// Signalsmith Stretch Implementation
+// Signalsmith Stretch
 // ============================================================================
 #ifdef USE_SIGNALSMITH
 
-class SignalsmithProcessor : public TempoProcessor {
+class SignalsmithProcessor : public PushTempoProcessor {
 private:
-    HSTREAM m_sourceStream = 0;
-    HSTREAM m_outputStream = 0;
     signalsmith::stretch::SignalsmithStretch<float> m_stretcher;
-    float m_sampleRate = 44100.0f;
-    int m_channels = 2;
-    float m_tempo = 0.0f;   // percentage
-    float m_pitch = 0.0f;   // semitones
-    float m_rate = 1.0f;    // multiplier
-    bool m_sourceEnded = false;
+    std::vector<std::vector<float>> m_channelIn, m_channelOut;
+    std::vector<float*> m_inPtrs, m_outPtrs;
+    std::vector<float> m_interleaved;
+    QWORD m_alignedFrames = 0;   // source frames of this run already rendered to output
+    double m_outFraction = 0.0;  // carries the fractional output frame between blocks
 
-    mutable std::mutex m_mutex;
-
-    // Buffers
-    std::vector<float> m_decodeBuffer;
-    std::vector<float*> m_inputChannels;
-    std::vector<float*> m_outputChannels;
-    std::vector<std::vector<float>> m_channelIn;
-    std::vector<std::vector<float>> m_channelOut;
-    std::deque<float> m_outputQueue;
-
-    static constexpr size_t DECODE_BLOCK_SIZE = 1024;
-    static constexpr size_t MAX_OUTPUT_QUEUE = 65536;
-
-    double GetSpeedMultiplier() const {
-        return (100.0 + m_tempo) / 100.0 * m_rate;
+    float TonalityLimit() const {
+        return g_ssTonalityLimit > 0 ? static_cast<float>(g_ssTonalityLimit) / m_sampleRate : 0.0f;
     }
 
-    bool ProcessMoreAudio() {
-        if (m_sourceEnded || m_channels == 0) return false;
-
-        DWORD bytesNeeded = DECODE_BLOCK_SIZE * m_channels * sizeof(float);
-        m_decodeBuffer.resize(DECODE_BLOCK_SIZE * m_channels);
-
-        DWORD bytesRead = BASS_ChannelGetData(m_sourceStream, m_decodeBuffer.data(),
-            bytesNeeded | BASS_DATA_FLOAT);
-
-        if (bytesRead == (DWORD)-1 || bytesRead == 0) {
-            m_sourceEnded = true;
-            return false;
-        }
-
-        size_t samplesDecoded = bytesRead / sizeof(float) / m_channels;
-
-        // Deinterleave input
+    void Deinterleave(const float* in, int frames) {
         for (int ch = 0; ch < m_channels; ch++) {
-            m_channelIn[ch].resize(samplesDecoded);
-            for (size_t i = 0; i < samplesDecoded; i++) {
-                m_channelIn[ch][i] = m_decodeBuffer[i * m_channels + ch];
-            }
-            m_inputChannels[ch] = m_channelIn[ch].data();
+            m_channelIn[ch].resize(frames);
+            float* dst = m_channelIn[ch].data();
+            for (int i = 0; i < frames; i++) dst[i] = in[static_cast<size_t>(i) * m_channels + ch];
+            m_inPtrs[ch] = dst;
         }
+    }
 
-        // Calculate output size based on speed
-        double speed = GetSpeedMultiplier();
-        if (speed < 0.1) speed = 0.1;
-        if (speed > 10.0) speed = 10.0;
-        size_t outputSamples = static_cast<size_t>(samplesDecoded / speed + 0.5);
-        if (outputSamples < 1) outputSamples = 1;
-
-        // Resize output buffers
+    void PrepareOutput(int frames) {
         for (int ch = 0; ch < m_channels; ch++) {
-            m_channelOut[ch].resize(outputSamples);
-            m_outputChannels[ch] = m_channelOut[ch].data();
+            m_channelOut[ch].resize(frames > 0 ? frames : 1);
+            m_outPtrs[ch] = m_channelOut[ch].data();
         }
+    }
 
-        // Process through Signalsmith
-        m_stretcher.process(m_inputChannels.data(), (int)samplesDecoded,
-                           m_outputChannels.data(), (int)outputSamples);
-
-        // Interleave output to queue
-        for (size_t i = 0; i < outputSamples; i++) {
-            for (int ch = 0; ch < m_channels; ch++) {
-                m_outputQueue.push_back(m_channelOut[ch][i]);
-            }
+    void EmitOutput(int frames, double srcEnd) {
+        m_interleaved.resize(static_cast<size_t>(frames) * m_channels);
+        for (int ch = 0; ch < m_channels; ch++) {
+            const float* src = m_channelOut[ch].data();
+            for (int i = 0; i < frames; i++) m_interleaved[static_cast<size_t>(i) * m_channels + ch] = src[i];
         }
+        Emit(m_interleaved.data(), frames, srcEnd);
+    }
 
+    double RealTime(QWORD engineFrames) const {
+        // Pre-roll padding past the end of a short file is not real audio.
+        return RunTime(static_cast<double>(std::min(engineFrames, m_runFrames)));
+    }
+
+protected:
+    bool EngineCreate() override {
+        if (g_ssPreset == 1) {
+            m_stretcher.presetCheaper(m_channels, m_sampleRate);
+        } else {
+            m_stretcher.presetDefault(m_channels, m_sampleRate);
+        }
+        m_stretcher.setTransposeSemitones(m_pitch, TonalityLimit());
+        m_channelIn.assign(m_channels, {});
+        m_channelOut.assign(m_channels, {});
+        m_inPtrs.assign(m_channels, nullptr);
+        m_outPtrs.assign(m_channels, nullptr);
         return true;
     }
 
-    static DWORD CALLBACK StreamProc(HSTREAM handle, void* buffer, DWORD length, void* user) {
-        SignalsmithProcessor* proc = static_cast<SignalsmithProcessor*>(user);
-        if (!proc) return BASS_STREAMPROC_END;
+    void EngineDestroy() override {
+        m_channelIn.clear();
+        m_channelOut.clear();
+        m_inPtrs.clear();
+        m_outPtrs.clear();
+    }
 
-        std::lock_guard<std::mutex> lock(proc->m_mutex);
+    void EngineStart() override {
+        // Pre-roll: hand the stretcher the audio just after the start point so that its first
+        // output lines up with the start point. Without this the first ~150 ms after every seek
+        // come out as the stretcher's own latency (silence).
+        const double speed = Speed();
+        const int seekLen = m_stretcher.outputSeekLength(static_cast<float>(speed));
+        int got = DecodeSource(seekLen);
+        m_decodeBuffer.resize(static_cast<size_t>(seekLen) * m_channels, 0.0f);
+        std::fill(m_decodeBuffer.begin() + static_cast<size_t>(got) * m_channels, m_decodeBuffer.end(), 0.0f);
+        Deinterleave(m_decodeBuffer.data(), seekLen);
+        float** inputs = m_inPtrs.data();
+        m_stretcher.outputSeek(inputs, seekLen);
+        m_alignedFrames = 0;
+        m_outFraction = 0.0;
+    }
 
-        float* outBuf = static_cast<float*>(buffer);
-        DWORD samplesNeeded = length / sizeof(float);
-        DWORD samplesWritten = 0;
+    void EngineFeed(int frames) override {
+        const double speed = Speed();
+        m_outFraction += frames / speed;
+        int outFrames = static_cast<int>(m_outFraction);
+        m_outFraction -= outFrames;
 
-        while (samplesWritten < samplesNeeded) {
-            if (!proc->m_outputQueue.empty()) {
-                size_t canCopy = std::min((size_t)(samplesNeeded - samplesWritten),
-                                         proc->m_outputQueue.size());
-                for (size_t i = 0; i < canCopy; i++) {
-                    outBuf[samplesWritten++] = proc->m_outputQueue.front();
-                    proc->m_outputQueue.pop_front();
-                }
-            } else if (!proc->m_sourceEnded) {
-                if (!proc->ProcessMoreAudio()) {
-                    if (proc->m_outputQueue.empty()) {
-                        break;
-                    }
-                }
-            } else {
-                break;
-            }
-        }
+        Deinterleave(m_decodeBuffer.data(), frames);
+        PrepareOutput(outFrames);
+        m_stretcher.process(m_inPtrs.data(), frames, m_outPtrs.data(), outFrames);
+        m_alignedFrames += frames;
+        EmitOutput(outFrames, RealTime(m_alignedFrames));
+    }
 
-        if (samplesWritten == 0 && proc->m_sourceEnded) {
-            return BASS_STREAMPROC_END;
-        }
-
-        // Zero remaining buffer if we couldn't fill it
-        while (samplesWritten < samplesNeeded) {
-            outBuf[samplesWritten++] = 0.0f;
-        }
-
-        return samplesWritten * sizeof(float);
+    void EngineDrain() override {
+        // Everything fed but not yet rendered (the stretcher's latency) comes out here; without
+        // it the end of every file was cut short.
+        const double speed = Speed();
+        QWORD realEnd = std::max(m_runFrames, m_alignedFrames);
+        QWORD remaining = realEnd - m_alignedFrames;
+        int outFrames = static_cast<int>(remaining / speed + m_outFraction + 0.5);
+        if (outFrames <= 0) return;
+        PrepareOutput(outFrames);
+        m_stretcher.flush(m_outPtrs.data(), outFrames, static_cast<float>(speed));
+        m_alignedFrames = realEnd;
+        EmitOutput(outFrames, RealTime(realEnd));
     }
 
 public:
-    ~SignalsmithProcessor() override {
-        Shutdown();
-    }
+    ~SignalsmithProcessor() override { Shutdown(); }
 
-    HSTREAM Initialize(HSTREAM sourceStream, float sampleRate) override {
-        std::lock_guard<std::mutex> lock(m_mutex);
-
-        m_sourceStream = sourceStream;
-        m_sampleRate = sampleRate;
-        m_sourceEnded = false;
-        m_outputQueue.clear();
-
-        // Get channel info
-        BASS_CHANNELINFO info;
-        if (!BASS_ChannelGetInfo(sourceStream, &info)) {
-            return 0;
-        }
-        m_channels = info.chans;
-
-        // Configure Signalsmith based on global settings
-        if (g_ssPreset == 1) {
-            m_stretcher.presetCheaper(m_channels, (int)sampleRate);
-        } else {
-            m_stretcher.presetDefault(m_channels, (int)sampleRate);
-        }
-
-        // Set tonality limit if specified (0 = auto)
-        float tonalityLimit = g_ssTonalityLimit > 0 ? static_cast<float>(g_ssTonalityLimit) / sampleRate : 0.0f;
-        m_stretcher.setTransposeSemitones(m_pitch, tonalityLimit);
-        m_stretcher.reset();
-
-        // Allocate buffers
-        m_channelIn.resize(m_channels);
-        m_channelOut.resize(m_channels);
-        m_inputChannels.resize(m_channels);
-        m_outputChannels.resize(m_channels);
-
-        // Pre-fill the stretcher to handle latency
-        // Process some initial audio to prime the internal buffers
-        int latencySamples = m_stretcher.inputLatency() + m_stretcher.outputLatency();
-        if (latencySamples > 0) {
-            std::vector<float> primeBuffer(latencySamples * m_channels, 0.0f);
-            DWORD bytesRead = BASS_ChannelGetData(sourceStream, primeBuffer.data(),
-                latencySamples * m_channels * sizeof(float) | BASS_DATA_FLOAT);
-
-            if (bytesRead > 0 && bytesRead != (DWORD)-1) {
-                size_t primeSamples = bytesRead / sizeof(float) / m_channels;
-
-                // Deinterleave and process
-                for (int ch = 0; ch < m_channels; ch++) {
-                    m_channelIn[ch].resize(primeSamples);
-                    for (size_t i = 0; i < primeSamples; i++) {
-                        m_channelIn[ch][i] = primeBuffer[i * m_channels + ch];
-                    }
-                    m_inputChannels[ch] = m_channelIn[ch].data();
-                    m_channelOut[ch].resize(primeSamples);
-                    m_outputChannels[ch] = m_channelOut[ch].data();
-                }
-
-                // Process to prime the stretcher (discard output)
-                m_stretcher.process(m_inputChannels.data(), (int)primeSamples,
-                                   m_outputChannels.data(), (int)primeSamples);
-            }
-        }
-
-        // Create output stream (no DECODE flag - this is the playback stream)
-        m_outputStream = BASS_StreamCreate(
-            (DWORD)sampleRate,
-            m_channels,
-            BASS_SAMPLE_FLOAT,
-            StreamProc,
-            this
-        );
-
-        if (!m_outputStream) {
-            return 0;
-        }
-
-        return m_outputStream;
-    }
-
-    void Shutdown() override {
-        std::lock_guard<std::mutex> lock(m_mutex);
-
-        if (m_outputStream) {
-            BASS_StreamFree(m_outputStream);
-            m_outputStream = 0;
-        }
-        m_sourceStream = 0;
-        m_outputQueue.clear();
-        m_channelIn.clear();
-        m_channelOut.clear();
-        m_inputChannels.clear();
-        m_outputChannels.clear();
-    }
+    TempoAlgorithm GetAlgorithm() const override { return TempoAlgorithm::Signalsmith; }
 
     void SetTempo(float tempoPercent) override {
         std::lock_guard<std::mutex> lock(m_mutex);
-        m_tempo = tempoPercent;
-        // Signalsmith handles tempo via input/output sample ratio in process()
+        m_tempo = tempoPercent;  // applied through the input/output ratio of each block
     }
 
     void SetPitch(float semitones) override {
         std::lock_guard<std::mutex> lock(m_mutex);
         m_pitch = semitones;
-        float tonalityLimit = g_ssTonalityLimit > 0 ? static_cast<float>(g_ssTonalityLimit) / m_sampleRate : 0.0f;
-        m_stretcher.setTransposeSemitones(semitones, tonalityLimit);
+        m_stretcher.setTransposeSemitones(semitones, TonalityLimit());
     }
 
     void SetRate(float rate) override {
         std::lock_guard<std::mutex> lock(m_mutex);
-        m_rate = rate;
-        // Rate is handled via input/output sample ratio in process()
-    }
-
-    float GetTempo() const override {
-        std::lock_guard<std::mutex> lock(m_mutex);
-        return m_tempo;
-    }
-
-    float GetPitch() const override {
-        std::lock_guard<std::mutex> lock(m_mutex);
-        return m_pitch;
-    }
-
-    float GetRate() const override {
-        std::lock_guard<std::mutex> lock(m_mutex);
-        return m_rate;
-    }
-
-    bool IsActive() const override {
-        std::lock_guard<std::mutex> lock(m_mutex);
-        return m_outputStream != 0;
-    }
-
-    TempoAlgorithm GetAlgorithm() const override {
-        return TempoAlgorithm::Signalsmith;
-    }
-
-    double GetLength() const override {
-        std::lock_guard<std::mutex> lock(m_mutex);
-        if (!m_sourceStream) return 0.0;
-        QWORD len = BASS_ChannelGetLength(m_sourceStream, BASS_POS_BYTE);
-        return BASS_ChannelBytes2Seconds(m_sourceStream, len);
-    }
-
-    double GetPosition() const override {
-        std::lock_guard<std::mutex> lock(m_mutex);
-        if (!m_sourceStream) return 0.0;
-        QWORD pos = BASS_ChannelGetPosition(m_sourceStream, BASS_POS_BYTE);
-        return BASS_ChannelBytes2Seconds(m_sourceStream, pos);
-    }
-
-    void SetPosition(double seconds) override {
-        std::lock_guard<std::mutex> lock(m_mutex);
-        if (!m_sourceStream) return;
-
-        QWORD pos = BASS_ChannelSeconds2Bytes(m_sourceStream, seconds);
-        BASS_ChannelSetPosition(m_sourceStream, pos, BASS_POS_BYTE);
-
-        // Reset stretcher and clear output
-        m_stretcher.reset();
-        m_stretcher.setTransposeSemitones(m_pitch);
-        m_outputQueue.clear();
-        m_sourceEnded = false;
-    }
-
-    HSTREAM GetSourceStream() const override {
-        std::lock_guard<std::mutex> lock(m_mutex);
-        return m_sourceStream;
+        m_rate = rate;  // applied through the input/output ratio of each block
     }
 };
 
