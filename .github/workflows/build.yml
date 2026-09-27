@@ -87,8 +87,9 @@ jobs:
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 
       # One compile per core: a bare --parallel lets make start them all at once.
+      # -k reports every compile error in one run instead of stopping at the first.
       - name: Build FastPlay.app
-        run: cmake --build build --parallel "$(sysctl -n hw.ncpu)"
+        run: cmake --build build --parallel "$(sysctl -n hw.ncpu)" -- -k
 
       # Ad-hoc signed (no Developer ID): the libraries first, then the app itself.
       - name: Sign and zip

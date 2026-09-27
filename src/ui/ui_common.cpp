@@ -1,6 +1,7 @@
 #include "ui/ui_common.h"
 #include "ui/main_frame.h"
 
+#include <wx/artprov.h>
 #include <wx/clipbrd.h>
 #include <wx/filedlg.h>
 #include <wx/filename.h>
