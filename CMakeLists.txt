@@ -124,6 +124,7 @@ set(FASTPLAY_SOURCES
     src/settings.cpp
     src/spatial_audio.cpp
     src/tempo_processor.cpp
+    src/updater.cpp
     src/utils.cpp
     src/youtube.cpp
     src/sqlite3.c
@@ -165,15 +166,14 @@ if(WIN32)
         src/platform/win7_compat.cpp
         src/platform/speech_windows.cpp
         src/platform/startup_windows.cpp
+        src/platform/updater_windows.cpp
         res/fastplay.rc
-        src/updater.cpp
     )
 else()
     list(APPEND FASTPLAY_SOURCES
         src/platform/http_curl.cpp
         src/platform/ini_portable.cpp
         src/platform/subprocess_posix.cpp
-        src/platform/updater_unsupported.cpp
     )
 endif()
 if(APPLE)
@@ -183,7 +183,10 @@ if(APPLE)
         src/platform/speech_mac.mm
         src/platform/startup_mac.cpp
         src/platform/system_keys_mac.mm
+        src/platform/updater_mac.cpp
     )
+elseif(NOT WIN32)
+    list(APPEND FASTPLAY_SOURCES src/platform/updater_unsupported.cpp)
 endif()
 
 add_executable(FastPlay WIN32 MACOSX_BUNDLE ${FASTPLAY_SOURCES})
