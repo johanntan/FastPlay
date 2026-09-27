@@ -22,6 +22,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <cwchar>
 #include <filesystem>
 #include <initializer_list>
 #include <mutex>
@@ -603,7 +604,45 @@ bool YouTubeVideoChannel(const std::wstring& videoId, YouTubeListInfo& info, std
     return true;
 }
 
-bool YouTubeLatestUpload(YouTubeKind kind, const std::wstring& id, int64_t& published) {
+// Text between <tag> and </tag> from `from` on, with XML's escapes decoded.
+static std::string XmlText(const std::string& xml, const char* tag, size_t from, size_t before) {
+    std::string open = std::string("<") + tag + ">", close = std::string("</") + tag + ">";
+    size_t start = xml.find(open, from);
+    if (start == std::string::npos || start > before) return "";
+    start += open.size();
+    size_t stop = xml.find(close, start);
+    if (stop == std::string::npos) return "";
+    std::string text = xml.substr(start, stop - start), out;
+    for (size_t i = 0; i < text.size(); i++) {
+        if (text[i] != '&') {
+            out += text[i];
+            continue;
+        }
+        size_t semi = text.find(';', i);
+        if (semi == std::string::npos) {
+            out += text[i];
+            continue;
+        }
+        std::string entity = text.substr(i + 1, semi - i - 1);
+        if (entity == "amp") out += '&';
+        else if (entity == "lt") out += '<';
+        else if (entity == "gt") out += '>';
+        else if (entity == "quot") out += '"';
+        else if (entity == "apos") out += '\'';
+        else if (!entity.empty() && entity[0] == '#') {
+            unsigned long code = entity.size() > 1 && (entity[1] == 'x' || entity[1] == 'X')
+                                     ? std::strtoul(entity.c_str() + 2, nullptr, 16)
+                                     : std::strtoul(entity.c_str() + 1, nullptr, 10);
+            out += WideToUtf8(std::wstring(1, static_cast<wchar_t>(code)));
+        } else {
+            out += text.substr(i, semi - i + 1);
+        }
+        i = semi;
+    }
+    return out;
+}
+
+bool YouTubeReadFeed(YouTubeKind kind, const std::wstring& id, YouTubeListInfo& info, int64_t& published) {
     published = 0;
     std::wstring url = L"https://www.youtube.com/feeds/videos.xml?" +
                        std::wstring(kind == YouTubeKind::Playlist ? L"playlist_id=" : L"channel_id=") + id;
@@ -611,15 +650,79 @@ bool YouTubeLatestUpload(YouTubeKind kind, const std::wstring& id, int64_t& publ
     options.timeoutMs = 15000;
     HttpResult result = HttpGet(url, options);
     if (!result.completed || result.status != 200) return false;
-    // The feed's own <published> (when the channel or playlist was made) comes
-    // before the first <entry>; each entry has its video's.
+
+    // The feed's own title, author and <published> (when the channel or playlist
+    // was made) come before the first <entry>; each entry has its video's date.
     const std::string& xml = result.body;
-    size_t pos = xml.find("<entry>");
+    size_t firstEntry = xml.find("<entry>");
+    info.kind = kind;
+    info.id = id;
+    info.name = Utf8ToWide(XmlText(xml, "title", 0, firstEntry));
+    info.channel = kind == YouTubeKind::Playlist ? Utf8ToWide(XmlText(xml, "name", 0, firstEntry)) : L"";
+    size_t pos = firstEntry;
     while (pos != std::string::npos && (pos = xml.find("<published>", pos)) != std::string::npos) {
         pos += 11;
         int64_t when = ParseIsoTime(xml.substr(pos, 32));
         if (when > published) published = when;
     }
+    return true;
+}
+
+bool YouTubeLatestUpload(YouTubeKind kind, const std::wstring& id, int64_t& published) {
+    YouTubeListInfo info;
+    return YouTubeReadFeed(kind, id, info, published);
+}
+
+bool YouTubeResolveFavorite(const std::wstring& text, YouTubeListInfo& info, int64_t& published,
+                            std::wstring& error, const YouTubeStatus& status) {
+    info = YouTubeListInfo();
+    published = 0;
+    error.clear();
+
+    std::wstring line = text;
+    size_t first = line.find_first_not_of(L" \t\r\n\"'<>");
+    size_t last = line.find_last_not_of(L" \t\r\n\"'<>");
+    if (first == std::wstring::npos) {
+        error = L"The line is empty.";
+        return false;
+    }
+    line = line.substr(first, last - first + 1);
+
+    // An ID can be read straight from the line: then the feed says the rest.
+    auto idAfter = [&line](const wchar_t* marker) {
+        size_t pos = line.find(marker);
+        if (pos == std::wstring::npos) return std::wstring();
+        pos += wcslen(marker);
+        return line.substr(pos, line.find_first_of(L"/?&#", pos) - pos);
+    };
+    YouTubeKind kind = YouTubeKind::Channel;
+    std::wstring id;
+    if (IsChannelId(line)) {
+        id = line;
+    } else if (!(id = idAfter(L"list=")).empty()) {
+        kind = YouTubeKind::Playlist;
+    } else {
+        id = idAfter(L"/channel/");
+    }
+    if (!id.empty() && (kind == YouTubeKind::Playlist || IsChannelId(id)) && YouTubeReadFeed(kind, id, info, published) &&
+        !info.name.empty()) {
+        return true;
+    }
+
+    // A @handle or custom URL: yt-dlp finds the channel.
+    std::wstring url = line;
+    if (url[0] == L'@') {
+        url = L"https://www.youtube.com/" + url;
+    } else if (url.find(L"://") == std::wstring::npos) {
+        url = L"https://" + url;
+    }
+    if (!IsYouTubeURL(url)) {
+        error = L"Not a YouTube channel or playlist.";
+        return false;
+    }
+    if (!YouTubeIdentify(url, info, error, status)) return false;
+    YouTubeListInfo feed;
+    YouTubeReadFeed(info.kind, info.id, feed, published);
     return true;
 }
 

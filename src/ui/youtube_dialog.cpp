@@ -3,7 +3,8 @@
 //   video or opens a channel or playlist (Backspace goes back); a channel or
 //   playlist, or a video's channel, can be added to the favorites.
 // - Favorites: the favorite channels and playlists, newest upload first or by name.
-//   Enter lists a favorite's videos below it; Delete removes it.
+//   Enter lists a favorite's videos below it; Delete removes it. Import adds the
+//   channels listed in a text file, one URL, @handle or ID per line.
 // It is modeless, so the main window stays usable while it is open. Searching,
 // listing and loading take seconds, so they run on worker threads; what they find
 // is used only if the window is still open and nothing newer was asked for.
@@ -20,6 +21,7 @@
 #include "app_ui.h"
 #include "utils.h"
 
+#include <wx/filedlg.h>
 #include <wx/notebook.h>
 #include <algorithm>
 #include <atomic>
@@ -230,7 +232,9 @@ private:
         buttons->Add(refresh, 0, wxRIGHT, 6);
         m_moreVideos = new wxButton(page, wxID_ANY, "Load &More");
         m_moreVideos->Enable(false);
-        buttons->Add(m_moreVideos);
+        buttons->Add(m_moreVideos, 0, wxRIGHT, 6);
+        auto* importButton = new wxButton(page, wxID_ANY, "&Import...");
+        buttons->Add(importButton);
         sizer->Add(buttons, 0, wxALL, 10);
         page->SetSizer(sizer);
         m_book->AddPage(page, "Favorites");
@@ -247,6 +251,7 @@ private:
             RefreshUploads();
         });
         m_moreVideos->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { LoadMoreVideos(); });
+        importButton->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { ImportFavorites(); });
     }
 
     // Enter acts on the focused control: search from the search box, open or play
@@ -654,6 +659,110 @@ private:
         if (count > 0) m_favoritesList->SetSelection(std::min(sel, count - 1));
         m_favoritesList->SetFocus();
         SpeakW(L"Removed " + favorite.name);
+    }
+
+    // Import: add the channels (or playlists) in a text file, one per line, a few
+    // at a time. It finishes even if the window is closed meanwhile.
+    void ImportFavorites() {
+        wxFileDialog dlg(this, "Import YouTube Channels", wxEmptyString, wxEmptyString,
+                         "Text files (*.txt)|*.txt|All Files (*.*)|*.*", wxFD_OPEN | wxFD_FILE_MUST_EXIST);
+        if (dlg.ShowModal() != wxID_OK) return;
+
+        auto lines = std::make_shared<std::vector<std::wstring>>();
+        if (FILE* f = FileOpen(WS(dlg.GetPath()), "rb")) {
+            std::string text;
+            char buffer[65536];
+            size_t n;
+            while ((n = fread(buffer, 1, sizeof(buffer), f)) > 0) text.append(buffer, n);
+            fclose(f);
+            if (text.compare(0, 3, "\xEF\xBB\xBF") == 0) text.erase(0, 3);
+            size_t start = 0;
+            while (start <= text.size()) {
+                size_t end = text.find('\n', start);
+                std::string line = text.substr(start, end == std::string::npos ? std::string::npos : end - start);
+                size_t first = line.find_first_not_of(" \t\r");
+                if (first != std::string::npos && line[first] != '#') lines->push_back(PlaylistLineToWide(line.c_str()));
+                if (end == std::string::npos) break;
+                start = end + 1;
+            }
+        }
+        if (lines->empty()) {
+            Speak("No channels in the file");
+            return;
+        }
+        SpeakW(L"Importing " + std::to_wstring(lines->size()) + (lines->size() == 1 ? L" channel" : L" channels"));
+
+        struct Found {
+            bool ok = false;
+            YouTubeListInfo info;
+            int64_t published = 0;
+            std::wstring error;
+        };
+        auto found = std::make_shared<std::vector<Found>>(lines->size());
+        auto next = std::make_shared<std::atomic<size_t>>(0);
+        auto done = std::make_shared<std::atomic<size_t>>(0);
+        auto running = std::make_shared<std::atomic<int>>(0);
+        int window = m_window;
+        const int threads = static_cast<int>(std::min<size_t>(4, lines->size()));
+        *running = threads;
+        for (int t = 0; t < threads; t++) {
+            RunInBackground([lines, found, next, done, running, window]() {
+                for (size_t i = (*next)++; i < lines->size(); i = (*next)++) {
+                    Found& result = (*found)[i];
+                    result.ok = YouTubeResolveFavorite((*lines)[i], result.info, result.published, result.error);
+                    size_t count = ++*done;
+                    if (count % 10 == 0 && count < lines->size()) {
+                        std::wstring progress = std::to_wstring(count) + L" of " + std::to_wstring(lines->size());
+                        RunOnUiThread([progress]() { SpeakW(progress); });
+                    }
+                }
+                if (--*running == 0) {
+                    RunOnUiThread([lines, found, window]() { FinishImport(*lines, *found, window); });
+                }
+            });
+        }
+    }
+
+    template <typename FoundList>
+    static void FinishImport(const std::vector<std::wstring>& lines, const FoundList& found, int window) {
+        std::vector<YouTubeFavorite> before = GetYouTubeFavorites();
+        int added = 0, existing = 0;
+        std::wstring failures;
+        int failed = 0;
+        for (size_t i = 0; i < found.size(); i++) {
+            const auto& result = found[i];
+            if (!result.ok) {
+                if (++failed <= 20) failures += L"\n" + lines[i] + L": " + result.error;
+                continue;
+            }
+            bool had = std::any_of(before.begin(), before.end(),
+                                   [&](const YouTubeFavorite& f) { return f.youtubeId == result.info.id; });
+            YouTubeFavoriteKind kind = result.info.kind == YouTubeKind::Playlist ? YouTubeFavoriteKind::Playlist
+                                                                                 : YouTubeFavoriteKind::Channel;
+            int id = AddYouTubeFavorite(kind, result.info.id, result.info.name, result.info.channel);
+            if (id < 0) {
+                if (++failed <= 20) failures += L"\n" + lines[i] + L": could not be saved";
+                continue;
+            }
+            if (result.published > 0) UpdateYouTubeFavoriteUpload(id, result.published);
+            if (had) {
+                existing++;
+            } else {
+                added++;
+                before.push_back(YouTubeFavorite{id, kind, result.info.id, result.info.name, result.info.channel, 0});
+            }
+        }
+
+        std::wstring summary = L"Imported " + std::to_wstring(added) + (added == 1 ? L" channel" : L" channels");
+        if (existing) summary += L", " + std::to_wstring(existing) + L" already in favorites";
+        if (failed) summary += L", " + std::to_wstring(failed) + L" not found";
+        SpeakW(summary);
+        if (YouTubeDialog* dialog = For(window)) dialog->LoadFavorites();
+        if (failed) {
+            if (failed > 20) failures += L"\n...";
+            ShowMessage(summary + L".\n\nThese lines could not be imported:" + failures, L"Import YouTube Channels",
+                        MessageIcon::Warning);
+        }
     }
 
     const int m_window;
