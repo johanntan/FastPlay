@@ -541,7 +541,7 @@ static void ParseVorbisCommentChapters(HSTREAM stream) {
         tags += tag.length() + 1;
 
         // Check for CHAPTERnnn= format
-        if (_strnicmp(tag.c_str(), "CHAPTER", 7) == 0) {
+        if (StrNICmp(tag.c_str(), "CHAPTER", 7) == 0) {
             const char* p = tag.c_str() + 7;
             // Parse the chapter number
             int num = 0;
@@ -550,7 +550,7 @@ static void ParseVorbisCommentChapters(HSTREAM stream) {
                 p++;
             }
             if (num > 0) {
-                if (_strnicmp(p, "NAME=", 5) == 0) {
+                if (StrNICmp(p, "NAME=", 5) == 0) {
                     // This is a chapter name
                     chapterMap[num].second = p + 5;
                 } else if (*p == '=') {
@@ -1654,7 +1654,7 @@ static std::string GetTagFromList(const char* tags, const char* key) {
 
     while (*p) {
         // Check if this line starts with key= (case insensitive)
-        if (_strnicmp(p, key, keyLen) == 0 && p[keyLen] == '=') {
+        if (StrNICmp(p, key, keyLen) == 0 && p[keyLen] == '=') {
             return std::string(p + keyLen + 1);
         }
         p += strlen(p) + 1;  // Move to next string
@@ -1835,7 +1835,7 @@ static std::string GetID3v2UserText(const unsigned char* tag, const char* desc) 
                 size_t i = 1;
                 while (i < frameSize && pos[i] != 0) i++;
                 std::string description((const char*)pos + 1, i - 1);
-                if (_stricmp(description.c_str(), desc) == 0) {
+                if (StrICmp(description.c_str(), desc) == 0) {
                     size_t valStart = i + 1;
                     if (valStart <= frameSize) {
                         size_t valLen = frameSize - valStart;
@@ -1854,15 +1854,15 @@ static std::string GetID3v2UserText(const unsigned char* tag, const char* desc) 
 
 // Map common tag names to ID3v2 frame IDs
 static const char* GetID3v2FrameId(const char* tagName) {
-    if (_stricmp(tagName, "TITLE") == 0) return "TIT2";
-    if (_stricmp(tagName, "ARTIST") == 0) return "TPE1";
-    if (_stricmp(tagName, "ALBUM") == 0) return "TALB";
-    if (_stricmp(tagName, "YEAR") == 0) return "TYER";
-    if (_stricmp(tagName, "DATE") == 0) return "TDRC";
-    if (_stricmp(tagName, "TRACK") == 0) return "TRCK";
-    if (_stricmp(tagName, "TRACKNUMBER") == 0) return "TRCK";
-    if (_stricmp(tagName, "GENRE") == 0) return "TCON";
-    if (_stricmp(tagName, "COMMENT") == 0) return "COMM";
+    if (StrICmp(tagName, "TITLE") == 0) return "TIT2";
+    if (StrICmp(tagName, "ARTIST") == 0) return "TPE1";
+    if (StrICmp(tagName, "ALBUM") == 0) return "TALB";
+    if (StrICmp(tagName, "YEAR") == 0) return "TYER";
+    if (StrICmp(tagName, "DATE") == 0) return "TDRC";
+    if (StrICmp(tagName, "TRACK") == 0) return "TRCK";
+    if (StrICmp(tagName, "TRACKNUMBER") == 0) return "TRCK";
+    if (StrICmp(tagName, "GENRE") == 0) return "TCON";
+    if (StrICmp(tagName, "COMMENT") == 0) return "COMM";
     return nullptr;
 }
 
@@ -1893,7 +1893,7 @@ static std::string GetICYTag(const char* tags, const char* key) {
 
     while (*p) {
         // Check if line starts with key: (case insensitive)
-        if (_strnicmp(p, key, keyLen) == 0 && p[keyLen] == ':') {
+        if (StrNICmp(p, key, keyLen) == 0 && p[keyLen] == ':') {
             const char* value = p + keyLen + 1;
             // Skip leading spaces
             while (*value == ' ') value++;
@@ -2072,7 +2072,7 @@ static std::string GetMetadataTag(HSTREAM stream, const char* tagName) {
     const char* icyTags = BASS_ChannelGetTags(stream, BASS_TAG_ICY);
     if (icyTags) {
         // Map common tag names to ICY header names
-        if (_stricmp(tagName, "TITLE") == 0 || _stricmp(tagName, "ARTIST") == 0) {
+        if (StrICmp(tagName, "TITLE") == 0 || StrICmp(tagName, "ARTIST") == 0) {
             // For title/artist, check META first (has current song info)
             const char* meta = BASS_ChannelGetTags(stream, BASS_TAG_META);
             if (meta) {
@@ -2080,16 +2080,16 @@ static std::string GetMetadataTag(HSTREAM stream, const char* tagName) {
                 if (!streamTitle.empty()) {
                     std::string artist, title;
                     ParseStreamTitle(streamTitle, artist, title);
-                    if (_stricmp(tagName, "TITLE") == 0 && !title.empty()) return title;
-                    if (_stricmp(tagName, "ARTIST") == 0 && !artist.empty()) return artist;
+                    if (StrICmp(tagName, "TITLE") == 0 && !title.empty()) return title;
+                    if (StrICmp(tagName, "ARTIST") == 0 && !artist.empty()) return artist;
                 }
             }
             // Fall back to station name for title
-            if (_stricmp(tagName, "TITLE") == 0) {
+            if (StrICmp(tagName, "TITLE") == 0) {
                 result = GetICYTag(icyTags, "icy-name");
                 if (!result.empty()) return result;
             }
-        } else if (_stricmp(tagName, "GENRE") == 0) {
+        } else if (StrICmp(tagName, "GENRE") == 0) {
             result = GetICYTag(icyTags, "icy-genre");
             if (!result.empty()) return result;
         }
@@ -2099,10 +2099,10 @@ static std::string GetMetadataTag(HSTREAM stream, const char* tagName) {
     const char* httpTags = BASS_ChannelGetTags(stream, BASS_TAG_HTTP);
     if (httpTags) {
         // HTTP headers use similar format to ICY
-        if (_stricmp(tagName, "TITLE") == 0) {
+        if (StrICmp(tagName, "TITLE") == 0) {
             result = GetICYTag(httpTags, "icy-name");
             if (!result.empty()) return result;
-        } else if (_stricmp(tagName, "GENRE") == 0) {
+        } else if (StrICmp(tagName, "GENRE") == 0) {
             result = GetICYTag(httpTags, "icy-genre");
             if (!result.empty()) return result;
         }
@@ -2659,7 +2659,7 @@ std::wstring GetTagBitrate() {
 
     if (bitrate > 0) {
         wchar_t buf[64];
-        swprintf(buf, 64, L"%.0f kbps, %d Hz, %s",
+        swprintf(buf, 64, L"%.0f kbps, %d Hz, %ls",
             bitrate, info.freq,
             info.chans == 1 ? L"Mono" : (info.chans == 2 ? L"Stereo" : L"Multi-channel"));
         return buf;

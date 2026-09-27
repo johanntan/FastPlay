@@ -1,9 +1,9 @@
 #include "youtube.h"
 #include "http.h"
 #include "globals.h"
+#include "subprocess.h"
 #include "utils.h"
-#include <windows.h>
-#include <shlwapi.h>
+#include <filesystem>
 #include <regex>
 #include <sstream>
 
@@ -12,7 +12,7 @@
 static bool SearchWithAPI(const std::wstring& query, std::vector<YouTubeResult>& results,
                           std::wstring& nextPageToken, const std::wstring& pageToken);
 static bool SearchWithYtdlp(const std::wstring& query, std::vector<YouTubeResult>& results);
-static std::wstring RunYtdlp(const std::wstring& args);
+static std::wstring RunYtdlp(const std::vector<std::wstring>& args);
 static std::wstring UrlEncode(const std::wstring& str);
 static std::wstring YouTubeHttpGet(const std::wstring& url);
 static std::wstring ParseJsonString(const std::wstring& json, const std::wstring& key);
@@ -21,7 +21,8 @@ static std::vector<std::wstring> ParseJsonArray(const std::wstring& json, const 
 // Check if yt-dlp is available
 bool IsYtdlpAvailable() {
     if (g_ytdlpPath.empty()) return false;
-    return PathFileExistsW(g_ytdlpPath.c_str()) != FALSE;
+    std::error_code ec;
+    return std::filesystem::exists(std::filesystem::path(g_ytdlpPath), ec);
 }
 
 // Check if API key is available
@@ -81,56 +82,12 @@ static std::wstring ParseJsonString(const std::wstring& json, const std::wstring
 }
 
 // Run yt-dlp and capture output
-static std::wstring RunYtdlp(const std::wstring& args) {
+static std::wstring RunYtdlp(const std::vector<std::wstring>& args) {
     if (!IsYtdlpAvailable()) return L"";
 
-    std::wstring cmdLine = L"\"" + g_ytdlpPath + L"\" " + args;
-
-    SECURITY_ATTRIBUTES sa;
-    sa.nLength = sizeof(sa);
-    sa.bInheritHandle = TRUE;
-    sa.lpSecurityDescriptor = nullptr;
-
-    HANDLE hReadPipe, hWritePipe;
-    if (!CreatePipe(&hReadPipe, &hWritePipe, &sa, 0)) return L"";
-
-    SetHandleInformation(hReadPipe, HANDLE_FLAG_INHERIT, 0);
-
-    STARTUPINFOW si = {sizeof(si)};
-    si.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
-    si.hStdOutput = hWritePipe;
-    si.hStdError = hWritePipe;
-    si.wShowWindow = SW_HIDE;
-
-    PROCESS_INFORMATION pi;
-    if (!CreateProcessW(nullptr, &cmdLine[0], nullptr, nullptr, TRUE,
-                        CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
-        CloseHandle(hReadPipe);
-        CloseHandle(hWritePipe);
-        return L"";
-    }
-
-    CloseHandle(hWritePipe);
-
     std::string output;
-    char buffer[4096];
-    DWORD bytesRead;
-    while (ReadFile(hReadPipe, buffer, sizeof(buffer) - 1, &bytesRead, nullptr) && bytesRead > 0) {
-        buffer[bytesRead] = '\0';
-        output += buffer;
-    }
-
-    CloseHandle(hReadPipe);
-    WaitForSingleObject(pi.hProcess, 30000);  // 30 second timeout
-    CloseHandle(pi.hProcess);
-    CloseHandle(pi.hThread);
-
-    // Convert UTF-8 to wide string
-    int len = MultiByteToWideChar(CP_UTF8, 0, output.c_str(), -1, nullptr, 0);
-    if (len <= 0) return L"";
-    std::wstring result(len - 1, 0);
-    MultiByteToWideChar(CP_UTF8, 0, output.c_str(), -1, &result[0], len);
-    return result;
+    if (!RunProcessCapture(g_ytdlpPath, args, output)) return L"";
+    return Utf8ToWide(output);
 }
 
 // Search using YouTube Data API
@@ -189,13 +146,7 @@ static std::wstring ParseJsonStringMulti(const std::wstring& json, std::initiali
 // Search using yt-dlp
 static bool SearchWithYtdlp(const std::wstring& query, std::vector<YouTubeResult>& results) {
     // Use yt-dlp to search YouTube
-    std::wstring args = L"--flat-playlist --dump-json \"ytsearch25:" + query + L"\"";
-    OutputDebugStringW((L"[YT] Running: " + g_ytdlpPath + L" " + args + L"\n").c_str());
-    std::wstring output = RunYtdlp(args);
-    OutputDebugStringW((L"[YT] Output length: " + std::to_wstring(output.length()) + L"\n").c_str());
-    if (output.length() < 500) {
-        OutputDebugStringW((L"[YT] Output: " + output + L"\n").c_str());
-    }
+    std::wstring output = RunYtdlp({L"--flat-playlist", L"--dump-json", L"ytsearch25:" + query});
     if (output.empty()) return false;
 
     // Parse JSON lines (each line is a video)
@@ -229,23 +180,16 @@ bool YouTubeSearch(const std::wstring& query, std::vector<YouTubeResult>& result
     results.clear();
     nextPageToken.clear();
 
-    OutputDebugStringW(L"[YT] YouTubeSearch called\n");
-    OutputDebugStringW((L"[YT] HasApiKey: " + std::wstring(HasApiKey() ? L"yes" : L"no") + L"\n").c_str());
-    OutputDebugStringW((L"[YT] IsYtdlpAvailable: " + std::wstring(IsYtdlpAvailable() ? L"yes" : L"no") + L"\n").c_str());
-
     // Try API first if available
     if (HasApiKey() && SearchWithAPI(query, results, nextPageToken, pageToken)) {
-        OutputDebugStringW(L"[YT] API search succeeded\n");
         return true;
     }
 
     // Fall back to yt-dlp (only for first page, no pagination support)
     if (pageToken.empty() && IsYtdlpAvailable()) {
-        OutputDebugStringW(L"[YT] Trying yt-dlp search\n");
         return SearchWithYtdlp(query, results);
     }
 
-    OutputDebugStringW(L"[YT] No search method available\n");
     return false;
 }
 
@@ -258,8 +202,7 @@ bool YouTubeGetPlaylistContents(const std::wstring& playlistId, std::vector<YouT
     if (!IsYtdlpAvailable()) return false;
 
     std::wstring url = L"https://www.youtube.com/playlist?list=" + playlistId;
-    std::wstring args = L"--flat-playlist --dump-json \"" + url + L"\"";
-    std::wstring output = RunYtdlp(args);
+    std::wstring output = RunYtdlp({L"--flat-playlist", L"--dump-json", url});
     if (output.empty()) return false;
 
     std::wistringstream iss(output);
@@ -292,8 +235,7 @@ bool YouTubeGetStreamURL(const std::wstring& videoId, std::wstring& streamUrl) {
 
     // Get best audio format URL
     std::wstring url = L"https://www.youtube.com/watch?v=" + videoId;
-    std::wstring args = L"-f bestaudio --get-url \"" + url + L"\"";
-    std::wstring output = RunYtdlp(args);
+    std::wstring output = RunYtdlp({L"-f", L"bestaudio", L"--get-url", url});
 
     // Trim whitespace
     size_t start = output.find_first_not_of(L" \t\r\n");

@@ -135,6 +135,22 @@ int WStrICmp(const wchar_t* a, const wchar_t* b) {
     return WStrNICmp(a, b, static_cast<size_t>(-1));
 }
 
+int StrNICmp(const char* a, const char* b, size_t count) {
+    for (size_t i = 0; i < count; i++) {
+        unsigned char x = static_cast<unsigned char>(a[i]);
+        unsigned char y = static_cast<unsigned char>(b[i]);
+        if (x >= 'A' && x <= 'Z') x = static_cast<unsigned char>(x - 'A' + 'a');
+        if (y >= 'A' && y <= 'Z') y = static_cast<unsigned char>(y - 'A' + 'a');
+        if (x != y) return x < y ? -1 : 1;
+        if (x == '\0') return 0;
+    }
+    return 0;
+}
+
+int StrICmp(const char* a, const char* b) {
+    return StrNICmp(a, b, static_cast<size_t>(-1));
+}
+
 FILE* FileOpen(const std::wstring& path, const char* mode) {
 #ifdef _WIN32
     std::wstring wmode(mode, mode + std::char_traits<char>::length(mode));

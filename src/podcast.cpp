@@ -202,7 +202,7 @@ static int ParseDuration(const std::wstring& duration) {
     // Check if it's just seconds
     bool hasColon = duration.find(L':') != std::wstring::npos;
     if (!hasColon) {
-        return _wtoi(duration.c_str());
+        return static_cast<int>(std::wcstol(duration.c_str(), nullptr, 10));
     }
 
     // Parse HH:MM:SS or MM:SS
@@ -237,7 +237,7 @@ std::vector<OpmlFeed> ParseOpmlFile(const std::wstring& filePath) {
     std::vector<OpmlFeed> feeds;
 
     // Read file content
-    FILE* f = _wfopen(filePath.c_str(), L"rb");
+    FILE* f = FileOpen(filePath, "rb");
     if (!f) return feeds;
 
     fseek(f, 0, SEEK_END);
@@ -291,7 +291,7 @@ std::vector<OpmlFeed> ParseOpmlFile(const std::wstring& filePath) {
 
 // Export subscriptions to OPML file
 bool ExportOpmlFile(const std::wstring& filePath, const std::vector<PodcastSubscription>& subs) {
-    FILE* f = _wfopen(filePath.c_str(), L"wb");
+    FILE* f = FileOpen(filePath, "wb");
     if (!f) return false;
 
     // Write UTF-8 BOM

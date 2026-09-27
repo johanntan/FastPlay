@@ -10,6 +10,7 @@
 #include "utils.h"
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <cwctype>
 #include <set>
@@ -77,7 +78,7 @@ static int ExtractJsonInt(const std::wstring& obj, const std::wstring& key) {
     if (start == std::wstring::npos) return 0;
     start += search.length();
     while (start < obj.length() && (obj[start] == L' ' || obj[start] == L'\t')) start++;
-    return _wtoi(obj.c_str() + start);
+    return static_cast<int>(std::wcstol(obj.c_str() + start, nullptr, 10));
 }
 
 // Helper to extract JSON value as string (handles both "key":"value" and "key":123)
@@ -491,7 +492,7 @@ bool SearchTuneIn(const std::wstring& query, std::vector<RadioSearchResult>& res
             // Bitrate might be in bitrate attribute
             std::wstring bitrateStr = extractAttr(L"bitrate");
             if (!bitrateStr.empty()) {
-                result.bitrate = _wtoi(bitrateStr.c_str());
+                result.bitrate = static_cast<int>(std::wcstol(bitrateStr.c_str(), nullptr, 10));
             }
 
             // Decode HTML entities in name

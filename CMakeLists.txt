@@ -145,6 +145,7 @@ if(WIN32)
         src/platform/http_windows.cpp
         src/platform/ini_windows.cpp
         src/platform/paths_windows.cpp
+        src/platform/subprocess_windows.cpp
         src/platform/speech_windows.cpp
         src/platform/startup_windows.cpp
         res/fastplay.rc
@@ -154,6 +155,7 @@ else()
     list(APPEND FASTPLAY_SOURCES
         src/platform/http_curl.cpp
         src/platform/ini_portable.cpp
+        src/platform/subprocess_posix.cpp
         src/platform/updater_unsupported.cpp
     )
 endif()
