@@ -199,11 +199,7 @@ private:
         wxArrayString items;
         items.reserve(g_playlist.size());
         for (size_t i = 0; i < g_playlist.size(); i++) {
-            std::wstring filename = g_playlist[i];
-            size_t pos = filename.find_last_of(L"\\/");
-            if (pos != std::wstring::npos) {
-                filename = filename.substr(pos + 1);
-            }
+            std::wstring filename = GetTrackName(g_playlist[i]);
             items.push_back(wxString::Format("%d. %s", static_cast<int>(i + 1), WX(filename)));
         }
         m_list->Set(items);

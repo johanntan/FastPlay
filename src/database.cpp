@@ -146,6 +146,19 @@ bool InitDatabase() {
         ");";
     sqlite3_exec(g_db, songHistorySql, nullptr, nullptr, nullptr);
 
+    // YouTube favorites: channels and playlists
+    const char* youtubeSql =
+        "CREATE TABLE IF NOT EXISTS youtube_favorites ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "kind INTEGER NOT NULL, "
+        "youtube_id TEXT NOT NULL UNIQUE, "
+        "name TEXT NOT NULL, "
+        "channel TEXT, "
+        "last_upload INTEGER NOT NULL DEFAULT 0, "
+        "created INTEGER NOT NULL"
+        ");";
+    sqlite3_exec(g_db, youtubeSql, nullptr, nullptr, nullptr);
+
     return true;
 }
 
@@ -966,4 +979,96 @@ std::vector<SongHistoryEntry> GetSongHistory() {
 void ClearSongHistory() {
     if (!g_db) return;
     sqlite3_exec(g_db, "DELETE FROM song_history;", nullptr, nullptr, nullptr);
+}
+
+// ---------------------------------------------------------------------------
+// YouTube favorites
+// ---------------------------------------------------------------------------
+
+int AddYouTubeFavorite(YouTubeFavoriteKind kind, const std::wstring& youtubeId, const std::wstring& name,
+                       const std::wstring& channel) {
+    if (!g_db) return -1;
+
+    std::string idUtf8 = WideToUtf8(youtubeId);
+    std::string nameUtf8 = WideToUtf8(name);
+    std::string channelUtf8 = WideToUtf8(channel);
+
+    const char* sql =
+        "INSERT OR IGNORE INTO youtube_favorites (kind, youtube_id, name, channel, last_upload, created) "
+        "VALUES (?, ?, ?, ?, 0, ?);";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(g_db, sql, -1, &stmt, nullptr) == SQLITE_OK) {
+        sqlite3_bind_int(stmt, 1, static_cast<int>(kind));
+        sqlite3_bind_text(stmt, 2, idUtf8.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(stmt, 3, nameUtf8.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(stmt, 4, channelUtf8.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int64(stmt, 5, static_cast<sqlite3_int64>(time(nullptr)));
+        sqlite3_step(stmt);
+        sqlite3_finalize(stmt);
+    }
+
+    // The new row, or the one already there
+    int id = -1;
+    if (sqlite3_prepare_v2(g_db, "SELECT id FROM youtube_favorites WHERE youtube_id = ?;", -1, &stmt, nullptr) ==
+        SQLITE_OK) {
+        sqlite3_bind_text(stmt, 1, idUtf8.c_str(), -1, SQLITE_TRANSIENT);
+        if (sqlite3_step(stmt) == SQLITE_ROW) id = sqlite3_column_int(stmt, 0);
+        sqlite3_finalize(stmt);
+    }
+    return id;
+}
+
+bool RemoveYouTubeFavorite(int id) {
+    if (!g_db) return false;
+
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(g_db, "DELETE FROM youtube_favorites WHERE id = ?;", -1, &stmt, nullptr) == SQLITE_OK) {
+        sqlite3_bind_int(stmt, 1, id);
+        int rc = sqlite3_step(stmt);
+        sqlite3_finalize(stmt);
+        return rc == SQLITE_DONE;
+    }
+    return false;
+}
+
+bool UpdateYouTubeFavoriteUpload(int id, int64_t lastUpload) {
+    if (!g_db) return false;
+
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(g_db, "UPDATE youtube_favorites SET last_upload = ? WHERE id = ?;", -1, &stmt,
+                           nullptr) == SQLITE_OK) {
+        sqlite3_bind_int64(stmt, 1, static_cast<sqlite3_int64>(lastUpload));
+        sqlite3_bind_int(stmt, 2, id);
+        int rc = sqlite3_step(stmt);
+        sqlite3_finalize(stmt);
+        return rc == SQLITE_DONE;
+    }
+    return false;
+}
+
+std::vector<YouTubeFavorite> GetYouTubeFavorites() {
+    std::vector<YouTubeFavorite> favorites;
+    if (!g_db) return favorites;
+
+    const char* sql = "SELECT id, kind, youtube_id, name, channel, last_upload FROM youtube_favorites "
+                      "ORDER BY name COLLATE NOCASE ASC;";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(g_db, sql, -1, &stmt, nullptr) == SQLITE_OK) {
+        auto text = [stmt](int column) {
+            const char* value = reinterpret_cast<const char*>(sqlite3_column_text(stmt, column));
+            return Utf8ToWide(value ? value : "");
+        };
+        while (sqlite3_step(stmt) == SQLITE_ROW) {
+            YouTubeFavorite favorite;
+            favorite.id = sqlite3_column_int(stmt, 0);
+            favorite.kind = sqlite3_column_int(stmt, 1) == 1 ? YouTubeFavoriteKind::Playlist : YouTubeFavoriteKind::Channel;
+            favorite.youtubeId = text(2);
+            favorite.name = text(3);
+            favorite.channel = text(4);
+            favorite.lastUpload = sqlite3_column_int64(stmt, 5);
+            favorites.push_back(favorite);
+        }
+        sqlite3_finalize(stmt);
+    }
+    return favorites;
 }

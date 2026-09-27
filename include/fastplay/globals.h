@@ -167,6 +167,7 @@ extern float g_eqTrebleFreq;
 // YouTube settings
 extern std::wstring g_ytdlpPath;    // Path to yt-dlp executable
 extern std::wstring g_ytApiKey;     // YouTube Data API key (optional)
+extern int g_ytFavoritesSort;       // YouTube favorites order: 0 newest upload first, 1 by name
 
 // Downloads settings
 extern std::wstring g_downloadPath;      // Output directory for podcast downloads

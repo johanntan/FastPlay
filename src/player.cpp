@@ -2,6 +2,7 @@
 #include "globals.h"
 #include "utils.h"
 #include "http.h"
+#include "playlist_io.h"
 #include "accessibility.h"
 #include "settings.h"
 #include "app_ui.h"
@@ -1430,7 +1431,7 @@ void PlayTrack(int index, bool autoPlay) {
                 } else {
                     // Fall back to filename
                     std::wstring path = g_playlist[g_currentTrack];
-                    Speak(WideToUtf8(GetFileName(path)));
+                    Speak(WideToUtf8(GetTrackName(path)));
                 }
             }
         }
@@ -2239,7 +2240,7 @@ void SpeakTagTitle() {
         SpeakUtf8(artist);
     } else if (g_currentTrack >= 0 && g_currentTrack < static_cast<int>(g_playlist.size())) {
         // No usable metadata - fall back to the filename
-        SpeakW(GetFileName(g_playlist[g_currentTrack]));
+        SpeakW(GetTrackName(g_playlist[g_currentTrack]));
     } else {
         Speak("No title");
     }

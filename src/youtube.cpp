@@ -6,9 +6,10 @@
 // the first time they are needed, and yt-dlp updated at most once a day. A yt-dlp
 // chosen in Options is used instead when that file exists.
 //
-// Videos are played from a downloaded file, not streamed: YouTube only serves audio
-// in fragmented MP4, over ranged requests, which BASS cannot stream. yt-dlp
-// downloads it and DefragmentMp4 turns it into an ordinary M4A.
+// Videos stream from YouTube's HLS audio, which BASS plays as it arrives, with
+// seeking. For the rare video without it, the audio is downloaded instead: YouTube
+// serves that as fragmented MP4 over ranged requests, which BASS cannot stream, so
+// yt-dlp downloads it and DefragmentMp4 turns it into an ordinary M4A.
 
 #include "youtube.h"
 #include "globals.h"
@@ -19,7 +20,10 @@
 #include "utils.h"
 
 #include <chrono>
+#include <cstdio>
+#include <cstdlib>
 #include <filesystem>
+#include <initializer_list>
 #include <mutex>
 #include <sstream>
 
@@ -64,6 +68,11 @@ const wchar_t* const kDenoUrl =
 
 // One thread at a time downloads or updates the tools.
 std::mutex g_toolsMutex;
+
+// The imported cookies.txt, if any
+std::wstring CookiesPath() {
+    return GetDataDirectory() + L"youtube-cookies.txt";
+}
 
 void Say(const YouTubeStatus& status, const std::wstring& message) {
     if (status) status(message);
@@ -209,6 +218,10 @@ bool RunYtdlp(const std::vector<std::wstring>& args, bool needsDeno, YtdlpRun& r
             all.push_back(L"deno:" + deno);
         }
     }
+    if (YouTubeHasCookies()) {
+        all.push_back(L"--cookies");
+        all.push_back(CookiesPath());
+    }
     all.insert(all.end(), args.begin(), args.end());
     if (!RunProcessCapture(ytdlp, all, run.output, &run.errors, &run.exitCode)) {
         error = L"Could not run yt-dlp (" + ytdlp + L").";
@@ -238,27 +251,92 @@ std::vector<std::vector<std::wstring>> PrintedRows(const std::string& output) {
     return rows;
 }
 
-// A flat listing (search results, playlist, channel): one line per video.
-const wchar_t* const kListFormat = L"%(id)s\t%(title)s\t%(channel,uploader|)s\t%(duration_string|)s\t%(live_status|)s";
+// A flat listing (search results, playlist, channel): one line per entry.
+const wchar_t* const kListFormat = L"%(id)s\t%(title)s\t%(channel,uploader|)s\t%(duration_string|)s"
+                                   L"\t%(live_status|)s\t%(ie_key|)s\t%(channel_id|)s";
 
-bool ListWithYtdlp(const std::wstring& target, std::vector<YouTubeResult>& results, std::wstring& error,
+// yt-dlp listings are paged by position: a page token says where the next page starts.
+const wchar_t* const kPagePrefix = L"ytdlp:";
+
+size_t PageStart(const std::wstring& pageToken) {
+    if (pageToken.compare(0, 6, kPagePrefix) != 0) return 1;
+    size_t start = static_cast<size_t>(std::wcstoul(pageToken.c_str() + 6, nullptr, 10));
+    return start ? start : 1;
+}
+
+bool IsChannelId(const std::wstring& id) {
+    return id.size() == 24 && id.compare(0, 2, L"UC") == 0;
+}
+
+// One page of a flat listing of `target`. A "{end}" in target becomes the number of
+// the page's last entry (for "ytsearch{end}:query", which must ask for that many).
+bool ListWithYtdlp(std::wstring target, size_t pageSize, const std::wstring& pageToken,
+                   std::vector<YouTubeResult>& results, std::wstring& nextPageToken, std::wstring& error,
                    const YouTubeStatus& status) {
+    size_t first = PageStart(pageToken), last = first + pageSize - 1;
+    size_t marker = target.find(L"{end}");
+    if (marker != std::wstring::npos) target.replace(marker, 5, std::to_wstring(last));
+    std::wstring items = std::to_wstring(first) + L":" + std::to_wstring(last);
+
     YtdlpRun run;
-    if (!RunYtdlp({L"--flat-playlist", L"--print", kListFormat, target}, false, run, error, status)) return false;
+    if (!RunYtdlp({L"--flat-playlist", L"--playlist-items", items, L"--print", kListFormat, target}, false, run,
+                  error, status)) {
+        return false;
+    }
+    size_t found = 0;
     for (const auto& row : PrintedRows(run.output)) {
-        if (row.size() < 5 || row[0].empty() || row[1].empty()) continue;
+        if (row.size() < 7 || row[0].empty() || row[1].empty()) continue;
+        found++;
         YouTubeResult result;
-        result.videoId = row[0];
+        result.id = row[0];
         result.title = row[1];
         result.channel = row[2];
-        result.duration = row[4] == L"is_live" ? L"live" : row[3];
+        result.channelId = row[6];
+        if (row[5] == L"YoutubeTab") {
+            // A channel or playlist among search results
+            if (IsChannelId(result.id)) {
+                result.kind = YouTubeKind::Channel;
+                result.channelId = result.id;
+                if (result.channel.empty()) result.channel = result.title;
+            } else {
+                result.kind = YouTubeKind::Playlist;
+            }
+        } else {
+            result.duration = row[4] == L"is_live" ? L"live" : row[3];
+        }
         results.push_back(result);
     }
-    if (results.empty() && run.exitCode != 0) {
+    if (found == pageSize) nextPageToken = kPagePrefix + std::to_wstring(last + 1);
+    if (found == 0 && run.exitCode != 0) {
         error = YtdlpError(run);
         return false;
     }
     return true;
+}
+
+// Unix time from an ISO 8601 UTC-offset timestamp ("2026-09-20T08:52:27+00:00").
+int64_t ParseIsoTime(const std::string& text) {
+    int y, mo, d, h = 0, mi = 0, sec = 0;
+    if (sscanf(text.c_str(), "%d-%d-%dT%d:%d:%d", &y, &mo, &d, &h, &mi, &sec) < 3) return 0;
+    // Days since 1970-01-01 of a civil date
+    y -= mo <= 2;
+    int64_t era = (y >= 0 ? y : y - 399) / 400;
+    int64_t yoe = y - era * 400;
+    int64_t doy = (153 * (mo + (mo > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+    int64_t doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    int64_t days = era * 146097 + doe - 719468;
+    int64_t seconds = days * 86400 + h * 3600 + mi * 60 + sec;
+    // The offset, if any, after the seconds
+    size_t t = text.find('T');
+    size_t sign = t == std::string::npos ? std::string::npos : text.find_first_of("+-", t);
+    if (sign != std::string::npos) {
+        int oh = 0, om = 0;
+        if (sscanf(text.c_str() + sign + 1, "%d:%d", &oh, &om) >= 1) {
+            int64_t offset = oh * 3600 + om * 60;
+            seconds += text[sign] == '+' ? -offset : offset;
+        }
+    }
+    return seconds;
 }
 
 // ---------------------------------------------------------------------------
@@ -344,7 +422,7 @@ bool SearchWithAPI(const std::wstring& query, std::vector<YouTubeResult>& result
     size_t searchStart = itemsPos;
     while ((searchStart = response.find(L"\"videoId\"", searchStart)) != std::wstring::npos) {
         YouTubeResult result;
-        result.videoId = ParseJsonString(response.substr(searchStart, 500), L"videoId");
+        result.id = ParseJsonString(response.substr(searchStart, 500), L"videoId");
 
         // Find the snippet for this item
         size_t snippetPos = response.rfind(L"\"snippet\"", searchStart);
@@ -352,9 +430,10 @@ bool SearchWithAPI(const std::wstring& query, std::vector<YouTubeResult>& result
             std::wstring snippet = response.substr(snippetPos, searchStart - snippetPos + 1000);
             result.title = ParseJsonString(snippet, L"title");
             result.channel = ParseJsonString(snippet, L"channelTitle");
+            result.channelId = ParseJsonString(snippet, L"channelId");
         }
 
-        if (!result.videoId.empty() && !result.title.empty()) {
+        if (!result.id.empty() && !result.title.empty()) {
             results.push_back(result);
         }
         searchStart += 10;
@@ -409,26 +488,30 @@ std::wstring FindDownloaded(const std::wstring& videoId) {
 // ---------------------------------------------------------------------------
 
 bool YouTubeSearch(const std::wstring& query, std::vector<YouTubeResult>& results, std::wstring& nextPageToken,
-                   const std::wstring& pageToken, std::wstring& error, const YouTubeStatus& status) {
+                   const std::wstring& pageTokenIn, std::wstring& error, const YouTubeStatus& status) {
+    const std::wstring pageToken = pageTokenIn;  // may be the same string as nextPageToken
     results.clear();
     nextPageToken.clear();
     error.clear();
 
-    // Try API first if available
-    if (!g_ytApiKey.empty() && SearchWithAPI(query, results, nextPageToken, pageToken)) {
+    // The Data API when there is a key (its own page tokens), yt-dlp otherwise or
+    // when the API fails
+    bool ytdlpPage = pageToken.compare(0, 6, kPagePrefix) == 0;
+    if (!g_ytApiKey.empty() && !ytdlpPage && SearchWithAPI(query, results, nextPageToken, pageToken)) {
         return true;
     }
-
-    // Fall back to yt-dlp (only for first page, no pagination support)
-    if (!pageToken.empty()) return false;
-    return ListWithYtdlp(L"ytsearch25:" + query, results, error, status);
+    if (!pageToken.empty() && !ytdlpPage) return false;
+    return ListWithYtdlp(L"ytsearch{end}:" + query, 25, pageToken, results, nextPageToken, error, status);
 }
 
-bool YouTubeGetListContents(const std::wstring& listUrl, std::vector<YouTubeResult>& results, std::wstring& error,
+bool YouTubeGetListContents(const std::wstring& listUrl, std::vector<YouTubeResult>& results,
+                            std::wstring& nextPageToken, const std::wstring& pageTokenIn, std::wstring& error,
                             const YouTubeStatus& status) {
+    const std::wstring pageToken = pageTokenIn;  // may be the same string as nextPageToken
     results.clear();
+    nextPageToken.clear();
     error.clear();
-    return ListWithYtdlp(listUrl, results, error, status);
+    return ListWithYtdlp(listUrl, 50, pageToken, results, nextPageToken, error, status);
 }
 
 std::wstring YouTubePlaylistUrl(const std::wstring& playlistId) {
@@ -437,17 +520,136 @@ std::wstring YouTubePlaylistUrl(const std::wstring& playlistId) {
 
 std::wstring YouTubeChannelUrl(const std::wstring& channelId) {
     // Channel IDs are "UC" and 22 more characters; anything else is a @handle.
-    if (channelId.size() == 24 && channelId.compare(0, 2, L"UC") == 0) {
+    if (IsChannelId(channelId)) {
         return L"https://www.youtube.com/channel/" + channelId + L"/videos";
     }
     return L"https://www.youtube.com/@" + channelId + L"/videos";
+}
+
+std::wstring YouTubeListUrl(YouTubeKind kind, const std::wstring& id) {
+    return kind == YouTubeKind::Playlist ? YouTubePlaylistUrl(id) : YouTubeChannelUrl(id);
+}
+
+// A channel's home page URL turned into its Videos tab, which yt-dlp lists with the
+// channel's ID (the home page gives only the @handle).
+static std::wstring ChannelVideosUrl(const std::wstring& url) {
+    bool channel = url.find(L"/@") != std::wstring::npos || url.find(L"/channel/") != std::wstring::npos ||
+                   url.find(L"/c/") != std::wstring::npos || url.find(L"/user/") != std::wstring::npos;
+    if (!channel) return url;
+    std::wstring base = url.substr(0, url.find_first_of(L"?#"));
+    while (!base.empty() && base.back() == L'/') base.pop_back();
+    for (const wchar_t* tab : {L"/videos", L"/streams", L"/shorts", L"/playlists", L"/featured"}) {
+        std::wstring suffix = tab;
+        if (base.size() > suffix.size() && base.compare(base.size() - suffix.size(), suffix.size(), suffix) == 0) {
+            base.resize(base.size() - suffix.size());
+            break;
+        }
+    }
+    return base + L"/videos";
+}
+
+bool YouTubeIdentify(const std::wstring& url, YouTubeListInfo& info, std::wstring& error,
+                     const YouTubeStatus& status) {
+    info = YouTubeListInfo();
+    error.clear();
+    YtdlpRun run;
+    if (!RunYtdlp({L"--flat-playlist", L"--playlist-items", L"0", L"--print",
+                   L"playlist:%(id)s\t%(title)s\t%(channel_id|)s\t%(channel,uploader|)s", ChannelVideosUrl(url)},
+                  false, run, error, status)) {
+        return false;
+    }
+    auto rows = PrintedRows(run.output);
+    if (rows.empty() || rows[0].size() < 4 || rows[0][0].empty()) {
+        error = run.exitCode != 0 ? YtdlpError(run) : L"This is not a YouTube channel or playlist.";
+        return false;
+    }
+    const auto& row = rows[0];
+    if (IsChannelId(row[0]) || (!row[2].empty() && row[0] == row[2]) || row[0][0] == L'@') {
+        // A channel page ("Name - Videos" is the tab's title; the channel's name is plainer)
+        info.kind = YouTubeKind::Channel;
+        info.id = IsChannelId(row[0]) ? row[0] : row[2];
+        info.name = row[3].empty() ? row[1] : row[3];
+        if (!IsChannelId(info.id)) {
+            error = L"YouTube did not give this channel's ID.";
+            return false;
+        }
+    } else {
+        info.kind = YouTubeKind::Playlist;
+        info.id = row[0];
+        info.name = row[1];
+        info.channel = row[3];
+    }
+    return true;
+}
+
+bool YouTubeVideoChannel(const std::wstring& videoId, YouTubeListInfo& info, std::wstring& error,
+                         const YouTubeStatus& status) {
+    info = YouTubeListInfo();
+    error.clear();
+    YtdlpRun run;
+    if (!RunYtdlp({L"--no-playlist", L"--skip-download", L"--print", L"%(channel_id)s\t%(channel,uploader)s",
+                   L"https://www.youtube.com/watch?v=" + videoId},
+                  true, run, error, status)) {
+        return false;
+    }
+    auto rows = PrintedRows(run.output);
+    if (rows.empty() || rows[0].size() < 2 || !IsChannelId(rows[0][0])) {
+        error = run.exitCode != 0 ? YtdlpError(run) : L"YouTube did not say which channel this video is from.";
+        return false;
+    }
+    info.kind = YouTubeKind::Channel;
+    info.id = rows[0][0];
+    info.name = rows[0][1];
+    return true;
+}
+
+bool YouTubeLatestUpload(YouTubeKind kind, const std::wstring& id, int64_t& published) {
+    published = 0;
+    std::wstring url = L"https://www.youtube.com/feeds/videos.xml?" +
+                       std::wstring(kind == YouTubeKind::Playlist ? L"playlist_id=" : L"channel_id=") + id;
+    HttpOptions options;
+    options.timeoutMs = 15000;
+    HttpResult result = HttpGet(url, options);
+    if (!result.completed || result.status != 200) return false;
+    // The feed's own <published> (when the channel or playlist was made) comes
+    // before the first <entry>; each entry has its video's.
+    const std::string& xml = result.body;
+    size_t pos = xml.find("<entry>");
+    while (pos != std::string::npos && (pos = xml.find("<published>", pos)) != std::string::npos) {
+        pos += 11;
+        int64_t when = ParseIsoTime(xml.substr(pos, 32));
+        if (when > published) published = when;
+    }
+    return true;
 }
 
 bool YouTubePrepare(const std::wstring& videoId, YouTubeMedia& media, std::wstring& error,
                     const YouTubeStatus& status) {
     media = YouTubeMedia();
     error.clear();
+    std::wstring url = L"https://www.youtube.com/watch?v=" + videoId;
 
+    // Stream it: YouTube's HLS audio (234, 233), or for a live stream the
+    // smallest HLS video, whose audio BASS plays as it arrives, with seeking.
+    YtdlpRun run;
+    if (!RunYtdlp({L"--no-playlist", L"-f", L"234/233/93/92/91/94/95", L"--print",
+                   L"%(title)s\t%(url)s\t%(channel,uploader|)s", url},
+                  true, run, error, status)) {
+        return false;
+    }
+    auto rows = PrintedRows(run.output);
+    if (run.exitCode == 0 && !rows.empty() && rows[0].size() >= 3 && !rows[0][1].empty()) {
+        media.title = rows[0][0];
+        media.url = rows[0][1];
+        media.channel = rows[0][2];
+        return true;
+    }
+    if (run.errors.find("Requested format is not available") == std::string::npos) {
+        error = YtdlpError(run);
+        return false;
+    }
+
+    // Nothing to stream: download the AAC audio and play it from the file.
     std::wstring cached = FindDownloaded(videoId);
     if (!cached.empty()) {
         std::error_code ec;
@@ -456,58 +658,78 @@ bool YouTubePrepare(const std::wstring& videoId, YouTubeMedia& media, std::wstri
         return true;
     }
 
-    std::wstring url = L"https://www.youtube.com/watch?v=" + videoId;
     std::wstring download = CacheDir() + videoId + L".download.m4a";
     std::error_code ec;
     fs::remove(fs::path(download), ec);
-
-    // The AAC audio (all BASS and macOS can play of what YouTube offers). A live
-    // stream does not pass the filter, and is handled below.
-    YtdlpRun run;
-    if (!RunYtdlp({L"--no-playlist", L"--match-filter", L"!is_live", L"-f", L"140/bestaudio[ext=m4a]",
-                   L"--fixup", L"never", L"--no-part", L"--no-mtime", L"-o", download, L"--no-simulate",
-                   L"--print", L"%(title)s\t%(channel,uploader|)s", url},
-                  true, run, error, status)) {
-        return false;
-    }
-    auto rows = PrintedRows(run.output);
-    if (run.exitCode == 0 && FileExists(download) && !rows.empty()) {
-        media.title = rows[0][0];
-        std::wstring channel = rows[0].size() > 1 ? rows[0][1] : L"";
-        std::wstring file = CacheDir() + FileNameFrom(media.title) + L" [" + videoId + L"].m4a";
-        if (!DefragmentMp4(download, file, media.title, channel)) {
-            // Not fragmented after all: it plays as it is.
-            fs::remove(fs::path(file), ec);
-            fs::rename(fs::path(download), fs::path(file), ec);
-            if (ec) {
-                error = L"Could not save the downloaded audio.";
-                return false;
-            }
-        }
-        fs::remove(fs::path(download), ec);
-        media.file = file;
-        return true;
-    }
-    fs::remove(fs::path(download), ec);
-    if (run.exitCode != 0) {
-        error = YtdlpError(run);
-        return false;
-    }
-
-    // A live stream: play it from its HLS address.
     run = YtdlpRun();
-    if (!RunYtdlp({L"--no-playlist", L"-f", L"bestaudio/93/94/92/91/best", L"--print", L"%(title)s\t%(url)s", url},
+    if (!RunYtdlp({L"--no-playlist", L"-f", L"140/bestaudio[ext=m4a]", L"--fixup", L"never", L"--no-part",
+                   L"--no-mtime", L"-o", download, L"--no-simulate", L"--print", L"%(title)s\t%(channel,uploader|)s",
+                   url},
                   true, run, error, status)) {
         return false;
     }
     rows = PrintedRows(run.output);
-    if (rows.empty() || rows[0].size() < 2 || rows[0][1].empty()) {
+    if (run.exitCode != 0 || !FileExists(download) || rows.empty()) {
+        fs::remove(fs::path(download), ec);
         error = run.exitCode != 0 ? YtdlpError(run) : L"YouTube gave no audio for this video.";
         return false;
     }
     media.title = rows[0][0];
-    media.url = rows[0][1];
+    media.channel = rows[0].size() > 1 ? rows[0][1] : L"";
+    std::wstring file = CacheDir() + FileNameFrom(media.title) + L" [" + videoId + L"].m4a";
+    if (!DefragmentMp4(download, file, media.title, media.channel)) {
+        // Not fragmented after all: it plays as it is.
+        fs::remove(fs::path(file), ec);
+        fs::rename(fs::path(download), fs::path(file), ec);
+        if (ec) {
+            error = L"Could not save the downloaded audio.";
+            return false;
+        }
+    }
+    fs::remove(fs::path(download), ec);
+    media.file = file;
     return true;
+}
+
+bool YouTubeImportCookies(const std::wstring& path, std::wstring& error) {
+    FILE* in = FileOpen(path, "rb");
+    if (!in) {
+        error = L"Could not open " + path;
+        return false;
+    }
+    std::string text;
+    char buffer[65536];
+    size_t n;
+    while ((n = fread(buffer, 1, sizeof(buffer), in)) > 0) text.append(buffer, n);
+    fclose(in);
+
+    // Netscape format: tab-separated lines, as "Get cookies.txt"-style extensions export.
+    bool youtube = text.find("youtube.com\t") != std::string::npos;
+    if (!youtube) {
+        error = L"This file has no YouTube cookies in cookies.txt (Netscape) format. Export the cookies for "
+                L"youtube.com from your browser while signed in, and import that file.";
+        return false;
+    }
+    // yt-dlp wants the format's header line
+    if (text.compare(0, 1, "#") != 0) text = "# Netscape HTTP Cookie File\n" + text;
+
+    FILE* out = FileOpen(CookiesPath(), "wb");
+    if (!out || fwrite(text.data(), 1, text.size(), out) != text.size()) {
+        if (out) fclose(out);
+        error = L"Could not save the cookies in FastPlay's data folder.";
+        return false;
+    }
+    fclose(out);
+    return true;
+}
+
+void YouTubeRemoveCookies() {
+    std::error_code ec;
+    fs::remove(fs::path(CookiesPath()), ec);
+}
+
+bool YouTubeHasCookies() {
+    return FileExists(CookiesPath());
 }
 
 void YouTubeCleanup() {

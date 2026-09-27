@@ -651,7 +651,7 @@ void MainFrame::UpdateTitle() {
             trackTitle = tagTitle;
         } else {
             // Fall back to filename
-            trackTitle = GetFileName(g_playlist[g_currentTrack]);
+            trackTitle = GetTrackName(g_playlist[g_currentTrack]);
         }
     }
     if (g_showTitleInWindow && haveTrack) {

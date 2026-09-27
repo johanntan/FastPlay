@@ -42,6 +42,18 @@ struct SongHistoryEntry {
     int64_t timestamp;  // Unix timestamp when captured
 };
 
+// A YouTube channel or playlist in the YouTube window's favorites
+enum class YouTubeFavoriteKind { Channel = 0, Playlist = 1 };
+
+struct YouTubeFavorite {
+    int id;
+    YouTubeFavoriteKind kind;
+    std::wstring youtubeId;   // channel ID (UC...) or playlist ID
+    std::wstring name;
+    std::wstring channel;     // for a playlist: the channel that made it
+    int64_t lastUpload;       // Unix time of the newest video, 0 if not known yet
+};
+
 // Podcast episode structure (not stored in DB - fetched from RSS)
 struct PodcastEpisode {
     std::wstring title;
@@ -153,6 +165,13 @@ bool UpdateScheduledEvent(int id, const std::wstring& name, ScheduleAction actio
                           int duration, ScheduleStopAction stopAction);
 std::vector<ScheduledEvent> GetAllScheduledEvents();
 std::vector<ScheduledEvent> GetPendingScheduledEvents();
+
+// YouTube favorites. Adding one already there returns its existing ID.
+int AddYouTubeFavorite(YouTubeFavoriteKind kind, const std::wstring& youtubeId, const std::wstring& name,
+                       const std::wstring& channel);
+bool RemoveYouTubeFavorite(int id);
+bool UpdateYouTubeFavoriteUpload(int id, int64_t lastUpload);
+std::vector<YouTubeFavorite> GetYouTubeFavorites();
 
 // Song history operations (captured from stream metadata)
 void AddSongHistoryEntry(const std::wstring& title);

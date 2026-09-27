@@ -6,6 +6,8 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <map>
+#include <mutex>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -307,4 +309,25 @@ std::vector<std::wstring> ParsePlaylist(const std::wstring& playlistPath) {
     } else {
         return ParseM3U(playlistPath);
     }
+}
+
+// ---------------------------------------------------------------------------
+// Track names
+// ---------------------------------------------------------------------------
+
+static std::mutex g_trackNamesMutex;
+static std::map<std::wstring, std::wstring> g_trackNames;
+
+void SetTrackName(const std::wstring& path, const std::wstring& name) {
+    std::lock_guard<std::mutex> lock(g_trackNamesMutex);
+    g_trackNames[path] = name;
+}
+
+std::wstring GetTrackName(const std::wstring& path) {
+    {
+        std::lock_guard<std::mutex> lock(g_trackNamesMutex);
+        auto it = g_trackNames.find(path);
+        if (it != g_trackNames.end()) return it->second;
+    }
+    return GetFileName(path);
 }

@@ -148,6 +148,7 @@ void LoadSettings() {
     g_ytdlpPath = ytBuf;
     IniGetString(L"YouTube", L"ApiKey", L"", ytBuf, 512, g_configPath.c_str());
     g_ytApiKey = ytBuf;
+    g_ytFavoritesSort = IniGetInt(L"YouTube", L"FavoritesSort", 0, g_configPath.c_str()) == 1 ? 1 : 0;
 
     // Load downloads settings
     wchar_t dlBuf[512] = {0};
@@ -470,6 +471,7 @@ void SaveSettings() {
     // Save YouTube settings
     IniWriteString(L"YouTube", L"YtdlpPath", g_ytdlpPath.c_str(), g_configPath.c_str());
     IniWriteString(L"YouTube", L"ApiKey", g_ytApiKey.c_str(), g_configPath.c_str());
+    IniWriteString(L"YouTube", L"FavoritesSort", g_ytFavoritesSort == 1 ? L"1" : L"0", g_configPath.c_str());
 
     // Save downloads settings
     IniWriteString(L"Downloads", L"Path", g_downloadPath.c_str(), g_configPath.c_str());

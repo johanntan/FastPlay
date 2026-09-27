@@ -16,6 +16,7 @@
 #include "convolution.h"
 #include "database.h"
 #include "file_assoc.h"
+#include "youtube.h"
 
 #include <cwchar>
 #include <wx/notebook.h>
@@ -83,6 +84,9 @@ private:
     void OnDownloadBrowse(wxCommandEvent& event);
     void OnRecFormat(wxCommandEvent& event);
     void OnYtdlpBrowse(wxCommandEvent& event);
+    void OnImportCookies(wxCommandEvent& event);
+    void OnRemoveCookies(wxCommandEvent& event);
+    void UpdateCookiesStatus();
     void OnMidiBrowse(wxCommandEvent& event);
     void OnConvBrowse(wxCommandEvent& event);
     void OnResetListOrder(wxCommandEvent& event);
@@ -165,6 +169,8 @@ private:
 
     // YouTube
     wxTextCtrl* m_ytdlpPath = nullptr;
+    wxStaticText* m_cookiesStatus = nullptr;
+    wxButton* m_removeCookies = nullptr;
     wxTextCtrl* m_ytApiKey = nullptr;
 
     // SoundTouch
@@ -633,6 +639,19 @@ void OptionsDialog::BuildYouTubePage(wxNotebook* book) {
     AddText(page, sizer, "Get an API key from: console.cloud.google.com");
     AddText(page, sizer, "Without API key, yt-dlp will be used for search (slower).");
 
+    // Cookies, for videos YouTube only shows to a signed-in account
+    m_cookiesStatus = new wxStaticText(page, wxID_ANY, "");
+    sizer->Add(m_cookiesStatus, 0, wxTOP, 10);
+    auto* cookieRow = AddRow(sizer);
+    auto* importCookies = new wxButton(page, wxID_ANY, "Import &cookies.txt...");
+    cookieRow->Add(importCookies, 0, wxRIGHT, 6);
+    m_removeCookies = new wxButton(page, wxID_ANY, "&Remove cookies");
+    cookieRow->Add(m_removeCookies);
+    importCookies->Bind(wxEVT_BUTTON, &OptionsDialog::OnImportCookies, this);
+    m_removeCookies->Bind(wxEVT_BUTTON, &OptionsDialog::OnRemoveCookies, this);
+    AddText(page, sizer, "Export your youtube.com cookies with a browser extension (cookies.txt format) while signed in.");
+    UpdateCookiesStatus();
+
     page->SetSizer(new wxBoxSizer(wxVERTICAL));
     page->GetSizer()->Add(sizer, 1, wxEXPAND | wxALL, 10);
     book->AddPage(page, "YouTube");
@@ -1030,6 +1049,33 @@ void OptionsDialog::OnRecFormat(wxCommandEvent&) {
     // Enable bitrate only for lossy formats (MP3=1, OGG=2)
     int format = m_recFormat->GetSelection();
     m_recBitrate->Enable(format == 1 || format == 2);
+}
+
+void OptionsDialog::UpdateCookiesStatus() {
+    bool has = YouTubeHasCookies();
+    m_cookiesStatus->SetLabel(has ? "YouTube cookies: imported" : "YouTube cookies: none");
+    m_removeCookies->Enable(has);
+}
+
+// Cookies are imported (or removed) at once, not when the options are saved.
+void OptionsDialog::OnImportCookies(wxCommandEvent&) {
+    wxFileDialog dlg(this, "Import cookies.txt", wxEmptyString, "cookies.txt",
+                     "Cookie files (*.txt)|*.txt|All Files (*.*)|*.*", wxFD_OPEN | wxFD_FILE_MUST_EXIST);
+    if (dlg.ShowModal() != wxID_OK) return;
+    std::wstring error;
+    if (YouTubeImportCookies(WS(dlg.GetPath()), error)) {
+        UpdateCookiesStatus();
+        wxMessageBox("Cookies imported. YouTube will now treat FastPlay as signed in to that account.",
+                     "YouTube Cookies", wxOK | wxICON_INFORMATION, this);
+    } else {
+        wxMessageBox(WX(error), "YouTube Cookies", wxOK | wxICON_ERROR, this);
+    }
+}
+
+void OptionsDialog::OnRemoveCookies(wxCommandEvent&) {
+    YouTubeRemoveCookies();
+    UpdateCookiesStatus();
+    Speak("Cookies removed");
 }
 
 void OptionsDialog::OnYtdlpBrowse(wxCommandEvent&) {
