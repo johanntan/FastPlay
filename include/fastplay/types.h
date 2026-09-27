@@ -66,7 +66,7 @@ enum class DSPEffectType {
     StereoWidth,
     CenterCancel,  // Center channel canceler/extractor (vocal removal/isolation)
     Convolution,   // Convolution reverb using impulse response
-    SpatialAudio,  // 3D audio via HRTF/binaural rendering (Steam Audio)
+    SpatialAudio,  // 3D audio via HRTF/binaural rendering
     COUNT
 };
 

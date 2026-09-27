@@ -77,7 +77,6 @@ if(WIN32)
 endif()
 
 option(FASTPLAY_SPEECH "Screen reader speech through UniversalSpeech" ON)
-option(FASTPLAY_STEAM_AUDIO "3D audio through Steam Audio" ON)
 
 # Configure only the dependencies (used to start the long wxWidgets build early).
 option(FASTPLAY_DEPS_ONLY "Configure the fetched dependencies without FastPlay itself" OFF)
@@ -88,7 +87,7 @@ endif()
 # ---------------------------------------------------------------------------
 # FastPlay
 # ---------------------------------------------------------------------------
-# BASS, Steam Audio and the tempo libraries come from download-deps.bat
+# BASS and the tempo libraries come from download-deps.bat
 # (include/, lib/ and deps/); SQLite's amalgamation is src/sqlite3.c.
 
 set(FASTPLAY_SOURCES
@@ -113,6 +112,9 @@ set(FASTPLAY_SOURCES
     src/sqlite3.c
     src/reverb/reverb.cpp
     src/reverb/efx_reverb.cpp
+    src/spatial/hrtf.cpp
+    src/spatial/hrtf_data.cpp
+    src/spatial/pffft/pffft.c
     src/ui/app.cpp
     src/ui/bookmarks_dialog.cpp
     src/ui/file_dialogs.cpp
@@ -149,7 +151,7 @@ add_executable(FastPlay WIN32 ${FASTPLAY_SOURCES})
 
 # The upstream C libraries' warnings are not ours to fix.
 set_source_files_properties(src/sqlite3.c deps/speedy/speedy.c deps/speedy/soniclib.c
-    deps/sonic/sonic.c deps/kissfft/kiss_fft.c PROPERTIES COMPILE_OPTIONS "/w")
+    deps/sonic/sonic.c deps/kissfft/kiss_fft.c src/spatial/pffft/pffft.c PROPERTIES COMPILE_OPTIONS "/w")
 
 target_include_directories(FastPlay PRIVATE
     src
@@ -159,13 +161,11 @@ target_include_directories(FastPlay PRIVATE
     deps/sonic
     deps/kissfft
     deps/signalsmith-stretch
-    deps/steamaudio/include
 )
 
 target_compile_definitions(FastPlay PRIVATE
     USE_SPEEDY KISS_FFT SONIC_INTERNAL
     USE_SIGNALSMITH
-    $<$<BOOL:${FASTPLAY_STEAM_AUDIO}>:USE_STEAM_AUDIO>
     $<$<BOOL:${FASTPLAY_SPEECH}>:USE_UNIVERSAL_SPEECH>
 )
 

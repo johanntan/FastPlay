@@ -28,10 +28,9 @@ if exist "%VSINSTALL%\VC\Auxiliary\Build\vcvars64.bat" (
     exit /b 1
 )
 
-REM Build options (screen reader speech and Steam Audio are on by default). Both are
-REM always passed, so an earlier no-speech / no-steamaudio build does not stick.
+REM Build options (screen reader speech is on by default). Always passed, so an
+REM earlier no-speech build does not stick.
 set "SPEECH=ON"
-set "STEAMAUDIO=ON"
 
 REM Parse arguments
 :parse_args
@@ -39,9 +38,6 @@ if "%1"=="" goto :done_args
 if "%1"=="no-speech" (
     set "SPEECH=OFF"
     echo Disabling screen reader support...
-) else if "%1"=="no-steamaudio" (
-    set "STEAMAUDIO=OFF"
-    echo Disabling Steam Audio support...
 )
 shift
 goto :parse_args
@@ -56,7 +52,8 @@ REM Configure and build with CMake. The first run fetches and builds wxWidgets a
 REM UniversalSpeech into build\, which takes a while; later runs reuse them.
 REM FastPlay.exe is written to this folder. The commit hash for the update check
 REM is picked up by CMakeLists.txt.
-cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DFASTPLAY_SPEECH=%SPEECH% -DFASTPLAY_STEAM_AUDIO=%STEAMAUDIO%
+REM No generator is named, so CMake uses the newest Visual Studio installed.
+cmake -S . -B build -A x64 -DFASTPLAY_SPEECH=%SPEECH%
 if errorlevel 1 goto :error
 REM /nodeReuse:false: do not leave MSBuild worker processes running afterwards.
 cmake --build build --config Release --parallel -- /nodeReuse:false

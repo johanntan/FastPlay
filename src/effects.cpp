@@ -8,9 +8,7 @@
 #include "convolution.h"
 #include "reverb/reverb.h"
 #include "reverb/efx_reverb.h"
-#ifdef USE_STEAM_AUDIO
 #include "spatial_audio.h"
-#endif
 #include <cstdio>
 #include <vector>
 #include <cmath>
@@ -97,7 +95,7 @@ static HDSP g_hdspReverb = 0;       // Custom DSP for the reverbs
 static HDSP g_hdspStereoWidth = 0;  // Custom DSP for stereo width
 static HDSP g_hdspCenterCancel = 0; // Custom DSP for center cancel/extract
 static HDSP g_hdspConvolution = 0;  // Custom DSP for convolution reverb
-static HDSP g_hdspSpatialAudio = 0;  // Custom DSP for 3D audio (Steam Audio)
+static HDSP g_hdspSpatialAudio = 0;  // Custom DSP for 3D audio (HRTF)
 static HDSP g_hdspVolume = 0;       // Custom DSP for volume (runs LAST, after encoder)
 
 // DSP effect enabled states
@@ -354,9 +352,7 @@ bool InitEffects() {
 void FreeEffects() {
     RemoveDSPEffects();
     FreeCenterCancelProcessor();
-#ifdef USE_STEAM_AUDIO
     FreeSpatialAudio();
-#endif
 }
 
 // Helper to check if a reverb param matches current algorithm
@@ -689,76 +685,38 @@ static void CALLBACK ConvolutionDSPProc(HDSP handle, DWORD channel, void* buffer
     }
 }
 
-// 3D Audio DSP callback - HRTF binaural rendering via Steam Audio
-#ifdef USE_STEAM_AUDIO
-static volatile int g_spatialCrashStep = 0;
-
-static void SpatialAudioDSPProcInner(HDSP handle, DWORD channel, void* buffer, DWORD length) {
-    g_spatialCrashStep = 1;  // entered callback
+// 3D Audio DSP callback - HRTF binaural rendering
+static void CALLBACK SpatialAudioDSPProc(HDSP handle, DWORD channel, void* buffer, DWORD length, void* user) {
     BASS_CHANNELINFO info;
     if (!BASS_ChannelGetInfo(channel, &info)) return;
     if (info.chans != 2) return;
 
-    g_spatialCrashStep = 2;  // got channel info
     SpatialAudio* spatial = GetSpatialAudio();
     if (!spatial || !spatial->IsInitialized()) return;
 
-    g_spatialCrashStep = 3;  // spatial ready
     float blend = g_paramValues[(int)ParamId::SpatialBlend] / 100.0f;
     if (blend <= 0.0f) return;
 
-    g_spatialCrashStep = 4;  // about to process
     if (info.flags & BASS_SAMPLE_FLOAT) {
         float* samples = static_cast<float*>(buffer);
         int frameCount = length / (sizeof(float) * 2);
-        g_spatialCrashStep = 5;  // float path, calling Process
         spatial->Process(samples, frameCount, blend);
-        g_spatialCrashStep = 6;  // Process returned OK
     } else {
         short* samples = static_cast<short*>(buffer);
         int frameCount = length / (sizeof(short) * 2);
         int totalSamples = frameCount * 2;
-        g_spatialCrashStep = 7;  // int16 path, getting conv buffer
         float* floatBuf = spatial->GetConversionBuffer(totalSamples);
         if (!floatBuf) return;
-        g_spatialCrashStep = 8;  // converting to float
         for (int i = 0; i < totalSamples; i++)
             floatBuf[i] = samples[i] / 32768.0f;
-        g_spatialCrashStep = 9;  // calling Process (int16)
         spatial->Process(floatBuf, frameCount, blend);
-        g_spatialCrashStep = 10; // converting back
         for (int i = 0; i < totalSamples; i++) {
             float v = floatBuf[i];
             if (v > 1.0f) v = 1.0f; else if (v < -1.0f) v = -1.0f;
             samples[i] = static_cast<short>(v * 32767.0f);
         }
-        g_spatialCrashStep = 11; // int16 done
     }
 }
-
-// Wrap in SEH to catch delay-load failures or access violations from Steam Audio
-static void CALLBACK SpatialAudioDSPProc(HDSP handle, DWORD channel, void* buffer, DWORD length, void* user) {
-    DWORD exCode = 0;
-    __try {
-        SpatialAudioDSPProcInner(handle, channel, buffer, length);
-    } __except(exCode = GetExceptionCode(), EXCEPTION_EXECUTE_HANDLER) {
-        // Steam Audio crashed - disable the effect to prevent repeated crashes
-        g_dspEnabled[(int)DSPEffectType::SpatialAudio] = false;
-        if (g_hdspSpatialAudio) {
-            BASS_ChannelRemoveDSP(channel, g_hdspSpatialAudio);
-            g_hdspSpatialAudio = 0;
-        }
-        int innerStep = 0;
-        SpatialAudio* sp = GetSpatialAudio();
-        if (sp) innerStep = sp->m_debugStep;
-        char msg[256];
-        snprintf(msg, sizeof(msg), "3D Audio crashed at step %d dot %d with exception 0x%08X. "
-                 "120 is fill, 130 is deinterleave, 150 is surround, 160 is binaural, 170 is done.",
-                 g_spatialCrashStep, innerStep, (unsigned int)exCode);
-        Speak(msg);
-    }
-}
-#endif
 
 // Volume DSP - runs LAST (very low priority) so encoder captures full volume
 // This allows recording at full volume while playback respects g_volume/g_muted
@@ -926,8 +884,7 @@ void ApplyDSPEffects() {
         g_hdspConvolution = BASS_ChannelSetDSP(g_fxStream, ConvolutionDSPProc, nullptr, 0);
     }
 
-    // 3D Audio (Steam Audio HRTF)
-#ifdef USE_STEAM_AUDIO
+    // 3D Audio (HRTF)
     if (g_dspEnabled[(int)DSPEffectType::SpatialAudio] && !g_hdspSpatialAudio) {
         bool initOk = false;
         SpatialAudio* spatial = GetSpatialAudio();
@@ -948,7 +905,6 @@ void ApplyDSPEffects() {
             g_hdspSpatialAudio = BASS_ChannelSetDSP(g_fxStream, SpatialAudioDSPProc, nullptr, 0);
         }
     }
-#endif
 
     // Legacy volume mode - apply volume directly to stream attribute
     // This must be done every time a new stream is created
@@ -1156,7 +1112,6 @@ void SetParamValue(ParamId id, float value) {
                 BASS_FXSetParameters(g_hfxCompressor, &comp);
             }
             break;
-    #ifdef USE_STEAM_AUDIO
         case ParamId::SpatialMode: {
             SpatialAudio* spatial = GetSpatialAudio();
             if (spatial) spatial->SetMode(value >= 0.5f ? SpatialMode::Surround51 : SpatialMode::Binaural);
@@ -1167,7 +1122,6 @@ void SetParamValue(ParamId id, float value) {
             if (spatial) spatial->SetRearCenter(value >= 0.5f);
             break;
         }
-    #endif
         default:
             break;
     }

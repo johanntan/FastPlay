@@ -22,9 +22,8 @@ A fast, accessible audio player for Windows with support for tempo/pitch shiftin
 
 ## Dependencies
 
-Run `download-deps.bat` once. It downloads BASS and its add-ons, Steam Audio,
-SQLite, Speedy, Sonic, KissFFT and Signalsmith Stretch into `lib/`, `include/`,
-`deps/` and `src/`.
+Run `download-deps.bat` once. It downloads BASS and its add-ons, SQLite, Speedy,
+Sonic, KissFFT and Signalsmith Stretch into `lib/`, `include/`, `deps/` and `src/`.
 
 wxWidgets (the user interface toolkit) and UniversalSpeech (screen reader
 speech) are fetched and built by CMake itself on the first build.
@@ -48,11 +47,6 @@ Disable screen reader support:
 build_new.bat no-speech
 ```
 
-Disable Steam Audio (3D audio):
-```batch
-build_new.bat no-steamaudio
-```
-
 ## Running
 
 After building, run `FastPlay.exe`. DLLs are loaded from the `lib/` subfolder.
@@ -64,7 +58,8 @@ FastPlay/
 ├── src/              # Player, effects, database and other core code
 │   ├── ui/           # The user interface (wxWidgets)
 │   ├── platform/     # Operating system specific code
-│   └── reverb/       # The reverb engines
+│   ├── reverb/       # The reverb engines
+│   └── spatial/      # The HRTF behind 3D Audio (SADIE II data, pffft)
 ├── include/          # Header files
 ├── lib/              # BASS libraries and DLLs
 ├── deps/             # Third-party dependencies (Speedy, Sonic, Signalsmith Stretch, etc.)
@@ -81,3 +76,5 @@ This project uses the following third-party libraries:
 - SQLite (public domain)
 - wxWidgets (wxWindows Library Licence)
 - Universal Speech (MIT)
+- SADIE II HRTF database, University of York (Apache 2.0)
+- pffft (FFTPACK licence)
