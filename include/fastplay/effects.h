@@ -22,7 +22,7 @@ bool IsDSPEffectEnabled(DSPEffectType type);
 void ApplyDSPEffects();  // Call after stream creation
 void RemoveDSPEffects(); // Call before stream destruction
 
-// Reverb algorithm selection (0=Off, 1=Freeverb, 2=DX8, 3=I3DL2)
+// Reverb algorithm selection (0=Off, 1=Simple, 2=Advanced)
 void SetReverbAlgorithm(int algorithm);
 
 // Parameter getters

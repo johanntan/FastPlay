@@ -78,6 +78,7 @@ set "SOURCES=%SOURCES% src\settings.cpp src\hotkeys.cpp src\tray.cpp"
 set "SOURCES=%SOURCES% src\accessibility.cpp src\ui.cpp src\effects.cpp"
 set "SOURCES=%SOURCES% src\database.cpp src\sqlite3.c"
 set "SOURCES=%SOURCES% src\tempo_processor.cpp src\youtube.cpp src\center_cancel.cpp src\convolution.cpp src\download_manager.cpp src\updater.cpp src\spatial_audio.cpp"
+set "SOURCES=%SOURCES% src\reverb\reverb.cpp src\reverb\efx_reverb.cpp"
 
 REM Add Speedy source if enabled
 if defined SPEEDY_SRC set "SOURCES=%SOURCES% %SPEEDY_SRC%"
@@ -87,7 +88,7 @@ rc /nologo FastPlay.rc
 if errorlevel 1 goto :error
 
 REM Compile and link
-cl /nologo /W3 /O2 /MT /EHsc /DUNICODE /D_UNICODE /DNOMINMAX %COMMIT_FLAG% %SPEECH_FLAG% %SPEEDY_FLAG% %SIGNALSMITH_FLAG% %STEAMAUDIO_FLAG% ^
+cl /nologo /W3 /O2 /MT /EHsc /std:c++17 /DUNICODE /D_UNICODE /DNOMINMAX %COMMIT_FLAG% %SPEECH_FLAG% %SPEEDY_FLAG% %SIGNALSMITH_FLAG% %STEAMAUDIO_FLAG% ^
    /I"." /I"include" /I"include\fastplay" %SPEEDY_INC% %SIGNALSMITH_INC% %STEAMAUDIO_INC% ^
    %SOURCES% FastPlay.res ^
    /Fe:FastPlay.exe ^

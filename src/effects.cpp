@@ -6,12 +6,16 @@
 #include "tempo_processor.h"
 #include "center_cancel.h"
 #include "convolution.h"
+#include "reverb/reverb.h"
+#include "reverb/efx_reverb.h"
 #ifdef USE_STEAM_AUDIO
 #include "spatial_audio.h"
 #endif
 #include <cstdio>
 #include <vector>
 #include <cmath>
+#include <mutex>
+#include <algorithm>
 
 // Clamp helper
 template<typename T> T clamp_val(T val, T minVal, T maxVal) {
@@ -27,19 +31,27 @@ static const ParamDef g_paramDefs[] = {
     {ParamId::Pitch,       "Pitch",        " semitones", -12.0f, 12.0f,  1.0f,  0.0f,  (DSPEffectType)-1},
     {ParamId::Tempo,       "Tempo",        "%",          -75.0f, 200.0f, 5.0f,  0.0f,  (DSPEffectType)-1},
     {ParamId::Rate,        "Rate",         "x",          0.25f,  4.0f,   0.01f, 1.0f,  (DSPEffectType)-1},
-    // Freeverb parameters (algorithm 1)
-    {ParamId::ReverbMix,   "Reverb Mix",   "%",          0.0f,   100.0f, 5.0f,  30.0f, DSPEffectType::Reverb},
-    {ParamId::ReverbRoom,  "Reverb Room",  "%",          0.0f,   100.0f, 5.0f,  50.0f, DSPEffectType::Reverb},
-    {ParamId::ReverbDamp,  "Reverb Damp",  "%",          0.0f,   100.0f, 5.0f,  50.0f, DSPEffectType::Reverb},
-    // DX8 Reverb parameters (algorithm 2)
-    {ParamId::DX8ReverbTime,    "DX8 Reverb Time",   "ms",  1.0f,   3000.0f, 100.0f, 1000.0f, DSPEffectType::Reverb},
-    {ParamId::DX8ReverbHFRatio, "DX8 HF Ratio",      "",    0.001f, 0.999f,  0.1f,   0.5f,    DSPEffectType::Reverb},
-    {ParamId::DX8ReverbMix,     "DX8 Reverb Mix",    "dB",  -96.0f, 0.0f,    3.0f,   -10.0f,  DSPEffectType::Reverb},
-    // I3DL2 Reverb parameters (algorithm 3)
-    {ParamId::I3DL2Room,       "I3DL2 Room",        "mB",  -10000.0f, 0.0f,    500.0f, -1000.0f, DSPEffectType::Reverb},
-    {ParamId::I3DL2DecayTime,  "I3DL2 Decay",       "s",   0.1f,      20.0f,   0.5f,   1.49f,    DSPEffectType::Reverb},
-    {ParamId::I3DL2Diffusion,  "I3DL2 Diffusion",   "%",   0.0f,      100.0f,  5.0f,   100.0f,   DSPEffectType::Reverb},
-    {ParamId::I3DL2Density,    "I3DL2 Density",     "%",   0.0f,      100.0f,  5.0f,   100.0f,   DSPEffectType::Reverb},
+    // Simple reverb parameters (algorithm 1). The preset comes first: choosing one sets the rest,
+    // and presets and settings are loaded in this order.
+    {ParamId::ReverbPreset,   "Reverb Room",      "",     0.0f,    21.0f,    1.0f,    0.0f,     DSPEffectType::Reverb},
+    {ParamId::ReverbMix,      "Reverb Mix",       "%",    0.0f,    100.0f,   5.0f,    30.0f,    DSPEffectType::Reverb},
+    {ParamId::ReverbRoom,     "Reverb Size",      "%",    0.0f,    100.0f,   5.0f,    50.0f,    DSPEffectType::Reverb},
+    {ParamId::ReverbDamp,     "Reverb Damping",   "%",    0.0f,    100.0f,   5.0f,    25.0f,    DSPEffectType::Reverb},
+    {ParamId::ReverbWidth,    "Reverb Width",     "%",    0.0f,    100.0f,   10.0f,   100.0f,   DSPEffectType::Reverb},
+    {ParamId::ReverbPreDelay, "Reverb Pre-delay", " ms",  0.0f,    250.0f,   5.0f,    0.0f,     DSPEffectType::Reverb},
+    {ParamId::ReverbLowCut,   "Reverb Low Cut",   " Hz",  0.0f,    1000.0f,  20.0f,   0.0f,     DSPEffectType::Reverb},
+    {ParamId::ReverbHighCut,  "Reverb High Cut",  " Hz",  1000.0f, 20000.0f, 1000.0f, 20000.0f, DSPEffectType::Reverb},
+    // Advanced reverb parameters (algorithm 2); defaults are the Generic environment
+    {ParamId::AdvReverbPreset,      "Reverb Environment",       "",     0.0f,   25.0f,  1.0f,  0.0f,   DSPEffectType::Reverb},
+    {ParamId::AdvReverbMix,         "Reverb Mix",               "%",    0.0f,   100.0f, 5.0f,  30.0f,  DSPEffectType::Reverb},
+    {ParamId::AdvReverbDecay,       "Reverb Decay",             " s",   0.1f,   20.0f,  0.1f,  1.49f,  DSPEffectType::Reverb},
+    {ParamId::AdvReverbHFRatio,     "Reverb High Decay",        "x",    0.1f,   2.0f,   0.05f, 0.83f,  DSPEffectType::Reverb},
+    {ParamId::AdvReverbDensity,     "Reverb Density",           "%",    0.0f,   100.0f, 5.0f,  100.0f, DSPEffectType::Reverb},
+    {ParamId::AdvReverbDiffusion,   "Reverb Diffusion",         "%",    0.0f,   100.0f, 5.0f,  100.0f, DSPEffectType::Reverb},
+    {ParamId::AdvReverbReflections, "Reverb Reflections",       " dB",  -60.0f, 10.0f,  1.0f,  -26.0f, DSPEffectType::Reverb},
+    {ParamId::AdvReverbLate,        "Reverb Tail",              " dB",  -60.0f, 20.0f,  1.0f,  2.0f,   DSPEffectType::Reverb},
+    {ParamId::AdvReverbReflDelay,   "Reverb Reflections Delay", " ms",  0.0f,   300.0f, 5.0f,  7.0f,   DSPEffectType::Reverb},
+    {ParamId::AdvReverbLateDelay,   "Reverb Tail Delay",        " ms",  0.0f,   100.0f, 5.0f,  11.0f,  DSPEffectType::Reverb},
     // Echo parameters
     {ParamId::EchoDelay,   "Echo Delay",   "ms",         10.0f,  2000.0f, 50.0f, 300.0f, DSPEffectType::Echo},
     {ParamId::EchoFeedback,"Echo Feedback","%",          0.0f,   90.0f,  5.0f,  40.0f, DSPEffectType::Echo},
@@ -75,13 +87,13 @@ static const ParamDef g_paramDefs[] = {
 static const int g_paramDefCount = sizeof(g_paramDefs) / sizeof(g_paramDefs[0]);
 
 // DSP effect handles
-static HFX g_hfxReverb = 0;
 static HFX g_hfxEcho = 0;
 static HFX g_hfxEQPreamp = 0;
 static HFX g_hfxEQBass = 0;
 static HFX g_hfxEQMid = 0;
 static HFX g_hfxEQTreble = 0;
 static HFX g_hfxCompressor = 0;
+static HDSP g_hdspReverb = 0;       // Custom DSP for the reverbs
 static HDSP g_hdspStereoWidth = 0;  // Custom DSP for stereo width
 static HDSP g_hdspCenterCancel = 0; // Custom DSP for center cancel/extract
 static HDSP g_hdspConvolution = 0;  // Custom DSP for convolution reverb
@@ -97,6 +109,236 @@ static float g_paramValues[(int)ParamId::COUNT];
 // Current parameter index for cycling
 static int g_currentParamIndex = 0;
 
+// ---------------------------------------------------------------------------
+// Reverb: the two reverbs in src/reverb, run as one custom DSP on the stream.
+// Simple is a 16 line FDN reverb; Advanced is an EFX model reverb with the EFX environments.
+// ---------------------------------------------------------------------------
+
+// Rooms for the simple reverb.
+struct SimpleReverbPreset {
+    const char* name;
+    float room, damping, preDelayMs, width, lowCutHz, highCutHz;
+    float level;  // the preset's wet level relative to the default (1 = default)
+};
+static const SimpleReverbPreset g_simpleReverbPresets[] = {
+    {"Generic",          0.5f,  0.25f, 0,   1.0f, 0,   0,    1.0f},
+    {"Small room",       0.0f,  0.6f,  4,   1.0f, 0,   0,    1.0f},
+    {"Medium room",      0.39f, 0.5f,  8,   1.0f, 0,   0,    1.0f},
+    {"Large room",       0.67f, 0.45f, 14,  1.0f, 0,   0,    1.0f},
+    {"Bathroom",         0.57f, 0.1f,  3,   1.0f, 0,   0,    1.0f},
+    {"Living room",      0.0f,  0.8f,  6,   1.0f, 0,   6000, 0.75f},
+    {"Stone room",       0.74f, 0.2f,  10,  1.0f, 0,   0,    1.0f},
+    {"Hallway",          0.6f,  0.4f,  7,   0.7f, 0,   0,    1.0f},
+    {"Carpeted hallway", 0.0f,  0.9f,  7,   1.0f, 0,   4000, 0.6f},
+    {"Auditorium",       0.84f, 0.4f,  20,  1.0f, 0,   0,    1.0f},
+    {"Concert hall",     0.88f, 0.35f, 24,  1.0f, 0,   0,    1.0f},
+    {"Cave",             0.82f, 0.15f, 15,  1.0f, 0,   0,    1.0f},
+    {"Arena",            0.97f, 0.3f,  30,  1.0f, 0,   0,    1.0f},
+    {"Hangar",           1.0f,  0.35f, 30,  1.0f, 0,   0,    1.0f},
+    {"Forest",           0.6f,  0.8f,  40,  1.0f, 0,   5000, 0.45f},
+    {"City",             0.6f,  0.7f,  20,  1.0f, 0,   6000, 0.45f},
+    {"Mountains",        0.6f,  0.7f,  120, 1.0f, 0,   0,    0.3f},
+    {"Parking lot",      0.64f, 0.5f,  25,  1.0f, 0,   0,    0.6f},
+    {"Sewer pipe",       0.81f, 0.2f,  10,  0.4f, 150, 5000, 1.0f},
+    {"Underwater",       0.6f,  1.0f,  5,   1.0f, 0,   1200, 1.0f},
+    {"Cathedral",        0.95f, 0.3f,  35,  1.0f, 0,   0,    1.0f},
+    {"Plate",            0.71f, 0.2f,  0,   1.0f, 0,   0,    1.0f},
+};
+static const int g_simpleReverbPresetCount = sizeof(g_simpleReverbPresets) / sizeof(g_simpleReverbPresets[0]);
+
+// Environments for the advanced reverb: the EFX default presets (OpenAL Soft's efx-presets.h),
+// field for field in EfxReverbParams order.
+struct AdvancedReverbPreset {
+    const char* name;
+    fastplay::audio::EfxReverbParams params;
+};
+static const AdvancedReverbPreset g_advancedReverbPresets[] = {
+    {"Generic", { 1.0000f, 1.0000f, 0.3162f, 0.8913f, 1.0000f, 1.4900f, 0.8300f, 1.0000f, 0.0500f, 0.0070f, { 0.0000f, 0.0000f, 0.0000f }, 1.2589f, 0.0110f, { 0.0000f, 0.0000f, 0.0000f }, 0.2500f, 0.0000f, 0.2500f, 0.0000f, 0.9943f, 5000.0000f, 250.0000f, 0.0000f, true }},
+    {"Padded cell", { 0.1715f, 1.0000f, 0.3162f, 0.0010f, 1.0000f, 0.1700f, 0.1000f, 1.0000f, 0.2500f, 0.0010f, { 0.0000f, 0.0000f, 0.0000f }, 1.2691f, 0.0020f, { 0.0000f, 0.0000f, 0.0000f }, 0.2500f, 0.0000f, 0.2500f, 0.0000f, 0.9943f, 5000.0000f, 250.0000f, 0.0000f, true }},
+    {"Room", { 0.4287f, 1.0000f, 0.3162f, 0.5929f, 1.0000f, 0.4000f, 0.8300f, 1.0000f, 0.1503f, 0.0020f, { 0.0000f, 0.0000f, 0.0000f }, 1.0629f, 0.0030f, { 0.0000f, 0.0000f, 0.0000f }, 0.2500f, 0.0000f, 0.2500f, 0.0000f, 0.9943f, 5000.0000f, 250.0000f, 0.0000f, true }},
+    {"Bathroom", { 0.1715f, 1.0000f, 0.3162f, 0.2512f, 1.0000f, 1.4900f, 0.5400f, 1.0000f, 0.6531f, 0.0070f, { 0.0000f, 0.0000f, 0.0000f }, 3.2734f, 0.0110f, { 0.0000f, 0.0000f, 0.0000f }, 0.2500f, 0.0000f, 0.2500f, 0.0000f, 0.9943f, 5000.0000f, 250.0000f, 0.0000f, true }},
+    {"Living room", { 0.9766f, 1.0000f, 0.3162f, 0.0010f, 1.0000f, 0.5000f, 0.1000f, 1.0000f, 0.2051f, 0.0030f, { 0.0000f, 0.0000f, 0.0000f }, 0.2805f, 0.0040f, { 0.0000f, 0.0000f, 0.0000f }, 0.2500f, 0.0000f, 0.2500f, 0.0000f, 0.9943f, 5000.0000f, 250.0000f, 0.0000f, true }},
+    {"Stone room", { 1.0000f, 1.0000f, 0.3162f, 0.7079f, 1.0000f, 2.3100f, 0.6400f, 1.0000f, 0.4411f, 0.0120f, { 0.0000f, 0.0000f, 0.0000f }, 1.1003f, 0.0170f, { 0.0000f, 0.0000f, 0.0000f }, 0.2500f, 0.0000f, 0.2500f, 0.0000f, 0.9943f, 5000.0000f, 250.0000f, 0.0000f, true }},
+    {"Auditorium", { 1.0000f, 1.0000f, 0.3162f, 0.5781f, 1.0000f, 4.3200f, 0.5900f, 1.0000f, 0.4032f, 0.0200f, { 0.0000f, 0.0000f, 0.0000f }, 0.7170f, 0.0300f, { 0.0000f, 0.0000f, 0.0000f }, 0.2500f, 0.0000f, 0.2500f, 0.0000f, 0.9943f, 5000.0000f, 250.0000f, 0.0000f, true }},
+    {"Concert hall", { 1.0000f, 1.0000f, 0.3162f, 0.5623f, 1.0000f, 3.9200f, 0.7000f, 1.0000f, 0.2427f, 0.0200f, { 0.0000f, 0.0000f, 0.0000f }, 0.9977f, 0.0290f, { 0.0000f, 0.0000f, 0.0000f }, 0.2500f, 0.0000f, 0.2500f, 0.0000f, 0.9943f, 5000.0000f, 250.0000f, 0.0000f, true }},
+    {"Cave", { 1.0000f, 1.0000f, 0.3162f, 1.0000f, 1.0000f, 2.9100f, 1.3000f, 1.0000f, 0.5000f, 0.0150f, { 0.0000f, 0.0000f, 0.0000f }, 0.7063f, 0.0220f, { 0.0000f, 0.0000f, 0.0000f }, 0.2500f, 0.0000f, 0.2500f, 0.0000f, 0.9943f, 5000.0000f, 250.0000f, 0.0000f, false }},
+    {"Arena", { 1.0000f, 1.0000f, 0.3162f, 0.4477f, 1.0000f, 7.2400f, 0.3300f, 1.0000f, 0.2612f, 0.0200f, { 0.0000f, 0.0000f, 0.0000f }, 1.0186f, 0.0300f, { 0.0000f, 0.0000f, 0.0000f }, 0.2500f, 0.0000f, 0.2500f, 0.0000f, 0.9943f, 5000.0000f, 250.0000f, 0.0000f, true }},
+    {"Hangar", { 1.0000f, 1.0000f, 0.3162f, 0.3162f, 1.0000f, 10.0500f, 0.2300f, 1.0000f, 0.5000f, 0.0200f, { 0.0000f, 0.0000f, 0.0000f }, 1.2560f, 0.0300f, { 0.0000f, 0.0000f, 0.0000f }, 0.2500f, 0.0000f, 0.2500f, 0.0000f, 0.9943f, 5000.0000f, 250.0000f, 0.0000f, true }},
+    {"Carpeted hallway", { 0.4287f, 1.0000f, 0.3162f, 0.0100f, 1.0000f, 0.3000f, 0.1000f, 1.0000f, 0.1215f, 0.0020f, { 0.0000f, 0.0000f, 0.0000f }, 0.1531f, 0.0300f, { 0.0000f, 0.0000f, 0.0000f }, 0.2500f, 0.0000f, 0.2500f, 0.0000f, 0.9943f, 5000.0000f, 250.0000f, 0.0000f, true }},
+    {"Hallway", { 0.3645f, 1.0000f, 0.3162f, 0.7079f, 1.0000f, 1.4900f, 0.5900f, 1.0000f, 0.2458f, 0.0070f, { 0.0000f, 0.0000f, 0.0000f }, 1.6615f, 0.0110f, { 0.0000f, 0.0000f, 0.0000f }, 0.2500f, 0.0000f, 0.2500f, 0.0000f, 0.9943f, 5000.0000f, 250.0000f, 0.0000f, true }},
+    {"Stone corridor", { 1.0000f, 1.0000f, 0.3162f, 0.7612f, 1.0000f, 2.7000f, 0.7900f, 1.0000f, 0.2472f, 0.0130f, { 0.0000f, 0.0000f, 0.0000f }, 1.5758f, 0.0200f, { 0.0000f, 0.0000f, 0.0000f }, 0.2500f, 0.0000f, 0.2500f, 0.0000f, 0.9943f, 5000.0000f, 250.0000f, 0.0000f, true }},
+    {"Alley", { 1.0000f, 0.3000f, 0.3162f, 0.7328f, 1.0000f, 1.4900f, 0.8600f, 1.0000f, 0.2500f, 0.0070f, { 0.0000f, 0.0000f, 0.0000f }, 0.9954f, 0.0110f, { 0.0000f, 0.0000f, 0.0000f }, 0.1250f, 0.9500f, 0.2500f, 0.0000f, 0.9943f, 5000.0000f, 250.0000f, 0.0000f, true }},
+    {"Forest", { 1.0000f, 0.3000f, 0.3162f, 0.0224f, 1.0000f, 1.4900f, 0.5400f, 1.0000f, 0.0525f, 0.1620f, { 0.0000f, 0.0000f, 0.0000f }, 0.7682f, 0.0880f, { 0.0000f, 0.0000f, 0.0000f }, 0.1250f, 1.0000f, 0.2500f, 0.0000f, 0.9943f, 5000.0000f, 250.0000f, 0.0000f, true }},
+    {"City", { 1.0000f, 0.5000f, 0.3162f, 0.3981f, 1.0000f, 1.4900f, 0.6700f, 1.0000f, 0.0730f, 0.0070f, { 0.0000f, 0.0000f, 0.0000f }, 0.1427f, 0.0110f, { 0.0000f, 0.0000f, 0.0000f }, 0.2500f, 0.0000f, 0.2500f, 0.0000f, 0.9943f, 5000.0000f, 250.0000f, 0.0000f, true }},
+    {"Mountains", { 1.0000f, 0.2700f, 0.3162f, 0.0562f, 1.0000f, 1.4900f, 0.2100f, 1.0000f, 0.0407f, 0.3000f, { 0.0000f, 0.0000f, 0.0000f }, 0.1919f, 0.1000f, { 0.0000f, 0.0000f, 0.0000f }, 0.2500f, 1.0000f, 0.2500f, 0.0000f, 0.9943f, 5000.0000f, 250.0000f, 0.0000f, false }},
+    {"Quarry", { 1.0000f, 1.0000f, 0.3162f, 0.3162f, 1.0000f, 1.4900f, 0.8300f, 1.0000f, 0.0000f, 0.0610f, { 0.0000f, 0.0000f, 0.0000f }, 1.7783f, 0.0250f, { 0.0000f, 0.0000f, 0.0000f }, 0.1250f, 0.7000f, 0.2500f, 0.0000f, 0.9943f, 5000.0000f, 250.0000f, 0.0000f, true }},
+    {"Plain", { 1.0000f, 0.2100f, 0.3162f, 0.1000f, 1.0000f, 1.4900f, 0.5000f, 1.0000f, 0.0585f, 0.1790f, { 0.0000f, 0.0000f, 0.0000f }, 0.1089f, 0.1000f, { 0.0000f, 0.0000f, 0.0000f }, 0.2500f, 1.0000f, 0.2500f, 0.0000f, 0.9943f, 5000.0000f, 250.0000f, 0.0000f, true }},
+    {"Parking lot", { 1.0000f, 1.0000f, 0.3162f, 1.0000f, 1.0000f, 1.6500f, 1.5000f, 1.0000f, 0.2082f, 0.0080f, { 0.0000f, 0.0000f, 0.0000f }, 0.2652f, 0.0120f, { 0.0000f, 0.0000f, 0.0000f }, 0.2500f, 0.0000f, 0.2500f, 0.0000f, 0.9943f, 5000.0000f, 250.0000f, 0.0000f, false }},
+    {"Sewer pipe", { 0.3071f, 0.8000f, 0.3162f, 0.3162f, 1.0000f, 2.8100f, 0.1400f, 1.0000f, 1.6387f, 0.0140f, { 0.0000f, 0.0000f, 0.0000f }, 3.2471f, 0.0210f, { 0.0000f, 0.0000f, 0.0000f }, 0.2500f, 0.0000f, 0.2500f, 0.0000f, 0.9943f, 5000.0000f, 250.0000f, 0.0000f, true }},
+    {"Underwater", { 0.3645f, 1.0000f, 0.3162f, 0.0100f, 1.0000f, 1.4900f, 0.1000f, 1.0000f, 0.5963f, 0.0070f, { 0.0000f, 0.0000f, 0.0000f }, 7.0795f, 0.0110f, { 0.0000f, 0.0000f, 0.0000f }, 0.2500f, 0.0000f, 1.1800f, 0.3480f, 0.9943f, 5000.0000f, 250.0000f, 0.0000f, true }},
+    {"Drugged", { 0.4287f, 0.5000f, 0.3162f, 1.0000f, 1.0000f, 8.3900f, 1.3900f, 1.0000f, 0.8760f, 0.0020f, { 0.0000f, 0.0000f, 0.0000f }, 3.1081f, 0.0300f, { 0.0000f, 0.0000f, 0.0000f }, 0.2500f, 0.0000f, 0.2500f, 1.0000f, 0.9943f, 5000.0000f, 250.0000f, 0.0000f, false }},
+    {"Dizzy", { 0.3645f, 0.6000f, 0.3162f, 0.6310f, 1.0000f, 17.2300f, 0.5600f, 1.0000f, 0.1392f, 0.0200f, { 0.0000f, 0.0000f, 0.0000f }, 0.4937f, 0.0300f, { 0.0000f, 0.0000f, 0.0000f }, 0.2500f, 1.0000f, 0.8100f, 0.3100f, 0.9943f, 5000.0000f, 250.0000f, 0.0000f, false }},
+    {"Psychotic", { 0.0625f, 0.5000f, 0.3162f, 0.8404f, 1.0000f, 7.5600f, 0.9100f, 1.0000f, 0.4864f, 0.0200f, { 0.0000f, 0.0000f, 0.0000f }, 2.4378f, 0.0300f, { 0.0000f, 0.0000f, 0.0000f }, 0.2500f, 0.0000f, 4.0000f, 1.0000f, 0.9943f, 5000.0000f, 250.0000f, 0.0000f, false }},
+};
+static const int g_advancedReverbPresetCount = sizeof(g_advancedReverbPresets) / sizeof(g_advancedReverbPresets[0]);
+
+// High cut at its maximum means off.
+static const float kReverbHighCutOff = 20000.0f;
+
+struct ReverbEngine {
+    std::mutex mutex;  // params are set from the UI thread, processing runs on BASS's
+    fastplay::audio::Reverb simple;
+    fastplay::audio::EfxReverb advanced;
+    fastplay::audio::ReverbParams simpleParams;
+    fastplay::audio::EfxReverbParams advancedParams;
+    int algorithm = 0;
+    int sampleRate = 0;
+    float dry = 1.0f;          // target dry gain
+    float dryCurrent = 1.0f;   // ramped towards dry once per block
+    std::vector<float> inL, inR, outL, outR;
+};
+static ReverbEngine g_reverbEngine;
+
+// Mix: 0% is dry only, 50% is the dry signal at full level with the reverb at its natural level,
+// 100% is the reverb only.
+static void ReverbMixGains(float mixPercent, float& dry, float& wet) {
+    float m = clamp_val(mixPercent / 100.0f, 0.0f, 1.0f);
+    dry = std::min(1.0f, 2.0f * (1.0f - m));
+    wet = std::min(1.0f, 2.0f * m);
+}
+
+static int ReverbPresetIndex(ParamId id, int count) {
+    int i = static_cast<int>(std::lround(g_paramValues[(int)id]));
+    return clamp_val(i, 0, count - 1);
+}
+
+// Copy a preset's values into the parameters the user can adjust.
+static void ApplySimpleReverbPreset(int index) {
+    const SimpleReverbPreset& p = g_simpleReverbPresets[clamp_val(index, 0, g_simpleReverbPresetCount - 1)];
+    g_paramValues[(int)ParamId::ReverbRoom] = p.room * 100.0f;
+    g_paramValues[(int)ParamId::ReverbDamp] = p.damping * 100.0f;
+    g_paramValues[(int)ParamId::ReverbWidth] = p.width * 100.0f;
+    g_paramValues[(int)ParamId::ReverbPreDelay] = p.preDelayMs;
+    g_paramValues[(int)ParamId::ReverbLowCut] = p.lowCutHz;
+    g_paramValues[(int)ParamId::ReverbHighCut] = p.highCutHz > 0 ? p.highCutHz : kReverbHighCutOff;
+}
+
+static float GainToDb(float gain, float minDb, float maxDb) {
+    float db = gain > 0.0f ? 20.0f * std::log10(gain) : minDb;
+    return clamp_val(std::round(db), minDb, maxDb);
+}
+
+static void ApplyAdvancedReverbPreset(int index) {
+    const fastplay::audio::EfxReverbParams& p = g_advancedReverbPresets[clamp_val(index, 0, g_advancedReverbPresetCount - 1)].params;
+    g_paramValues[(int)ParamId::AdvReverbDecay] = p.decay_time;
+    g_paramValues[(int)ParamId::AdvReverbHFRatio] = p.decay_hf_ratio;
+    g_paramValues[(int)ParamId::AdvReverbDensity] = p.density * 100.0f;
+    g_paramValues[(int)ParamId::AdvReverbDiffusion] = p.diffusion * 100.0f;
+    g_paramValues[(int)ParamId::AdvReverbReflections] = GainToDb(p.reflections_gain, -60.0f, 10.0f);
+    g_paramValues[(int)ParamId::AdvReverbLate] = GainToDb(p.late_reverb_gain, -60.0f, 20.0f);
+    g_paramValues[(int)ParamId::AdvReverbReflDelay] = p.reflections_delay * 1000.0f;
+    g_paramValues[(int)ParamId::AdvReverbLateDelay] = p.late_reverb_delay * 1000.0f;
+}
+
+// Rebuild both reverbs' settings from the parameter values.
+static void UpdateReverbParams() {
+    const float* v = g_paramValues;
+    float dry, wet;
+
+    fastplay::audio::ReverbParams sp;
+    const SimpleReverbPreset& room = g_simpleReverbPresets[ReverbPresetIndex(ParamId::ReverbPreset, g_simpleReverbPresetCount)];
+    ReverbMixGains(v[(int)ParamId::ReverbMix], dry, wet);
+    float simpleDry = dry;
+    sp.room_size = v[(int)ParamId::ReverbRoom] / 100.0f;
+    sp.damping = v[(int)ParamId::ReverbDamp] / 100.0f;
+    sp.width = v[(int)ParamId::ReverbWidth] / 100.0f;
+    sp.pre_delay_ms = v[(int)ParamId::ReverbPreDelay];
+    sp.low_cut_hz = v[(int)ParamId::ReverbLowCut];
+    sp.high_cut_hz = v[(int)ParamId::ReverbHighCut] >= kReverbHighCutOff ? 0.0f : v[(int)ParamId::ReverbHighCut];
+    sp.wet = wet * room.level / 3.0f;  // the reverb's wet is scaled so 1/3 is unity
+    sp.dry = 0.0f;                     // the dry signal is mixed here, not by the reverb
+
+    fastplay::audio::EfxReverbParams ap = g_advancedReverbPresets[ReverbPresetIndex(ParamId::AdvReverbPreset, g_advancedReverbPresetCount)].params;
+    ReverbMixGains(v[(int)ParamId::AdvReverbMix], dry, wet);
+    float advancedDry = dry;
+    ap.decay_time = v[(int)ParamId::AdvReverbDecay];
+    ap.decay_hf_ratio = v[(int)ParamId::AdvReverbHFRatio];
+    ap.density = v[(int)ParamId::AdvReverbDensity] / 100.0f;
+    ap.diffusion = v[(int)ParamId::AdvReverbDiffusion] / 100.0f;
+    ap.reflections_gain = std::pow(10.0f, v[(int)ParamId::AdvReverbReflections] / 20.0f);
+    ap.late_reverb_gain = std::pow(10.0f, v[(int)ParamId::AdvReverbLate] / 20.0f);
+    ap.reflections_delay = v[(int)ParamId::AdvReverbReflDelay] / 1000.0f;
+    ap.late_reverb_delay = v[(int)ParamId::AdvReverbLateDelay] / 1000.0f;
+    ap.gain *= wet;
+
+    std::lock_guard<std::mutex> lock(g_reverbEngine.mutex);
+    g_reverbEngine.algorithm = g_reverbAlgorithm;
+    g_reverbEngine.simpleParams = sp;
+    g_reverbEngine.advancedParams = ap;
+    g_reverbEngine.dry = g_reverbAlgorithm == 2 ? advancedDry : simpleDry;
+    if (g_reverbEngine.sampleRate > 0) {
+        g_reverbEngine.simple.set_params(sp);
+        g_reverbEngine.advanced.set_params(ap);
+    }
+}
+
+// Start the reverbs fresh at a stream's sample rate (no tail carried over from the last track).
+static void ResetReverbEngine(int sampleRate) {
+    std::lock_guard<std::mutex> lock(g_reverbEngine.mutex);
+    if (sampleRate != g_reverbEngine.sampleRate) {
+        g_reverbEngine.simple.init(sampleRate);
+        g_reverbEngine.advanced.init(sampleRate);
+        g_reverbEngine.sampleRate = sampleRate;
+    }
+    g_reverbEngine.simple.set_params(g_reverbEngine.simpleParams);
+    g_reverbEngine.advanced.set_params(g_reverbEngine.advancedParams);
+    g_reverbEngine.simple.reset();
+    g_reverbEngine.advanced.reset();
+    g_reverbEngine.dryCurrent = g_reverbEngine.dry;
+}
+
+static void CALLBACK ReverbDSPProc(HDSP handle, DWORD channel, void* buffer, DWORD length, void* user) {
+    BASS_CHANNELINFO info;
+    if (!BASS_ChannelGetInfo(channel, &info) || !(info.flags & BASS_SAMPLE_FLOAT) || info.chans == 0) return;
+
+    ReverbEngine& e = g_reverbEngine;
+    std::lock_guard<std::mutex> lock(e.mutex);
+    if (e.algorithm == 0 || e.sampleRate <= 0) return;
+
+    float* samples = static_cast<float*>(buffer);
+    const int chans = static_cast<int>(info.chans);
+    const int frames = static_cast<int>(length / (sizeof(float) * chans));
+    if (frames <= 0) return;
+
+    e.inL.resize(frames); e.inR.resize(frames);
+    e.outL.assign(frames, 0.0f); e.outR.assign(frames, 0.0f);
+    for (int i = 0; i < frames; i++) {
+        e.inL[i] = samples[i * chans];
+        e.inR[i] = samples[i * chans + (chans > 1 ? 1 : 0)];
+    }
+
+    if (e.algorithm == 2) {
+        e.advanced.process(e.inL.data(), e.inR.data(), e.outL.data(), e.outR.data(), frames);
+    } else {
+        e.simple.process(e.inL.data(), e.inR.data(), e.outL.data(), e.outR.data(), frames);
+    }
+
+    // Dry gain ramps across the block so moving the mix does not click.
+    const float dry0 = e.dryCurrent, dryStep = (e.dry - e.dryCurrent) / frames;
+    for (int i = 0; i < frames; i++) {
+        const float dry = dry0 + dryStep * (i + 1);
+        float* frame = samples + static_cast<size_t>(i) * chans;
+        if (chans == 1) {
+            frame[0] = frame[0] * dry + 0.5f * (e.outL[i] + e.outR[i]);
+            continue;
+        }
+        frame[0] = frame[0] * dry + e.outL[i];
+        frame[1] = frame[1] * dry + e.outR[i];
+        for (int c = 2; c < chans; c++) frame[c] *= dry;
+    }
+    e.dryCurrent = e.dry;
+}
+
 // Initialize parameter values to defaults
 bool InitEffects() {
     for (int i = 0; i < g_paramDefCount; i++) {
@@ -105,6 +347,7 @@ bool InitEffects() {
     // Note: g_tempo, g_pitch, g_rate are loaded from settings in LoadSettings()
     // Only set defaults if they haven't been loaded yet (all zero means uninitialized)
     // Actually, these are loaded before InitEffects, so don't overwrite them
+    UpdateReverbParams();
     return true;
 }
 
@@ -119,22 +362,28 @@ void FreeEffects() {
 // Helper to check if a reverb param matches current algorithm
 static bool IsReverbParamForCurrentAlgorithm(ParamId id) {
     switch (id) {
-        // Freeverb params (algorithm 1)
+        // Simple reverb params (algorithm 1)
+        case ParamId::ReverbPreset:
         case ParamId::ReverbMix:
         case ParamId::ReverbRoom:
         case ParamId::ReverbDamp:
+        case ParamId::ReverbWidth:
+        case ParamId::ReverbPreDelay:
+        case ParamId::ReverbLowCut:
+        case ParamId::ReverbHighCut:
             return g_reverbAlgorithm == 1;
-        // DX8 Reverb params (algorithm 2)
-        case ParamId::DX8ReverbTime:
-        case ParamId::DX8ReverbHFRatio:
-        case ParamId::DX8ReverbMix:
+        // Advanced reverb params (algorithm 2)
+        case ParamId::AdvReverbPreset:
+        case ParamId::AdvReverbMix:
+        case ParamId::AdvReverbDecay:
+        case ParamId::AdvReverbHFRatio:
+        case ParamId::AdvReverbDensity:
+        case ParamId::AdvReverbDiffusion:
+        case ParamId::AdvReverbReflections:
+        case ParamId::AdvReverbLate:
+        case ParamId::AdvReverbReflDelay:
+        case ParamId::AdvReverbLateDelay:
             return g_reverbAlgorithm == 2;
-        // I3DL2 Reverb params (algorithm 3)
-        case ParamId::I3DL2Room:
-        case ParamId::I3DL2DecayTime:
-        case ParamId::I3DL2Diffusion:
-        case ParamId::I3DL2Density:
-            return g_reverbAlgorithm == 3;
         default:
             return true;  // Not a reverb param
     }
@@ -197,10 +446,10 @@ void ToggleDSPEffect(DSPEffectType type) {
 
     // Reverb uses algorithm selection, not simple toggle
     if (type == DSPEffectType::Reverb) {
-        // Cycle through reverb algorithms: Off -> Freeverb -> DX8 -> I3DL2 -> Off
-        int newAlgo = (g_reverbAlgorithm + 1) % 4;
+        // Cycle through reverb algorithms: Off -> Simple -> Advanced -> Off
+        int newAlgo = (g_reverbAlgorithm + 1) % (int)ReverbAlgorithm::COUNT;
         SetReverbAlgorithm(newAlgo);
-        const char* algoNames[] = {"Off", "Freeverb", "DX8 Reverb", "I3DL2 Reverb"};
+        const char* algoNames[] = {"Off", "Simple", "Advanced"};
         Speak(std::string("Reverb: ") + algoNames[newAlgo]);
         return;
     }
@@ -214,17 +463,18 @@ void ToggleDSPEffect(DSPEffectType type) {
     Speak(msg);
 }
 
-// Set reverb algorithm (0=Off, 1=Freeverb, 2=DX8, 3=I3DL2)
+// Set reverb algorithm (0=Off, 1=Simple, 2=Advanced)
 void SetReverbAlgorithm(int algorithm) {
-    if (algorithm < 0 || algorithm > 3) return;
+    if (algorithm < 0 || algorithm >= (int)ReverbAlgorithm::COUNT) return;
 
     // Remove existing reverb effect if any
-    if (g_hfxReverb && g_fxStream) {
-        BASS_ChannelRemoveFX(g_fxStream, g_hfxReverb);
-        g_hfxReverb = 0;
+    if (g_hdspReverb && g_fxStream) {
+        BASS_ChannelRemoveDSP(g_fxStream, g_hdspReverb);
+        g_hdspReverb = 0;
     }
 
     g_reverbAlgorithm = algorithm;
+    UpdateReverbParams();
 
     // Apply new reverb if enabled and stream exists
     if (algorithm > 0 && g_fxStream) {
@@ -247,7 +497,7 @@ void EnableDSPEffect(DSPEffectType type, bool enable) {
             // Remove just this effect
             switch (type) {
                 case DSPEffectType::Reverb:
-                    if (g_hfxReverb) { BASS_ChannelRemoveFX(g_fxStream, g_hfxReverb); g_hfxReverb = 0; }
+                    if (g_hdspReverb) { BASS_ChannelRemoveDSP(g_fxStream, g_hdspReverb); g_hdspReverb = 0; }
                     break;
                 case DSPEffectType::Echo:
                     if (g_hfxEcho) { BASS_ChannelRemoveFX(g_fxStream, g_hfxEcho); g_hfxEcho = 0; }
@@ -559,52 +809,11 @@ void ApplyDSPEffects() {
     if (!g_fxStream) return;
 
     // Reverb (based on selected algorithm)
-    if (g_reverbAlgorithm > 0 && !g_hfxReverb) {
-        switch (g_reverbAlgorithm) {
-            case 1:  // Freeverb
-                g_hfxReverb = BASS_ChannelSetFX(g_fxStream, BASS_FX_BFX_FREEVERB, 0);
-                if (g_hfxReverb) {
-                    BASS_BFX_FREEVERB reverb;
-                    reverb.fDryMix = 1.0f - (g_paramValues[(int)ParamId::ReverbMix] / 100.0f);
-                    reverb.fWetMix = g_paramValues[(int)ParamId::ReverbMix] / 100.0f * 3.0f;
-                    reverb.fRoomSize = g_paramValues[(int)ParamId::ReverbRoom] / 100.0f;
-                    reverb.fDamp = g_paramValues[(int)ParamId::ReverbDamp] / 100.0f;
-                    reverb.fWidth = 1.0f;
-                    reverb.lMode = 0;
-                    reverb.lChannel = BASS_BFX_CHANALL;
-                    BASS_FXSetParameters(g_hfxReverb, &reverb);
-                }
-                break;
-            case 2:  // DX8 Reverb
-                g_hfxReverb = BASS_ChannelSetFX(g_fxStream, BASS_FX_DX8_REVERB, 0);
-                if (g_hfxReverb) {
-                    BASS_DX8_REVERB reverb;
-                    reverb.fInGain = 0.0f;  // No input gain reduction
-                    reverb.fReverbMix = g_paramValues[(int)ParamId::DX8ReverbMix];
-                    reverb.fReverbTime = g_paramValues[(int)ParamId::DX8ReverbTime];
-                    reverb.fHighFreqRTRatio = g_paramValues[(int)ParamId::DX8ReverbHFRatio];
-                    BASS_FXSetParameters(g_hfxReverb, &reverb);
-                }
-                break;
-            case 3:  // I3DL2 Reverb
-                g_hfxReverb = BASS_ChannelSetFX(g_fxStream, BASS_FX_DX8_I3DL2REVERB, 0);
-                if (g_hfxReverb) {
-                    BASS_DX8_I3DL2REVERB reverb;
-                    reverb.lRoom = static_cast<int>(g_paramValues[(int)ParamId::I3DL2Room]);
-                    reverb.lRoomHF = 0;
-                    reverb.flRoomRolloffFactor = 0.0f;
-                    reverb.flDecayTime = g_paramValues[(int)ParamId::I3DL2DecayTime];
-                    reverb.flDecayHFRatio = 0.83f;
-                    reverb.lReflections = -2602;
-                    reverb.flReflectionsDelay = 0.007f;
-                    reverb.lReverb = 200;
-                    reverb.flReverbDelay = 0.011f;
-                    reverb.flDiffusion = g_paramValues[(int)ParamId::I3DL2Diffusion];
-                    reverb.flDensity = g_paramValues[(int)ParamId::I3DL2Density];
-                    reverb.flHFReference = 5000.0f;
-                    BASS_FXSetParameters(g_hfxReverb, &reverb);
-                }
-                break;
+    if (g_reverbAlgorithm > 0 && !g_hdspReverb) {
+        BASS_CHANNELINFO info;
+        if (BASS_ChannelGetInfo(g_fxStream, &info)) {
+            ResetReverbEngine((int)info.freq);
+            g_hdspReverb = BASS_ChannelSetDSP(g_fxStream, ReverbDSPProc, nullptr, 0);
         }
     }
 
@@ -759,7 +968,7 @@ void ApplyDSPEffects() {
 
 // Remove all DSP effects from stream
 void RemoveDSPEffects() {
-    if (g_hfxReverb) { if (g_fxStream) BASS_ChannelRemoveFX(g_fxStream, g_hfxReverb); g_hfxReverb = 0; }
+    if (g_hdspReverb) { if (g_fxStream) BASS_ChannelRemoveDSP(g_fxStream, g_hdspReverb); g_hdspReverb = 0; }
     if (g_hfxEcho) { if (g_fxStream) BASS_ChannelRemoveFX(g_fxStream, g_hfxEcho); g_hfxEcho = 0; }
     if (g_hfxEQPreamp) { if (g_fxStream) BASS_ChannelRemoveFX(g_fxStream, g_hfxEQPreamp); g_hfxEQPreamp = 0; }
     if (g_hfxEQBass) { if (g_fxStream) BASS_ChannelRemoveFX(g_fxStream, g_hfxEQBass); g_hfxEQBass = 0; }
@@ -856,47 +1065,32 @@ void SetParamValue(ParamId id, float value) {
                 BASS_ChannelSetAttribute(g_fxStream, BASS_ATTRIB_FREQ, g_originalFreq * g_rate);
             }
             break;
-        // Freeverb parameters
+        // Reverb parameters: a preset sets the others, then both reverbs are updated
+        case ParamId::ReverbPreset:
+            ApplySimpleReverbPreset(ReverbPresetIndex(id, g_simpleReverbPresetCount));
+            UpdateReverbParams();
+            break;
+        case ParamId::AdvReverbPreset:
+            ApplyAdvancedReverbPreset(ReverbPresetIndex(id, g_advancedReverbPresetCount));
+            UpdateReverbParams();
+            break;
         case ParamId::ReverbMix:
         case ParamId::ReverbRoom:
         case ParamId::ReverbDamp:
-            if (g_hfxReverb && g_reverbAlgorithm == 1) {
-                BASS_BFX_FREEVERB reverb;
-                BASS_FXGetParameters(g_hfxReverb, &reverb);
-                reverb.fDryMix = 1.0f - (g_paramValues[(int)ParamId::ReverbMix] / 100.0f);
-                reverb.fWetMix = g_paramValues[(int)ParamId::ReverbMix] / 100.0f * 3.0f;
-                reverb.fRoomSize = g_paramValues[(int)ParamId::ReverbRoom] / 100.0f;
-                reverb.fDamp = g_paramValues[(int)ParamId::ReverbDamp] / 100.0f;
-                BASS_FXSetParameters(g_hfxReverb, &reverb);
-            }
-            break;
-        // DX8 Reverb parameters
-        case ParamId::DX8ReverbTime:
-        case ParamId::DX8ReverbHFRatio:
-        case ParamId::DX8ReverbMix:
-            if (g_hfxReverb && g_reverbAlgorithm == 2) {
-                BASS_DX8_REVERB reverb;
-                BASS_FXGetParameters(g_hfxReverb, &reverb);
-                reverb.fReverbMix = g_paramValues[(int)ParamId::DX8ReverbMix];
-                reverb.fReverbTime = g_paramValues[(int)ParamId::DX8ReverbTime];
-                reverb.fHighFreqRTRatio = g_paramValues[(int)ParamId::DX8ReverbHFRatio];
-                BASS_FXSetParameters(g_hfxReverb, &reverb);
-            }
-            break;
-        // I3DL2 Reverb parameters
-        case ParamId::I3DL2Room:
-        case ParamId::I3DL2DecayTime:
-        case ParamId::I3DL2Diffusion:
-        case ParamId::I3DL2Density:
-            if (g_hfxReverb && g_reverbAlgorithm == 3) {
-                BASS_DX8_I3DL2REVERB reverb;
-                BASS_FXGetParameters(g_hfxReverb, &reverb);
-                reverb.lRoom = static_cast<int>(g_paramValues[(int)ParamId::I3DL2Room]);
-                reverb.flDecayTime = g_paramValues[(int)ParamId::I3DL2DecayTime];
-                reverb.flDiffusion = g_paramValues[(int)ParamId::I3DL2Diffusion];
-                reverb.flDensity = g_paramValues[(int)ParamId::I3DL2Density];
-                BASS_FXSetParameters(g_hfxReverb, &reverb);
-            }
+        case ParamId::ReverbWidth:
+        case ParamId::ReverbPreDelay:
+        case ParamId::ReverbLowCut:
+        case ParamId::ReverbHighCut:
+        case ParamId::AdvReverbMix:
+        case ParamId::AdvReverbDecay:
+        case ParamId::AdvReverbHFRatio:
+        case ParamId::AdvReverbDensity:
+        case ParamId::AdvReverbDiffusion:
+        case ParamId::AdvReverbReflections:
+        case ParamId::AdvReverbLate:
+        case ParamId::AdvReverbReflDelay:
+        case ParamId::AdvReverbLateDelay:
+            UpdateReverbParams();
             break;
         case ParamId::EchoDelay:
         case ParamId::EchoFeedback:
@@ -1068,8 +1262,9 @@ void AdjustCurrentParam(int direction) {
         float range = def->maxValue - def->minValue;
         while (newVal > def->maxValue) newVal -= range;
         while (newVal < def->minValue) newVal += range;
-    } else if (id == ParamId::SpatialMode || id == ParamId::SpatialRearCenter) {
-        // Discrete toggle: add step so past-max wraps to min
+    } else if (id == ParamId::SpatialMode || id == ParamId::SpatialRearCenter ||
+               id == ParamId::ReverbPreset || id == ParamId::AdvReverbPreset) {
+        // Discrete choice: add step so past-max wraps to min
         float range = def->maxValue - def->minValue + def->step;
         while (newVal > def->maxValue) newVal -= range;
         while (newVal < def->minValue) newVal += range;
@@ -1195,6 +1390,21 @@ void AnnounceCurrentParam() {
         snprintf(buf, sizeof(buf), "3D Mode: %s", val >= 0.5f ? "5.1 Surround" : "Binaural");
     } else if (id == ParamId::SpatialRearCenter) {
         snprintf(buf, sizeof(buf), "3D Rear Speaker: %s", val >= 0.5f ? "On" : "Off");
+    } else if (id == ParamId::ReverbPreset) {
+        snprintf(buf, sizeof(buf), "%s: %s", def->name,
+                 g_simpleReverbPresets[ReverbPresetIndex(id, g_simpleReverbPresetCount)].name);
+    } else if (id == ParamId::AdvReverbPreset) {
+        snprintf(buf, sizeof(buf), "%s: %s", def->name,
+                 g_advancedReverbPresets[ReverbPresetIndex(id, g_advancedReverbPresetCount)].name);
+    } else if ((id == ParamId::ReverbLowCut && val <= 0.0f) ||
+               (id == ParamId::ReverbHighCut && val >= kReverbHighCutOff)) {
+        snprintf(buf, sizeof(buf), "%s Off", def->name);
+    } else if (id == ParamId::AdvReverbDecay) {
+        snprintf(buf, sizeof(buf), "%s %.1f%s", def->name, val, def->unit);
+    } else if (id == ParamId::AdvReverbHFRatio) {
+        snprintf(buf, sizeof(buf), "%s %.2f%s", def->name, val, def->unit);
+    } else if (id == ParamId::AdvReverbReflections || id == ParamId::AdvReverbLate) {
+        snprintf(buf, sizeof(buf), "%s %+.0f%s", def->name, val, def->unit);
     } else if (id == ParamId::Volume) {
         snprintf(buf, sizeof(buf), "%s %d%s", def->name, (int)(val * 100 + 0.5f), def->unit);
     } else if (id == ParamId::Rate) {
@@ -1396,7 +1606,7 @@ bool LoadEffectPreset(const std::wstring& name) {
     // Reverb algorithm
     int ra = GetPrivateProfileIntW(section.c_str(), L"ReverbAlgorithm", g_reverbAlgorithm, g_configPath.c_str());
     if (ra < 0) ra = 0;
-    if (ra > 3) ra = 3;
+    if (ra >= (int)ReverbAlgorithm::COUNT) ra = (int)ReverbAlgorithm::Advanced;  // old DX8 / I3DL2
     SetReverbAlgorithm(ra);
 
     // DSP effect enabled flags (apply via EnableDSPEffect so handlers hook up properly)

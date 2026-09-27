@@ -4,8 +4,8 @@ A fast, accessible audio player for Windows with support for tempo/pitch shiftin
 
 ## Features
 
-- Tempo, pitch, and rate adjustment with multiple algorithms (SoundTouch, Rubber Band, Speedy)
-- Audio effects (reverb, echo, EQ, compressor, stereo width, center/vocal cancel)
+- Tempo, pitch, and rate adjustment with multiple algorithms (SoundTouch, Speedy, Signalsmith Stretch)
+- Audio effects (reverb, echo, EQ, compressor, stereo width, center/vocal cancel, convolution, 3D audio)
 - Recording/encoding to MP3, OGG, FLAC
 - Internet radio streaming with favorites
 - YouTube audio playback

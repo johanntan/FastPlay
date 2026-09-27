@@ -1106,9 +1106,8 @@ INT_PTR CALLBACK OptionsDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             {
                 HWND hReverbCombo = GetDlgItem(hwnd, IDC_DSP_REVERB);
                 SendMessageW(hReverbCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Off"));
-                SendMessageW(hReverbCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Freeverb (Musical)"));
-                SendMessageW(hReverbCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"DX8 (DirectX)"));
-                SendMessageW(hReverbCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"I3DL2 (Environmental)"));
+                SendMessageW(hReverbCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Simple"));
+                SendMessageW(hReverbCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Advanced (EFX)"));
                 SendMessageW(hReverbCombo, CB_SETCURSEL, g_reverbAlgorithm, 0);
             }
 
@@ -1472,7 +1471,7 @@ INT_PTR CALLBACK OptionsDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                     {
                         HWND hReverbCombo = GetDlgItem(hwnd, IDC_DSP_REVERB);
                         int reverbSel = static_cast<int>(SendMessageW(hReverbCombo, CB_GETCURSEL, 0, 0));
-                        if (reverbSel >= 0 && reverbSel <= 3) {
+                        if (reverbSel >= 0 && reverbSel < (int)ReverbAlgorithm::COUNT) {
                             SetReverbAlgorithm(reverbSel);
                         }
                     }

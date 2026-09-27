@@ -149,10 +149,10 @@ void LoadSettings() {
     if (g_ssTonalityLimit < 0) g_ssTonalityLimit = 0;
     if (g_ssTonalityLimit > 20000) g_ssTonalityLimit = 20000;
 
-    // Load reverb algorithm (0=Off, 1=Freeverb, 2=DX8, 3=I3DL2)
+    // Load reverb algorithm (0=Off, 1=Simple, 2=Advanced; the old 2=DX8 and 3=I3DL2 become Advanced)
     g_reverbAlgorithm = GetPrivateProfileIntW(L"Effects", L"ReverbAlgorithm", 0, g_configPath.c_str());
     if (g_reverbAlgorithm < 0) g_reverbAlgorithm = 0;
-    if (g_reverbAlgorithm > 3) g_reverbAlgorithm = 3;
+    if (g_reverbAlgorithm >= (int)ReverbAlgorithm::COUNT) g_reverbAlgorithm = (int)ReverbAlgorithm::Advanced;
 
     // Load MIDI settings
     wchar_t midiBuf[MAX_PATH] = {0};
@@ -298,30 +298,43 @@ void LoadDSPSettings() {
     // Load DSP parameter values (use GetParamDef for defaults)
     const ParamDef* def;
 
+    // Reverb parameters (each preset first: setting it overwrites the values after it)
+    def = GetParamDef(ParamId::ReverbPreset);
+    SetParamValue(ParamId::ReverbPreset, GetPrivateProfileFloatW(L"DSPParams", L"ReverbPreset", def->defaultValue, g_configPath.c_str()));
     def = GetParamDef(ParamId::ReverbMix);
     SetParamValue(ParamId::ReverbMix, GetPrivateProfileFloatW(L"DSPParams", L"ReverbMix", def->defaultValue, g_configPath.c_str()));
     def = GetParamDef(ParamId::ReverbRoom);
     SetParamValue(ParamId::ReverbRoom, GetPrivateProfileFloatW(L"DSPParams", L"ReverbRoom", def->defaultValue, g_configPath.c_str()));
     def = GetParamDef(ParamId::ReverbDamp);
     SetParamValue(ParamId::ReverbDamp, GetPrivateProfileFloatW(L"DSPParams", L"ReverbDamp", def->defaultValue, g_configPath.c_str()));
-
-    // DX8 Reverb parameters
-    def = GetParamDef(ParamId::DX8ReverbTime);
-    SetParamValue(ParamId::DX8ReverbTime, GetPrivateProfileFloatW(L"DSPParams", L"DX8ReverbTime", def->defaultValue, g_configPath.c_str()));
-    def = GetParamDef(ParamId::DX8ReverbHFRatio);
-    SetParamValue(ParamId::DX8ReverbHFRatio, GetPrivateProfileFloatW(L"DSPParams", L"DX8ReverbHFRatio", def->defaultValue, g_configPath.c_str()));
-    def = GetParamDef(ParamId::DX8ReverbMix);
-    SetParamValue(ParamId::DX8ReverbMix, GetPrivateProfileFloatW(L"DSPParams", L"DX8ReverbMix", def->defaultValue, g_configPath.c_str()));
-
-    // I3DL2 Reverb parameters
-    def = GetParamDef(ParamId::I3DL2Room);
-    SetParamValue(ParamId::I3DL2Room, GetPrivateProfileFloatW(L"DSPParams", L"I3DL2Room", def->defaultValue, g_configPath.c_str()));
-    def = GetParamDef(ParamId::I3DL2DecayTime);
-    SetParamValue(ParamId::I3DL2DecayTime, GetPrivateProfileFloatW(L"DSPParams", L"I3DL2DecayTime", def->defaultValue, g_configPath.c_str()));
-    def = GetParamDef(ParamId::I3DL2Diffusion);
-    SetParamValue(ParamId::I3DL2Diffusion, GetPrivateProfileFloatW(L"DSPParams", L"I3DL2Diffusion", def->defaultValue, g_configPath.c_str()));
-    def = GetParamDef(ParamId::I3DL2Density);
-    SetParamValue(ParamId::I3DL2Density, GetPrivateProfileFloatW(L"DSPParams", L"I3DL2Density", def->defaultValue, g_configPath.c_str()));
+    def = GetParamDef(ParamId::ReverbWidth);
+    SetParamValue(ParamId::ReverbWidth, GetPrivateProfileFloatW(L"DSPParams", L"ReverbWidth", def->defaultValue, g_configPath.c_str()));
+    def = GetParamDef(ParamId::ReverbPreDelay);
+    SetParamValue(ParamId::ReverbPreDelay, GetPrivateProfileFloatW(L"DSPParams", L"ReverbPreDelay", def->defaultValue, g_configPath.c_str()));
+    def = GetParamDef(ParamId::ReverbLowCut);
+    SetParamValue(ParamId::ReverbLowCut, GetPrivateProfileFloatW(L"DSPParams", L"ReverbLowCut", def->defaultValue, g_configPath.c_str()));
+    def = GetParamDef(ParamId::ReverbHighCut);
+    SetParamValue(ParamId::ReverbHighCut, GetPrivateProfileFloatW(L"DSPParams", L"ReverbHighCut", def->defaultValue, g_configPath.c_str()));
+    def = GetParamDef(ParamId::AdvReverbPreset);
+    SetParamValue(ParamId::AdvReverbPreset, GetPrivateProfileFloatW(L"DSPParams", L"AdvReverbPreset", def->defaultValue, g_configPath.c_str()));
+    def = GetParamDef(ParamId::AdvReverbMix);
+    SetParamValue(ParamId::AdvReverbMix, GetPrivateProfileFloatW(L"DSPParams", L"AdvReverbMix", def->defaultValue, g_configPath.c_str()));
+    def = GetParamDef(ParamId::AdvReverbDecay);
+    SetParamValue(ParamId::AdvReverbDecay, GetPrivateProfileFloatW(L"DSPParams", L"AdvReverbDecay", def->defaultValue, g_configPath.c_str()));
+    def = GetParamDef(ParamId::AdvReverbHFRatio);
+    SetParamValue(ParamId::AdvReverbHFRatio, GetPrivateProfileFloatW(L"DSPParams", L"AdvReverbHFRatio", def->defaultValue, g_configPath.c_str()));
+    def = GetParamDef(ParamId::AdvReverbDensity);
+    SetParamValue(ParamId::AdvReverbDensity, GetPrivateProfileFloatW(L"DSPParams", L"AdvReverbDensity", def->defaultValue, g_configPath.c_str()));
+    def = GetParamDef(ParamId::AdvReverbDiffusion);
+    SetParamValue(ParamId::AdvReverbDiffusion, GetPrivateProfileFloatW(L"DSPParams", L"AdvReverbDiffusion", def->defaultValue, g_configPath.c_str()));
+    def = GetParamDef(ParamId::AdvReverbReflections);
+    SetParamValue(ParamId::AdvReverbReflections, GetPrivateProfileFloatW(L"DSPParams", L"AdvReverbReflections", def->defaultValue, g_configPath.c_str()));
+    def = GetParamDef(ParamId::AdvReverbLate);
+    SetParamValue(ParamId::AdvReverbLate, GetPrivateProfileFloatW(L"DSPParams", L"AdvReverbLate", def->defaultValue, g_configPath.c_str()));
+    def = GetParamDef(ParamId::AdvReverbReflDelay);
+    SetParamValue(ParamId::AdvReverbReflDelay, GetPrivateProfileFloatW(L"DSPParams", L"AdvReverbReflDelay", def->defaultValue, g_configPath.c_str()));
+    def = GetParamDef(ParamId::AdvReverbLateDelay);
+    SetParamValue(ParamId::AdvReverbLateDelay, GetPrivateProfileFloatW(L"DSPParams", L"AdvReverbLateDelay", def->defaultValue, g_configPath.c_str()));
 
     def = GetParamDef(ParamId::EchoDelay);
     SetParamValue(ParamId::EchoDelay, GetPrivateProfileFloatW(L"DSPParams", L"EchoDelay", def->defaultValue, g_configPath.c_str()));
@@ -554,30 +567,43 @@ void SaveSettings() {
     WritePrivateProfileStringW(L"DSPEffects", L"SpatialAudio", IsDSPEffectEnabled(DSPEffectType::SpatialAudio) ? L"1" : L"0", g_configPath.c_str());
 
     // Save DSP effect parameter values
+    // Reverb parameters
+    swprintf(buf, 32, L"%.0f", GetParamValue(ParamId::ReverbPreset));
+    WritePrivateProfileStringW(L"DSPParams", L"ReverbPreset", buf, g_configPath.c_str());
     swprintf(buf, 32, L"%.2f", GetParamValue(ParamId::ReverbMix));
     WritePrivateProfileStringW(L"DSPParams", L"ReverbMix", buf, g_configPath.c_str());
     swprintf(buf, 32, L"%.2f", GetParamValue(ParamId::ReverbRoom));
     WritePrivateProfileStringW(L"DSPParams", L"ReverbRoom", buf, g_configPath.c_str());
     swprintf(buf, 32, L"%.2f", GetParamValue(ParamId::ReverbDamp));
     WritePrivateProfileStringW(L"DSPParams", L"ReverbDamp", buf, g_configPath.c_str());
-
-    // DX8 Reverb parameters
-    swprintf(buf, 32, L"%.2f", GetParamValue(ParamId::DX8ReverbTime));
-    WritePrivateProfileStringW(L"DSPParams", L"DX8ReverbTime", buf, g_configPath.c_str());
-    swprintf(buf, 32, L"%.3f", GetParamValue(ParamId::DX8ReverbHFRatio));
-    WritePrivateProfileStringW(L"DSPParams", L"DX8ReverbHFRatio", buf, g_configPath.c_str());
-    swprintf(buf, 32, L"%.2f", GetParamValue(ParamId::DX8ReverbMix));
-    WritePrivateProfileStringW(L"DSPParams", L"DX8ReverbMix", buf, g_configPath.c_str());
-
-    // I3DL2 Reverb parameters
-    swprintf(buf, 32, L"%.2f", GetParamValue(ParamId::I3DL2Room));
-    WritePrivateProfileStringW(L"DSPParams", L"I3DL2Room", buf, g_configPath.c_str());
-    swprintf(buf, 32, L"%.2f", GetParamValue(ParamId::I3DL2DecayTime));
-    WritePrivateProfileStringW(L"DSPParams", L"I3DL2DecayTime", buf, g_configPath.c_str());
-    swprintf(buf, 32, L"%.2f", GetParamValue(ParamId::I3DL2Diffusion));
-    WritePrivateProfileStringW(L"DSPParams", L"I3DL2Diffusion", buf, g_configPath.c_str());
-    swprintf(buf, 32, L"%.2f", GetParamValue(ParamId::I3DL2Density));
-    WritePrivateProfileStringW(L"DSPParams", L"I3DL2Density", buf, g_configPath.c_str());
+    swprintf(buf, 32, L"%.2f", GetParamValue(ParamId::ReverbWidth));
+    WritePrivateProfileStringW(L"DSPParams", L"ReverbWidth", buf, g_configPath.c_str());
+    swprintf(buf, 32, L"%.2f", GetParamValue(ParamId::ReverbPreDelay));
+    WritePrivateProfileStringW(L"DSPParams", L"ReverbPreDelay", buf, g_configPath.c_str());
+    swprintf(buf, 32, L"%.2f", GetParamValue(ParamId::ReverbLowCut));
+    WritePrivateProfileStringW(L"DSPParams", L"ReverbLowCut", buf, g_configPath.c_str());
+    swprintf(buf, 32, L"%.2f", GetParamValue(ParamId::ReverbHighCut));
+    WritePrivateProfileStringW(L"DSPParams", L"ReverbHighCut", buf, g_configPath.c_str());
+    swprintf(buf, 32, L"%.0f", GetParamValue(ParamId::AdvReverbPreset));
+    WritePrivateProfileStringW(L"DSPParams", L"AdvReverbPreset", buf, g_configPath.c_str());
+    swprintf(buf, 32, L"%.2f", GetParamValue(ParamId::AdvReverbMix));
+    WritePrivateProfileStringW(L"DSPParams", L"AdvReverbMix", buf, g_configPath.c_str());
+    swprintf(buf, 32, L"%.2f", GetParamValue(ParamId::AdvReverbDecay));
+    WritePrivateProfileStringW(L"DSPParams", L"AdvReverbDecay", buf, g_configPath.c_str());
+    swprintf(buf, 32, L"%.2f", GetParamValue(ParamId::AdvReverbHFRatio));
+    WritePrivateProfileStringW(L"DSPParams", L"AdvReverbHFRatio", buf, g_configPath.c_str());
+    swprintf(buf, 32, L"%.2f", GetParamValue(ParamId::AdvReverbDensity));
+    WritePrivateProfileStringW(L"DSPParams", L"AdvReverbDensity", buf, g_configPath.c_str());
+    swprintf(buf, 32, L"%.2f", GetParamValue(ParamId::AdvReverbDiffusion));
+    WritePrivateProfileStringW(L"DSPParams", L"AdvReverbDiffusion", buf, g_configPath.c_str());
+    swprintf(buf, 32, L"%.2f", GetParamValue(ParamId::AdvReverbReflections));
+    WritePrivateProfileStringW(L"DSPParams", L"AdvReverbReflections", buf, g_configPath.c_str());
+    swprintf(buf, 32, L"%.2f", GetParamValue(ParamId::AdvReverbLate));
+    WritePrivateProfileStringW(L"DSPParams", L"AdvReverbLate", buf, g_configPath.c_str());
+    swprintf(buf, 32, L"%.2f", GetParamValue(ParamId::AdvReverbReflDelay));
+    WritePrivateProfileStringW(L"DSPParams", L"AdvReverbReflDelay", buf, g_configPath.c_str());
+    swprintf(buf, 32, L"%.2f", GetParamValue(ParamId::AdvReverbLateDelay));
+    WritePrivateProfileStringW(L"DSPParams", L"AdvReverbLateDelay", buf, g_configPath.c_str());
 
     swprintf(buf, 32, L"%.2f", GetParamValue(ParamId::EchoDelay));
     WritePrivateProfileStringW(L"DSPParams", L"EchoDelay", buf, g_configPath.c_str());

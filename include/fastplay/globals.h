@@ -163,7 +163,7 @@ extern bool g_speedyNonlinear;     // Enable nonlinear speedup (default true, re
 extern int g_ssPreset;             // 0=Default, 1=Cheaper
 extern int g_ssTonalityLimit;      // Tonality limit in Hz (0=auto)
 
-// Reverb algorithm (0=Off, 1=Freeverb, 2=DX8, 3=I3DL2)
+// Reverb algorithm (0=Off, 1=Simple, 2=Advanced)
 extern int g_reverbAlgorithm;
 
 // Convolution reverb settings

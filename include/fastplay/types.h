@@ -71,37 +71,30 @@ enum class DSPEffectType {
     COUNT
 };
 
-// Reverb algorithm types
+// Reverb algorithm types (see src/reverb)
 enum class ReverbAlgorithm {
     Off,
-    Freeverb,   // BASS_FX_BFX_FREEVERB - Musical, simple
-    DX8,        // BASS_FX_DX8_REVERB - DirectX standard
-    I3DL2,      // BASS_FX_DX8_I3DL2REVERB - Environmental/3D
+    Simple,     // 16 line FDN reverb: room size, damping, width
+    Advanced,   // EFX model reverb: the OpenAL EFX / EAX parameter set and environments
     COUNT
 };
 
 // All adjustable parameters (stream + DSP)
+// The numeric values are stored in effect presets (Param<n>), so existing ones must not change:
+// retired parameters leave gaps and new ones go at the end.
 enum class ParamId {
     // Stream effects
     Volume,
     Pitch,
     Tempo,
     Rate,
-    // Freeverb parameters
+    // Simple reverb parameters (the rest are after SpatialZ)
     ReverbMix,
     ReverbRoom,
     ReverbDamp,
-    // DX8 Reverb parameters
-    DX8ReverbTime,
-    DX8ReverbHFRatio,
-    DX8ReverbMix,
-    // I3DL2 Reverb parameters
-    I3DL2Room,
-    I3DL2DecayTime,
-    I3DL2Diffusion,
-    I3DL2Density,
+    // 7 .. 13 were the DX8 and I3DL2 reverb parameters
     // Echo parameters
-    EchoDelay,
+    EchoDelay = 14,
     EchoFeedback,
     EchoMix,
     // EQ parameters
@@ -131,6 +124,23 @@ enum class ParamId {
     SpatialX,           // Listener X position
     SpatialY,           // Listener Y position
     SpatialZ,           // Listener Z position
+    // Simple reverb parameters (continued)
+    ReverbPreset,       // index into the simple reverb's rooms
+    ReverbWidth,
+    ReverbPreDelay,
+    ReverbLowCut,       // 0 = off
+    ReverbHighCut,      // maximum = off
+    // Advanced reverb parameters
+    AdvReverbPreset,    // index into the EFX environments
+    AdvReverbMix,
+    AdvReverbDecay,
+    AdvReverbHFRatio,
+    AdvReverbDensity,
+    AdvReverbDiffusion,
+    AdvReverbReflections,   // dB
+    AdvReverbLate,          // dB
+    AdvReverbReflDelay,     // ms
+    AdvReverbLateDelay,     // ms
     COUNT
 };
 
