@@ -1,13 +1,12 @@
 #include "youtube.h"
+#include "http.h"
 #include "globals.h"
 #include "utils.h"
 #include <windows.h>
-#include <wininet.h>
 #include <shlwapi.h>
 #include <regex>
 #include <sstream>
 
-#pragma comment(lib, "wininet.lib")
 
 // Forward declarations
 static bool SearchWithAPI(const std::wstring& query, std::vector<YouTubeResult>& results,
@@ -15,7 +14,7 @@ static bool SearchWithAPI(const std::wstring& query, std::vector<YouTubeResult>&
 static bool SearchWithYtdlp(const std::wstring& query, std::vector<YouTubeResult>& results);
 static std::wstring RunYtdlp(const std::wstring& args);
 static std::wstring UrlEncode(const std::wstring& str);
-static std::wstring HttpGet(const std::wstring& url);
+static std::wstring YouTubeHttpGet(const std::wstring& url);
 static std::wstring ParseJsonString(const std::wstring& json, const std::wstring& key);
 static std::vector<std::wstring> ParseJsonArray(const std::wstring& json, const std::wstring& arrayKey);
 
@@ -46,31 +45,8 @@ static std::wstring UrlEncode(const std::wstring& str) {
 }
 
 // Simple HTTP GET request
-static std::wstring HttpGet(const std::wstring& url) {
-    std::wstring result;
-    HINTERNET hInternet = InternetOpenW(L"FastPlay/1.0", INTERNET_OPEN_TYPE_PRECONFIG, nullptr, nullptr, 0);
-    if (!hInternet) return result;
-
-    HINTERNET hConnect = InternetOpenUrlW(hInternet, url.c_str(), nullptr, 0,
-        INTERNET_FLAG_RELOAD | INTERNET_FLAG_SECURE, 0);
-    if (hConnect) {
-        char buffer[4096];
-        DWORD bytesRead;
-        std::string response;
-        while (InternetReadFile(hConnect, buffer, sizeof(buffer) - 1, &bytesRead) && bytesRead > 0) {
-            buffer[bytesRead] = '\0';
-            response += buffer;
-        }
-        // Convert UTF-8 to wide string
-        int len = MultiByteToWideChar(CP_UTF8, 0, response.c_str(), -1, nullptr, 0);
-        if (len > 0) {
-            result.resize(len - 1);
-            MultiByteToWideChar(CP_UTF8, 0, response.c_str(), -1, &result[0], len);
-        }
-        InternetCloseHandle(hConnect);
-    }
-    InternetCloseHandle(hInternet);
-    return result;
+static std::wstring YouTubeHttpGet(const std::wstring& url) {
+    return Utf8ToWide(HttpGet(url).body);
 }
 
 // Simple JSON string value parser (not a full JSON parser)
@@ -169,7 +145,7 @@ static bool SearchWithAPI(const std::wstring& query, std::vector<YouTubeResult>&
         url += L"&pageToken=" + pageToken;
     }
 
-    std::wstring response = HttpGet(url);
+    std::wstring response = YouTubeHttpGet(url);
     if (response.empty()) return false;
 
     // Parse results (simple parsing, not full JSON)

@@ -2,11 +2,14 @@
 #ifndef FASTPLAY_DOWNLOAD_MANAGER_H
 #define FASTPLAY_DOWNLOAD_MANAGER_H
 
-#include <windows.h>
-#include <string>
-#include <vector>
-#include <map>
+#include <atomic>
 #include <functional>
+#include <map>
+#include <memory>
+#include <mutex>
+#include <string>
+#include <tuple>
+#include <vector>
 
 struct DownloadItem {
     int id;
@@ -14,7 +17,7 @@ struct DownloadItem {
     std::wstring destPath;
     std::wstring title;
     std::wstring headers;   // extra HTTP request headers (e.g. Authorization for protected feeds)
-    HANDLE thread;
+    std::shared_ptr<std::atomic<bool>> cancel;  // set to stop the download
 };
 
 class DownloadManager {
@@ -38,18 +41,11 @@ public:
     int ActiveCount() const;
     int QueuedCount() const;
 
-    // Called when a download completes (internal use)
-    void NotifyComplete(int id, bool success);
-
-    // Set notification window for thread-safe callbacks
-    void SetNotifyWindow(HWND hwnd) { m_hwndNotify = hwnd; }
-    HWND GetNotifyWindow() const { return m_hwndNotify; }
-
-    // Process a completion message from the notification window
+    // A download finished (called on the UI thread).
     void ProcessCompletion(int id, bool success);
 
 private:
-    DownloadManager();
+    DownloadManager() = default;
     ~DownloadManager();
     DownloadManager(const DownloadManager&) = delete;
     DownloadManager& operator=(const DownloadManager&) = delete;
@@ -61,15 +57,12 @@ private:
     std::map<int, DownloadItem> m_active;
     int m_nextId = 1;
     int m_maxConcurrent = 3;
-    HWND m_hwndNotify = nullptr;
-    CRITICAL_SECTION m_cs;
+    mutable std::recursive_mutex m_mutex;
 
     // Batch tracking for speech feedback
     int m_batchTotal = 0;
     int m_batchSuccess = 0;
     int m_batchFailed = 0;
 };
-
-// Custom message for download completion
 
 #endif // FASTPLAY_DOWNLOAD_MANAGER_H

@@ -99,6 +99,7 @@ set(FASTPLAY_SOURCES
     src/effects.cpp
     src/globals.cpp
     src/hotkeys.cpp
+    src/http_common.cpp
     src/player.cpp
     src/playlist_io.cpp
     src/podcast.cpp
@@ -107,7 +108,6 @@ set(FASTPLAY_SOURCES
     src/settings.cpp
     src/spatial_audio.cpp
     src/tempo_processor.cpp
-    src/updater.cpp
     src/utils.cpp
     src/youtube.cpp
     src/sqlite3.c
@@ -142,15 +142,19 @@ set(FASTPLAY_SOURCES
 if(WIN32)
     list(APPEND FASTPLAY_SOURCES
         src/platform/file_assoc_windows.cpp
+        src/platform/http_windows.cpp
         src/platform/ini_windows.cpp
         src/platform/paths_windows.cpp
         src/platform/speech_windows.cpp
         src/platform/startup_windows.cpp
         res/fastplay.rc
+        src/updater.cpp
     )
 else()
     list(APPEND FASTPLAY_SOURCES
+        src/platform/http_curl.cpp
         src/platform/ini_portable.cpp
+        src/platform/updater_unsupported.cpp
     )
 endif()
 if(APPLE)
@@ -190,6 +194,10 @@ if(FASTPLAY_BUILD_COMMIT)
 endif()
 
 target_link_libraries(FastPlay PRIVATE wx::core wx::base wx::adv wx::net)
+if(NOT WIN32)
+    find_package(CURL REQUIRED)
+    target_link_libraries(FastPlay PRIVATE CURL::libcurl)
+endif()
 
 if(WIN32 AND FASTPLAY_SPEECH)
     # UniversalSpeech is distributed as source, so it is compiled straight in.

@@ -63,7 +63,7 @@ static bool IsAbsolutePath(const std::wstring& path) {
 
 // A playlist line: UTF-8 if it is valid UTF-8, otherwise the system's legacy code page
 // (Latin-1 outside Windows).
-static std::wstring PlaylistLineToWide(const char* line) {
+std::wstring PlaylistLineToWide(const char* line) {
 #ifdef _WIN32
     int len = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, line, -1, nullptr, 0);
     UINT codePage = len > 0 ? CP_UTF8 : CP_ACP;

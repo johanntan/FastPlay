@@ -3,12 +3,12 @@
 // exporting radio favorites. The Radio window is src/ui/radio_dialog.cpp.
 
 #include "radio.h"
+#include "http.h"
+#include "playlist_io.h"
 #include "ini.h"
 #include "database.h"
 #include "utils.h"
 
-#include <windows.h>
-#include <wininet.h>
 #include <cstdio>
 #include <cstring>
 #include <cwctype>
@@ -17,46 +17,22 @@
 #include <string>
 #include <vector>
 
-// HTTP GET request (reused from youtube.cpp pattern)
+// HTTP GET request; extraHeaders are "Name: value\r\n" lines sent after "Accept: */*".
 static std::wstring RadioHttpGet(const std::wstring& url, const wchar_t* extraHeaders = nullptr) {
-    std::wstring result;
-    HINTERNET hInternet = InternetOpenW(L"FastPlay/1.0", INTERNET_OPEN_TYPE_PRECONFIG, nullptr, nullptr, 0);
-    if (!hInternet) return result;
-
-    // Use INTERNET_FLAG_SECURE for HTTPS
-    DWORD flags = INTERNET_FLAG_RELOAD | INTERNET_FLAG_NO_CACHE_WRITE;
-    if (_wcsnicmp(url.c_str(), L"https://", 8) == 0) {
-        flags |= INTERNET_FLAG_SECURE;
-    }
-
-    // Build headers
-    std::wstring headers = L"Accept: */*\r\n";
+    HttpOptions options;
+    options.headers.push_back(L"Accept: */*");
     if (extraHeaders) {
-        headers += extraHeaders;
-    }
-
-    HINTERNET hConnect = InternetOpenUrlW(hInternet, url.c_str(), headers.c_str(),
-                                          static_cast<DWORD>(headers.length()), flags, 0);
-    if (hConnect) {
-        char buffer[4096];
-        DWORD bytesRead;
-        std::string response;
-        while (InternetReadFile(hConnect, buffer, sizeof(buffer), &bytesRead) && bytesRead > 0) {
-            response.append(buffer, bytesRead);
-        }
-        InternetCloseHandle(hConnect);
-
-        // Convert UTF-8 to wide string
-        if (!response.empty()) {
-            int len = MultiByteToWideChar(CP_UTF8, 0, response.c_str(), -1, nullptr, 0);
-            if (len > 0) {
-                result.resize(len);
-                MultiByteToWideChar(CP_UTF8, 0, response.c_str(), -1, &result[0], len);
-            }
+        std::wstring extra = extraHeaders;
+        size_t start = 0;
+        while (start < extra.size()) {
+            size_t end = extra.find(L"\r\n", start);
+            if (end == std::wstring::npos) end = extra.size();
+            if (end > start) options.headers.push_back(extra.substr(start, end - start));
+            start = end + 2;
         }
     }
-    InternetCloseHandle(hInternet);
-    return result;
+    HttpResult response = HttpGet(url, options);
+    return Utf8ToWide(response.body);
 }
 
 // URL encode a string
@@ -70,11 +46,9 @@ static std::wstring RadioUrlEncode(const std::wstring& str) {
             result += L'+';
         } else {
             // Convert to UTF-8 and percent-encode
-            char utf8[8];
-            int len = WideCharToMultiByte(CP_UTF8, 0, &c, 1, utf8, sizeof(utf8), nullptr, nullptr);
-            for (int i = 0; i < len; i++) {
+            for (unsigned char byte : WideToUtf8(std::wstring(1, c))) {
                 wchar_t hex[4];
-                swprintf(hex, 4, L"%%%02X", (unsigned char)utf8[i]);
+                swprintf(hex, 4, L"%%%02X", byte);
                 result += hex;
             }
         }
@@ -798,80 +772,10 @@ std::vector<StreamOption> ResolveRadioStreamUrls(const RadioSearchResult& result
 // delivery-script URL. Doing it ourselves also lets us cross schemes and hosts
 // freely. Returns an empty string if no response was received.
 static std::wstring FollowHttpRedirects(const std::wstring& startUrl) {
-    std::wstring finalUrl;
-
-    HINTERNET hInternet = InternetOpenW(L"FastPlay/1.0", INTERNET_OPEN_TYPE_PRECONFIG, nullptr, nullptr, 0);
-    if (!hInternet) return finalUrl;
-
-    std::wstring url = startUrl;
-    const int MAX_HOPS = 6;
-    for (int hop = 0; hop < MAX_HOPS; hop++) {
-        // Parse the URL into scheme/host/path.
-        bool secure = false;
-        size_t hostStart;
-        if (url.compare(0, 8, L"https://") == 0)      { secure = true;  hostStart = 8; }
-        else if (url.compare(0, 7, L"http://") == 0)  { secure = false; hostStart = 7; }
-        else break;  // Unsupported URL scheme
-        std::wstring host, path;
-        size_t pathStart = url.find(L'/', hostStart);
-        if (pathStart == std::wstring::npos) { host = url.substr(hostStart); path = L"/"; }
-        else { host = url.substr(hostStart, pathStart - hostStart); path = url.substr(pathStart); }
-
-        DWORD flags = INTERNET_FLAG_RELOAD | INTERNET_FLAG_NO_CACHE_WRITE |
-                      INTERNET_FLAG_NO_AUTO_REDIRECT | INTERNET_FLAG_KEEP_CONNECTION;
-        if (secure) flags |= INTERNET_FLAG_SECURE;
-
-        HINTERNET hConnect = InternetConnectW(hInternet, host.c_str(),
-                                              secure ? INTERNET_DEFAULT_HTTPS_PORT : INTERNET_DEFAULT_HTTP_PORT,
-                                              nullptr, nullptr, INTERNET_SERVICE_HTTP, 0, 0);
-        if (!hConnect) break;
-
-        HINTERNET hRequest = HttpOpenRequestW(hConnect, L"GET", path.c_str(), nullptr, nullptr, nullptr, flags, 0);
-        if (!hRequest) {
-            InternetCloseHandle(hConnect);
-            break;
-        }
-
-        if (!HttpSendRequestW(hRequest, nullptr, 0, nullptr, 0)) {
-            InternetCloseHandle(hRequest);
-            InternetCloseHandle(hConnect);
-            break;
-        }
-
-        DWORD status = 0, sz = sizeof(status);
-        HttpQueryInfoW(hRequest, HTTP_QUERY_STATUS_CODE | HTTP_QUERY_FLAG_NUMBER, &status, &sz, nullptr);
-
-        // Follow 301/302/303/307/308 to the Location target ourselves.
-        bool isRedirect = (status == 301 || status == 302 || status == 303 ||
-                           status == 307 || status == 308);
-        if (isRedirect && hop + 1 < MAX_HOPS) {
-            wchar_t loc[2048];
-            DWORD locBytes = sizeof(loc);
-            if (HttpQueryInfoW(hRequest, HTTP_QUERY_LOCATION, loc, &locBytes, nullptr)) {
-                // Resolve a possibly-relative Location against the current URL.
-                wchar_t combined[2048];
-                DWORD combChars = 2048;
-                if (InternetCombineUrlW(url.c_str(), loc, combined, &combChars, ICU_NO_ENCODE)) {
-                    url = combined;
-                } else {
-                    url = loc;
-                }
-                InternetCloseHandle(hRequest);
-                InternetCloseHandle(hConnect);
-                continue;  // Next hop.
-            }
-        }
-
-        // Terminal (non-redirect) response.
-        finalUrl = url;
-        InternetCloseHandle(hRequest);
-        InternetCloseHandle(hConnect);
-        InternetCloseHandle(hInternet);
-        return finalUrl;
-    }
-
-    InternetCloseHandle(hInternet);
-    return finalUrl;
+    HttpOptions options;
+    options.readBody = false;
+    HttpResult response = HttpGet(startUrl, options);
+    return response.completed ? response.finalUrl : std::wstring();
 }
 
 // Resolve an HTTP(S) URL's redirects to its final target, without downloading the
@@ -925,7 +829,7 @@ RadioImportResult ImportRadioFavorites(const std::wstring& playlistPath) {
             if (url[0] == L'\0') break;
 
             // Only import URLs (not local files)
-            if (_wcsnicmp(url, L"http://", 7) != 0 && _wcsnicmp(url, L"https://", 8) != 0) {
+            if (WStrNICmp(url, L"http://", 7) != 0 && WStrNICmp(url, L"https://", 8) != 0) {
                 continue;
             }
 
@@ -946,7 +850,7 @@ RadioImportResult ImportRadioFavorites(const std::wstring& playlistPath) {
         }
     } else {
         // Parse M3U/M3U8
-        FILE* f = _wfopen(playlistPath.c_str(), L"rb");
+        FILE* f = FileOpen(playlistPath, "rb");
         if (f) {
             // Check for UTF-8 BOM
             unsigned char bom[3] = {0};
@@ -972,21 +876,12 @@ RadioImportResult ImportRadioFavorites(const std::wstring& playlistPath) {
 
                 // Convert to wide string
                 std::wstring wline;
-                int len = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, start, -1, nullptr, 0);
-                if (len > 0) {
-                    wline.resize(len);
-                    MultiByteToWideChar(CP_UTF8, 0, start, -1, &wline[0], len);
-                } else {
-                    len = MultiByteToWideChar(CP_ACP, 0, start, -1, nullptr, 0);
-                    if (len <= 0) continue;
-                    wline.resize(len);
-                    MultiByteToWideChar(CP_ACP, 0, start, -1, &wline[0], len);
-                }
+                wline = PlaylistLineToWide(start);
                 if (!wline.empty() && wline.back() == L'\0') wline.pop_back();
                 if (wline.empty()) continue;
 
                 // Check for #EXTINF line (contains station name)
-                if (_wcsnicmp(wline.c_str(), L"#EXTINF:", 8) == 0) {
+                if (WStrNICmp(wline.c_str(), L"#EXTINF:", 8) == 0) {
                     // Format: #EXTINF:duration,Station Name
                     const wchar_t* comma = wcschr(wline.c_str() + 8, L',');
                     if (comma) {
@@ -1002,8 +897,8 @@ RadioImportResult ImportRadioFavorites(const std::wstring& playlistPath) {
                 if (wline[0] == L'#') continue;
 
                 // This should be a URL
-                if (_wcsnicmp(wline.c_str(), L"http://", 7) == 0 ||
-                    _wcsnicmp(wline.c_str(), L"https://", 8) == 0) {
+                if (WStrNICmp(wline.c_str(), L"http://", 7) == 0 ||
+                    WStrNICmp(wline.c_str(), L"https://", 8) == 0) {
                     std::wstring name = pendingName.empty() ? wline : pendingName;
                     std::wstring key = urlKey(wline);
                     if (!seenUrls.insert(key).second) {
@@ -1034,7 +929,7 @@ RadioImportResult ImportRadioFavorites(const std::wstring& playlistPath) {
 
 // Export radio favorites to an M3U file
 bool ExportRadioFavorites(const std::wstring& path, const std::vector<RadioStation>& stations) {
-    FILE* f = _wfopen(path.c_str(), L"wb");
+    FILE* f = FileOpen(path, "wb");
     if (!f) return false;
 
     // Write UTF-8 BOM

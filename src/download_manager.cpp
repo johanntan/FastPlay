@@ -2,68 +2,39 @@
 #include "globals.h"
 #include "accessibility.h"
 #include "app_ui.h"
-#include <wininet.h>
+#include "http.h"
 #include <cstdio>
+#include <filesystem>
+#include <thread>
 
-#pragma comment(lib, "wininet.lib")
-
-// Thread parameters
-struct DownloadThreadParams {
-    int id;
-    std::wstring url;
-    std::wstring destPath;
-    std::wstring headers;   // extra HTTP request headers (e.g. Authorization)
-};
-
-// Download thread function
-static DWORD WINAPI DownloadThread(LPVOID lpParam) {
-    DownloadThreadParams* params = static_cast<DownloadThreadParams*>(lpParam);
-    if (!params) return 1;
-
-    int id = params->id;
-    bool success = false;
-
+// Download one file (runs on its own thread) and report back on the UI thread.
+static void DownloadWorker(int id, std::wstring url, std::wstring destPath, std::wstring headers,
+                           std::shared_ptr<std::atomic<bool>> cancel) {
     // Create directory if needed
-    std::wstring dir = params->destPath;
-    size_t lastSlash = dir.rfind(L'\\');
-    if (lastSlash != std::wstring::npos) {
-        dir = dir.substr(0, lastSlash);
-        CreateDirectoryW(dir.c_str(), nullptr);
+    std::error_code ec;
+    std::filesystem::path dir = std::filesystem::path(destPath).parent_path();
+    if (!dir.empty()) std::filesystem::create_directory(dir, ec);
+
+    HttpOptions options;
+    options.saveTo = destPath;
+    options.timeoutMs = 60000;  // don't hang on a stalled server
+    size_t start = 0;
+    while (start < headers.size()) {
+        size_t end = headers.find(L"\r\n", start);
+        if (end == std::wstring::npos) end = headers.size();
+        if (end > start) options.headers.push_back(headers.substr(start, end - start));
+        start = end + 2;
     }
+    options.progress = [cancel](uint64_t, uint64_t) { return !*cancel; };
 
-    HINTERNET hInternet = InternetOpenW(L"FastPlay/1.0", INTERNET_OPEN_TYPE_PRECONFIG, nullptr, nullptr, 0);
-    if (hInternet) {
-        // Set timeouts to prevent hanging (60 seconds each)
-        DWORD timeout = 60000;
-        InternetSetOptionW(hInternet, INTERNET_OPTION_CONNECT_TIMEOUT, &timeout, sizeof(timeout));
-        InternetSetOptionW(hInternet, INTERNET_OPTION_RECEIVE_TIMEOUT, &timeout, sizeof(timeout));
-        InternetSetOptionW(hInternet, INTERNET_OPTION_SEND_TIMEOUT, &timeout, sizeof(timeout));
-
-        DWORD flags = INTERNET_FLAG_RELOAD | INTERNET_FLAG_NO_CACHE_WRITE;
-        const wchar_t* headers = params->headers.empty() ? nullptr : params->headers.c_str();
-        DWORD headersLen = params->headers.empty() ? 0 : static_cast<DWORD>(params->headers.size());
-        HINTERNET hUrl = InternetOpenUrlW(hInternet, params->url.c_str(), headers, headersLen, flags, 0);
-        if (hUrl) {
-            FILE* file = _wfopen(params->destPath.c_str(), L"wb");
-            if (file) {
-                char buffer[8192];
-                DWORD bytesRead;
-                while (InternetReadFile(hUrl, buffer, sizeof(buffer), &bytesRead) && bytesRead > 0) {
-                    fwrite(buffer, 1, bytesRead, file);
-                }
-                fclose(file);
-                success = true;
-            }
-            InternetCloseHandle(hUrl);
-        }
-        InternetCloseHandle(hInternet);
+    HttpResult response = HttpGet(url, options);
+    bool success = response.completed && !response.cancelled;
+    if (response.cancelled) {
+        std::filesystem::remove(std::filesystem::path(destPath), ec);
     }
-
-    delete params;
 
     // Finish on the UI thread
     RunOnUiThread([id, success]() { DownloadManager::Instance().ProcessCompletion(id, success); });
-    return success ? 0 : 1;
 }
 
 DownloadManager& DownloadManager::Instance() {
@@ -71,36 +42,29 @@ DownloadManager& DownloadManager::Instance() {
     return instance;
 }
 
-DownloadManager::DownloadManager() {
-    InitializeCriticalSection(&m_cs);
-}
-
 DownloadManager::~DownloadManager() {
     CancelAll();
-    DeleteCriticalSection(&m_cs);
 }
 
 void DownloadManager::Enqueue(const std::wstring& url, const std::wstring& destPath, const std::wstring& title,
                               const std::wstring& headers) {
-    EnterCriticalSection(&m_cs);
+    std::unique_lock<std::recursive_mutex> lock(m_mutex);
 
     // Check if already queued or downloading
     for (const auto& item : m_queue) {
         if (item.url == url) {
-            LeaveCriticalSection(&m_cs);
             return;
         }
     }
     for (const auto& pair : m_active) {
         if (pair.second.url == url) {
-            LeaveCriticalSection(&m_cs);
             return;
         }
     }
 
     // Check if file already exists
-    if (GetFileAttributesW(destPath.c_str()) != INVALID_FILE_ATTRIBUTES) {
-        LeaveCriticalSection(&m_cs);
+    std::error_code ec;
+    if (std::filesystem::exists(std::filesystem::path(destPath), ec)) {
         return;
     }
 
@@ -110,7 +74,6 @@ void DownloadManager::Enqueue(const std::wstring& url, const std::wstring& destP
     item.destPath = destPath;
     item.title = title;
     item.headers = headers;
-    item.thread = nullptr;
 
     m_queue.push_back(item);
 
@@ -119,7 +82,7 @@ void DownloadManager::Enqueue(const std::wstring& url, const std::wstring& destP
     m_batchSuccess = 0;
     m_batchFailed = 0;
 
-    LeaveCriticalSection(&m_cs);
+    lock.unlock();
 
     if (onQueueChanged) onQueueChanged();
     ProcessQueue();
@@ -127,7 +90,7 @@ void DownloadManager::Enqueue(const std::wstring& url, const std::wstring& destP
 
 void DownloadManager::EnqueueMultiple(const std::vector<std::tuple<std::wstring, std::wstring, std::wstring>>& items,
                                       const std::wstring& headers) {
-    EnterCriticalSection(&m_cs);
+    std::unique_lock<std::recursive_mutex> lock(m_mutex);
 
     // Reset batch tracking
     m_batchTotal = 0;
@@ -151,7 +114,8 @@ void DownloadManager::EnqueueMultiple(const std::vector<std::tuple<std::wstring,
         if (exists) continue;
 
         // Check if file already exists
-        if (GetFileAttributesW(destPath.c_str()) != INVALID_FILE_ATTRIBUTES) continue;
+        std::error_code ec;
+        if (std::filesystem::exists(std::filesystem::path(destPath), ec)) continue;
 
         DownloadItem item;
         item.id = m_nextId++;
@@ -159,7 +123,6 @@ void DownloadManager::EnqueueMultiple(const std::vector<std::tuple<std::wstring,
         item.destPath = destPath;
         item.title = title;
         item.headers = headers;
-        item.thread = nullptr;
 
         m_queue.push_back(item);
         addedCount++;
@@ -167,7 +130,7 @@ void DownloadManager::EnqueueMultiple(const std::vector<std::tuple<std::wstring,
 
     m_batchTotal = addedCount;
 
-    LeaveCriticalSection(&m_cs);
+    lock.unlock();
 
     if (addedCount > 0) {
         if (onQueueChanged) onQueueChanged();
@@ -176,39 +139,39 @@ void DownloadManager::EnqueueMultiple(const std::vector<std::tuple<std::wstring,
 }
 
 void DownloadManager::CancelAll() {
-    EnterCriticalSection(&m_cs);
+    std::unique_lock<std::recursive_mutex> lock(m_mutex);
 
-    // Cancel active downloads
+    // Cancel active downloads (each stops at its next chunk and removes its partial file)
     for (auto& pair : m_active) {
-        if (pair.second.thread) {
-            TerminateThread(pair.second.thread, 1);
-            CloseHandle(pair.second.thread);
-        }
+        if (pair.second.cancel) *pair.second.cancel = true;
     }
     m_active.clear();
 
     // Clear queue
     m_queue.clear();
 
-    LeaveCriticalSection(&m_cs);
+    lock.unlock();
 
     if (onQueueChanged) onQueueChanged();
 }
 
 int DownloadManager::PendingCount() const {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
     return static_cast<int>(m_queue.size() + m_active.size());
 }
 
 int DownloadManager::ActiveCount() const {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
     return static_cast<int>(m_active.size());
 }
 
 int DownloadManager::QueuedCount() const {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
     return static_cast<int>(m_queue.size());
 }
 
 void DownloadManager::ProcessQueue() {
-    EnterCriticalSection(&m_cs);
+    std::unique_lock<std::recursive_mutex> lock(m_mutex);
 
     while (static_cast<int>(m_active.size()) < m_maxConcurrent && !m_queue.empty()) {
         DownloadItem item = m_queue.front();
@@ -218,19 +181,14 @@ void DownloadManager::ProcessQueue() {
         m_active[item.id] = item;
     }
 
-    LeaveCriticalSection(&m_cs);
+    lock.unlock();
 }
 
 void DownloadManager::StartDownload(DownloadItem& item) {
-    DownloadThreadParams* params = new DownloadThreadParams();
-    params->id = item.id;
-    params->url = item.url;
-    params->destPath = item.destPath;
-    params->headers = item.headers;
-
-    item.thread = CreateThread(nullptr, 0, DownloadThread, params, 0, nullptr);
-    if (!item.thread) {
-        delete params;
+    item.cancel = std::make_shared<std::atomic<bool>>(false);
+    try {
+        std::thread(DownloadWorker, item.id, item.url, item.destPath, item.headers, item.cancel).detach();
+    } catch (const std::system_error&) {
         // Report the failure on the UI thread
         int id = item.id;
         RunOnUiThread([id]() { DownloadManager::Instance().ProcessCompletion(id, false); });
@@ -240,14 +198,11 @@ void DownloadManager::StartDownload(DownloadItem& item) {
 void DownloadManager::ProcessCompletion(int id, bool success) {
     std::wstring title;
 
-    EnterCriticalSection(&m_cs);
+    std::unique_lock<std::recursive_mutex> lock(m_mutex);
 
     auto it = m_active.find(id);
     if (it != m_active.end()) {
         title = it->second.title;
-        if (it->second.thread) {
-            CloseHandle(it->second.thread);
-        }
         m_active.erase(it);
     }
 
@@ -263,7 +218,7 @@ void DownloadManager::ProcessCompletion(int id, bool success) {
     int batchSuccess = m_batchSuccess;
     int batchFailed = m_batchFailed;
 
-    LeaveCriticalSection(&m_cs);
+    lock.unlock();
 
     // Fire callbacks
     if (onDownloadComplete && !title.empty()) {

@@ -13,6 +13,7 @@
 #include "database.h"
 
 #include <string>
+#include "http.h"  // BuildBasicAuthHeader
 #include <tuple>
 #include <vector>
 
@@ -69,8 +70,6 @@ std::vector<OpmlFeed> ParseOpmlFile(const std::wstring& filePath);
 bool ExportOpmlFile(const std::wstring& filePath, const std::vector<PodcastSubscription>& subs);
 
 // Build an "Authorization: Basic <base64(user:pass)>" header from credentials (UTF-8 encoded).
-// Returns an empty string when no credentials are given.
-std::wstring BuildBasicAuthHeader(const std::wstring& username, const std::wstring& password);
 
 // Episodes ready to download: (url, destination path, title), plus how many were
 // skipped because they have no audio URL or are already on disk.

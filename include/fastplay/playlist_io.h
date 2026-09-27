@@ -20,4 +20,8 @@ void AddFilesFromFolder(const std::wstring& folder, std::vector<std::wstring>& f
 bool IsPlaylistFile(const std::wstring& path);
 std::vector<std::wstring> ParsePlaylist(const std::wstring& playlistPath);
 
+// A line of a playlist file: UTF-8 if it is valid UTF-8, otherwise the system's
+// legacy code page (Latin-1 outside Windows).
+std::wstring PlaylistLineToWide(const char* line);
+
 #endif // FASTPLAY_PLAYLIST_IO_H

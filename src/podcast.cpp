@@ -7,8 +7,9 @@
 #include "utils.h"
 #include "download_manager.h"
 
-#include <windows.h>
-#include <wininet.h>
+#include "http.h"
+#include "paths.h"
+#include <filesystem>
 #include <cstdio>
 #include <cstdlib>
 #include <cwctype>
@@ -16,207 +17,35 @@
 #include <set>
 #include <sstream>
 
-// Format a WinInet / Win32 error code into a human-readable message
-static std::wstring FormatWinInetError(DWORD code) {
-    if (code == 0) return L"";
-    wchar_t* buf = nullptr;
-    HMODULE hWinInet = GetModuleHandleW(L"wininet.dll");
-    DWORD flags = FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_IGNORE_INSERTS |
-                  FORMAT_MESSAGE_FROM_SYSTEM;
-    if (hWinInet) flags |= FORMAT_MESSAGE_FROM_HMODULE;
-    FormatMessageW(flags, hWinInet, code, 0, reinterpret_cast<wchar_t*>(&buf), 0, nullptr);
-    std::wstring result = buf ? buf : L"";
-    if (buf) LocalFree(buf);
-    while (!result.empty() && (result.back() == L'\r' || result.back() == L'\n' ||
-                               result.back() == L' ' || result.back() == L'.')) {
-        result.pop_back();
+// Fetch a feed (or other podcast URL), filling in the diagnostics shown when a
+// feed fails to load. Redirects are followed across schemes and hosts; credentials,
+// if given, are sent up front on every hop (see http.h).
+static std::wstring PodcastHttpFetch(const std::wstring& url, const std::wstring& username,
+                                     const std::wstring& password, PodcastFetchDiag* diag) {
+    HttpOptions options;
+    options.username = username;
+    options.password = password;
+    HttpResult response = HttpGet(url, options);
+    if (diag) {
+        diag->statusCode = response.status;
+        diag->lastError = response.systemError;
+        diag->errorText = response.errorText;
+        if (response.completed) {
+            diag->bytesReceived = response.body.size();
+            diag->bodyPreview = Utf8ToWide(response.body.substr(0, 400));
+        }
     }
-    return result;
-}
-
-// Fetch an HTTP(S) URL, following redirects manually. WinInet's automatic
-// redirection refuses to follow an HTTPS->HTTP "downgrade" redirect
-// (HttpSendRequestW fails outright), which breaks feeds like PowerPress that
-// 301 an https:// canonical feed URL to an http:// host, and media enclosures
-// that redirect an https .mp3 to a delivery-script URL. Doing it ourselves also
-// lets us cross schemes and hosts freely. Credentials, if supplied, are sent
-// preemptively on every hop. When bodyWanted is true the final response body is
-// returned; when false the request stops after the headers (used to resolve an
-// episode URL to its final target). outFinalUrl, if non-null, receives the last
-// URL actually requested.
-static std::wstring PodcastHttpFetch(const std::wstring& startUrl,
-                                     const std::wstring& username,
-                                     const std::wstring& password,
-                                     PodcastFetchDiag* diag,
-                                     bool bodyWanted,
-                                     std::wstring* outFinalUrl) {
-    std::wstring result;
-    std::wstring authHeader = BuildBasicAuthHeader(username, password);
-
-    HINTERNET hInternet = InternetOpenW(L"FastPlay/1.0", INTERNET_OPEN_TYPE_PRECONFIG, nullptr, nullptr, 0);
-    if (!hInternet) {
-        if (diag) {
-            diag->lastError = GetLastError();
-            diag->errorText = FormatWinInetError(diag->lastError);
-        }
-        return result;
-    }
-
-    std::wstring url = startUrl;
-    const int MAX_HOPS = 6;
-    for (int hop = 0; hop < MAX_HOPS; hop++) {
-        // Parse the URL into scheme/host/path.
-        bool secure = false;
-        size_t hostStart;
-        if (url.compare(0, 8, L"https://") == 0)      { secure = true;  hostStart = 8; }
-        else if (url.compare(0, 7, L"http://") == 0)  { secure = false; hostStart = 7; }
-        else {
-            if (diag) diag->errorText = L"Unsupported URL scheme (expected http:// or https://)";
-            break;
-        }
-        std::wstring host, path;
-        size_t pathStart = url.find(L'/', hostStart);
-        if (pathStart == std::wstring::npos) { host = url.substr(hostStart); path = L"/"; }
-        else { host = url.substr(hostStart, pathStart - hostStart); path = url.substr(pathStart); }
-
-        DWORD flags = INTERNET_FLAG_RELOAD | INTERNET_FLAG_NO_CACHE_WRITE |
-                      INTERNET_FLAG_NO_AUTO_REDIRECT | INTERNET_FLAG_KEEP_CONNECTION;
-        if (secure) flags |= INTERNET_FLAG_SECURE;
-
-        HINTERNET hConnect = InternetConnectW(hInternet, host.c_str(),
-                                              secure ? INTERNET_DEFAULT_HTTPS_PORT : INTERNET_DEFAULT_HTTP_PORT,
-                                              username.empty() ? nullptr : username.c_str(),
-                                              password.empty() ? nullptr : password.c_str(),
-                                              INTERNET_SERVICE_HTTP, 0, 0);
-        if (!hConnect) {
-            if (diag) { diag->lastError = GetLastError(); diag->errorText = FormatWinInetError(diag->lastError); }
-            break;
-        }
-
-        HINTERNET hRequest = HttpOpenRequestW(hConnect, L"GET", path.c_str(), nullptr, nullptr, nullptr, flags, 0);
-        if (!hRequest) {
-            if (diag) { diag->lastError = GetLastError(); diag->errorText = FormatWinInetError(diag->lastError); }
-            InternetCloseHandle(hConnect);
-            break;
-        }
-
-        // Send Basic credentials preemptively (WinInet only attaches the
-        // InternetConnect credentials after a 401, and only on a resend).
-        if (!authHeader.empty()) {
-            HttpAddRequestHeadersW(hRequest, authHeader.c_str(), static_cast<DWORD>(authHeader.size()),
-                                   HTTP_ADDREQ_FLAG_ADD | HTTP_ADDREQ_FLAG_REPLACE);
-        }
-
-        BOOL sent = HttpSendRequestW(hRequest, nullptr, 0, nullptr, 0);
-        // If the server still challenges (Digest/NTLM realm), resend once so
-        // WinInet can answer with the InternetConnect credentials.
-        if (sent && (!username.empty() || !password.empty())) {
-            DWORD status = 0, sz = sizeof(status);
-            HttpQueryInfoW(hRequest, HTTP_QUERY_STATUS_CODE | HTTP_QUERY_FLAG_NUMBER, &status, &sz, nullptr);
-            if (status == HTTP_STATUS_DENIED) sent = HttpSendRequestW(hRequest, nullptr, 0, nullptr, 0);
-        }
-        if (!sent) {
-            if (diag) { diag->lastError = GetLastError(); diag->errorText = FormatWinInetError(diag->lastError); }
-            InternetCloseHandle(hRequest);
-            InternetCloseHandle(hConnect);
-            break;
-        }
-
-        DWORD status = 0, sz = sizeof(status);
-        HttpQueryInfoW(hRequest, HTTP_QUERY_STATUS_CODE | HTTP_QUERY_FLAG_NUMBER, &status, &sz, nullptr);
-
-        // Follow 301/302/303/307/308 to the Location target ourselves.
-        bool isRedirect = (status == 301 || status == 302 || status == 303 ||
-                           status == 307 || status == 308);
-        if (isRedirect && hop + 1 < MAX_HOPS) {
-            wchar_t loc[2048];
-            DWORD locBytes = sizeof(loc);
-            if (HttpQueryInfoW(hRequest, HTTP_QUERY_LOCATION, loc, &locBytes, nullptr)) {
-                // Resolve a possibly-relative Location against the current URL.
-                wchar_t combined[2048];
-                DWORD combChars = 2048;
-                if (InternetCombineUrlW(url.c_str(), loc, combined, &combChars, ICU_NO_ENCODE)) {
-                    url = combined;
-                } else {
-                    url = loc;
-                }
-                InternetCloseHandle(hRequest);
-                InternetCloseHandle(hConnect);
-                continue;  // Next hop.
-            }
-        }
-
-        // Terminal (non-redirect) response.
-        if (diag) diag->statusCode = status;
-        if (outFinalUrl) *outFinalUrl = url;
-        if (bodyWanted) {
-            char buffer[4096];
-            DWORD bytesRead;
-            std::string response;
-            while (InternetReadFile(hRequest, buffer, sizeof(buffer), &bytesRead) && bytesRead > 0) {
-                response.append(buffer, bytesRead);
-            }
-            if (diag) {
-                diag->bytesReceived = response.size();
-                diag->bodyPreview = Utf8ToWide(response.substr(0, 400));
-            }
-            result = Utf8ToWide(response);
-        }
-        InternetCloseHandle(hRequest);
-        InternetCloseHandle(hConnect);
-        InternetCloseHandle(hInternet);
-        return result;
-    }
-
-    InternetCloseHandle(hInternet);
-    return result;
+    return response.completed ? Utf8ToWide(response.body) : std::wstring();
 }
 
 // HTTP GET for podcast operations
 static std::wstring PodcastHttpGet(const std::wstring& url, PodcastFetchDiag* diag = nullptr) {
-    return PodcastHttpFetch(url, L"", L"", diag, true, nullptr);
-}
-
-// Build an "Authorization: Basic <base64(user:pass)>" header from credentials (UTF-8 encoded).
-// Returns an empty string when no credentials are given.
-std::wstring BuildBasicAuthHeader(const std::wstring& username, const std::wstring& password) {
-    if (username.empty() && password.empty()) return L"";
-
-    std::string creds = WideToUtf8(username) + ":" + WideToUtf8(password);
-
-    static const wchar_t b64[] = L"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    std::wstring encoded;
-    size_t i = 0;
-    while (i + 2 < creds.size()) {
-        unsigned int n = (static_cast<unsigned char>(creds[i]) << 16) |
-                         (static_cast<unsigned char>(creds[i + 1]) << 8) |
-                         static_cast<unsigned char>(creds[i + 2]);
-        encoded += b64[(n >> 18) & 63];
-        encoded += b64[(n >> 12) & 63];
-        encoded += b64[(n >> 6) & 63];
-        encoded += b64[n & 63];
-        i += 3;
-    }
-    if (i + 1 == creds.size()) {
-        unsigned int n = static_cast<unsigned char>(creds[i]) << 16;
-        encoded += b64[(n >> 18) & 63];
-        encoded += b64[(n >> 12) & 63];
-        encoded += L"==";
-    } else if (i + 2 == creds.size()) {
-        unsigned int n = (static_cast<unsigned char>(creds[i]) << 16) |
-                         (static_cast<unsigned char>(creds[i + 1]) << 8);
-        encoded += b64[(n >> 18) & 63];
-        encoded += b64[(n >> 12) & 63];
-        encoded += b64[(n >> 6) & 63];
-        encoded += L"=";
-    }
-
-    return L"Authorization: Basic " + encoded;
+    return PodcastHttpFetch(url, L"", L"", diag);
 }
 
 // HTTP GET with Basic Authentication support
 static std::wstring PodcastHttpGetAuth(const std::wstring& url, const std::wstring& username, const std::wstring& password, PodcastFetchDiag* diag = nullptr) {
-    return PodcastHttpFetch(url, username, password, diag, true, nullptr);
+    return PodcastHttpFetch(url, username, password, diag);
 }
 
 // URL encode for podcast searches
@@ -804,14 +633,17 @@ PodcastDownloadBatch PreparePodcastDownloads(const std::vector<const PodcastEpis
 
     // Build download folder path
     std::wstring downloadFolder = g_downloadPath;
-    if (!downloadFolder.empty() && downloadFolder.back() != L'\\') downloadFolder += L'\\';
+    if (!downloadFolder.empty() && downloadFolder.back() != L'\\' && downloadFolder.back() != L'/') {
+        downloadFolder += kPathSeparator;
+    }
 
     // If organize by feed is enabled, create subfolder
     if (g_downloadOrganizeByFeed && feed) {
         std::wstring feedFolder = SanitizeFilename(feed->name);
         if (!feedFolder.empty()) {
-            downloadFolder += feedFolder + L'\\';
-            CreateDirectoryW(downloadFolder.c_str(), nullptr);
+            downloadFolder += feedFolder + kPathSeparator;
+            std::error_code ec;
+            std::filesystem::create_directory(std::filesystem::path(downloadFolder), ec);
         }
     }
 
@@ -831,7 +663,8 @@ PodcastDownloadBatch PreparePodcastDownloads(const std::vector<const PodcastEpis
         std::wstring filepath = downloadFolder + filename;
 
         // Skip if file already exists on disk
-        if (GetFileAttributesW(filepath.c_str()) != INVALID_FILE_ATTRIBUTES) {
+        std::error_code ec;
+        if (std::filesystem::exists(std::filesystem::path(filepath), ec)) {
             batch.skipped++;
             continue;
         }
