@@ -280,7 +280,8 @@ if(APPLE)
     # BASS and friends come from lib/mac (download-deps.sh). Their install names are
     # @rpath/<name>, found in FastPlay.app/Contents/Frameworks.
     set(FASTPLAY_MAC_LIB_DIR ${CMAKE_CURRENT_SOURCE_DIR}/lib/mac)
-    foreach(name bass bass_fx bass_aac bassmidi bassenc bassenc_mp3 bassenc_ogg bassenc_flac)
+    # (No bass_aac: it has no Apple silicon build, and Core Audio decodes AAC.)
+    foreach(name bass bass_fx bassmidi bassenc bassenc_mp3 bassenc_ogg bassenc_flac)
         target_link_libraries(FastPlay PRIVATE ${FASTPLAY_MAC_LIB_DIR}/lib${name}.dylib)
     endforeach()
     target_link_libraries(FastPlay PRIVATE

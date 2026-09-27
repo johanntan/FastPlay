@@ -50,7 +50,6 @@ echo "Downloading BASS libraries..."
 # Linked by FastPlay
 download_bass https://www.un4seen.com/files/bass24-osx.zip libbass.dylib required
 download_bass https://www.un4seen.com/files/z/0/bass_fx24-osx.zip libbass_fx.dylib required
-download_bass https://www.un4seen.com/files/z/2/bass_aac24-osx.zip libbass_aac.dylib required
 download_bass https://www.un4seen.com/files/bassmidi24-osx.zip libbassmidi.dylib required
 download_bass https://www.un4seen.com/files/bassenc24-osx.zip libbassenc.dylib required
 download_bass https://www.un4seen.com/files/bassenc_mp324-osx.zip libbassenc_mp3.dylib required

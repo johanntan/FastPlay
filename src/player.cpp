@@ -372,14 +372,20 @@ bool LoadURL(const wchar_t* url) {
     // Create URL stream - try without BLOCK first (allows seeking for podcasts);
     // BLOCK mode is only needed for live streams where seeking isn't expected.
     // AAC first (handles raw AAC/M4A better), then generic, each in non-BLOCK
-    // then BLOCK mode.
+    // then BLOCK mode. macOS has no BASS_AAC for Apple silicon; BASS plays AAC
+    // there through Core Audio.
     auto tryCreateStream = [](const std::string& u) -> HSTREAM {
         DWORD f = BASS_STREAM_DECODE | BASS_STREAM_STATUS | BASS_SAMPLE_FLOAT;
-        HSTREAM s = BASS_AAC_StreamCreateURL(u.c_str(), 0, f, nullptr, nullptr);
+        HSTREAM s = 0;
+#ifdef _WIN32
+        s = BASS_AAC_StreamCreateURL(u.c_str(), 0, f, nullptr, nullptr);
+#endif
         if (!s) s = BASS_StreamCreateURL(u.c_str(), 0, f, nullptr, nullptr);
         if (!s) {
             f = BASS_STREAM_DECODE | BASS_STREAM_STATUS | BASS_STREAM_BLOCK | BASS_SAMPLE_FLOAT;
+#ifdef _WIN32
             s = BASS_AAC_StreamCreateURL(u.c_str(), 0, f, nullptr, nullptr);
+#endif
             if (!s) s = BASS_StreamCreateURL(u.c_str(), 0, f, nullptr, nullptr);
         }
         return s;
