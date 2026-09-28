@@ -50,7 +50,18 @@ std::wstring FileNameOnly(const std::wstring& path) {
 }
 
 std::wstring HotkeyListItem(const GlobalHotkey& hk) {
-    return FormatHotkey(hk.modifiers, hk.vk) + L" - " + g_hotkeyActions[hk.actionIdx].name;
+    return FormatHotkey(hk.modifiers, hk.vk) + L" - " + g_hotkeyActions[hk.actionIdx].name +
+           (hk.global ? L"" : L" (in FastPlay)");
+}
+
+// Put changed hotkeys to work: the global ones registered again (when on), the
+// local ones in the main window's key table.
+void ApplyHotkeys() {
+    MainFrame* frame = GetMainFrame();
+    if (!frame) return;
+    frame->UnregisterGlobalHotkeys();
+    frame->RegisterGlobalHotkeys();
+    frame->BuildAccelerators();
 }
 
 class OptionsDialog : public wxDialog {
@@ -494,6 +505,7 @@ void OptionsDialog::BuildHotkeysPage(wxNotebook* book) {
 
     // Populate hotkey list and set enabled checkbox
     m_hotkeyEnabled = AddCheck(page, sizer, "&Enable global hotkeys", g_hotkeysEnabled);
+    AddText(page, sizer, "Hotkeys that are not global work while FastPlay's main window has the focus.");
     m_hotkeyEnabled->Bind(wxEVT_CHECKBOX, &OptionsDialog::OnHotkeyEnabled, this);
 
     m_hotkeyList = new wxListBox(page, wxID_ANY, wxDefaultPosition, wxSize(430, 180), 0, nullptr, wxLB_SINGLE);
@@ -515,7 +527,7 @@ void OptionsDialog::BuildHotkeysPage(wxNotebook* book) {
 
     page->SetSizer(new wxBoxSizer(wxVERTICAL));
     page->GetSizer()->Add(sizer, 1, wxEXPAND | wxALL, 10);
-    book->AddPage(page, "Global Hotkeys");
+    book->AddPage(page, "Hotkeys");
 }
 
 void OptionsDialog::BuildEffectsPage(wxNotebook* book) {
@@ -1258,22 +1270,20 @@ void OptionsDialog::OnResetListOrder(wxCommandEvent&) {
 void OptionsDialog::OnHotkeyAdd(wxCommandEvent&) {
     HotkeyDlgData data = {0, 0, 0, false};
     if (ShowHotkeyDialog(this, data)) {
-        MainFrame* frame = GetMainFrame();
-        if (frame) frame->UnregisterGlobalHotkeys();
-
         // Add new hotkey
         GlobalHotkey hk;
         hk.id = g_nextHotkeyId++;
         hk.modifiers = data.modifiers;
         hk.vk = data.vk;
         hk.actionIdx = data.actionIdx;
+        hk.global = data.global;
+        MainFrame* frame = GetMainFrame();
+        if (frame) frame->UnregisterGlobalHotkeys();
         g_hotkeys.push_back(hk);
+        ApplyHotkeys();
 
         // Update list
         m_hotkeyList->Append(WX(HotkeyListItem(hk)));
-
-        // Re-register hotkeys
-        if (frame) frame->RegisterGlobalHotkeys();
         SaveHotkeys();
     }
 }
@@ -1286,15 +1296,17 @@ void OptionsDialog::OnHotkeyEdit(wxCommandEvent&) {
         data.modifiers = g_hotkeys[sel].modifiers;
         data.vk = g_hotkeys[sel].vk;
         data.isEdit = true;
+        data.global = g_hotkeys[sel].global;
 
         if (ShowHotkeyDialog(this, data)) {
-            // Update hotkey, re-registering it when hotkeys are on
+            // Update hotkey, and put it to work
             MainFrame* frame = GetMainFrame();
-            if (frame && g_hotkeysEnabled) frame->UnregisterGlobalHotkeys();
+            if (frame) frame->UnregisterGlobalHotkeys();
             g_hotkeys[sel].modifiers = data.modifiers;
             g_hotkeys[sel].vk = data.vk;
             g_hotkeys[sel].actionIdx = data.actionIdx;
-            if (frame && g_hotkeysEnabled) frame->RegisterGlobalHotkeys();
+            g_hotkeys[sel].global = data.global;
+            ApplyHotkeys();
 
             // Update list item
             m_hotkeyList->SetString(sel, WX(HotkeyListItem(g_hotkeys[sel])));
@@ -1310,9 +1322,9 @@ void OptionsDialog::OnHotkeyRemove(wxCommandEvent&) {
     if (sel >= 0 && sel < static_cast<int>(g_hotkeys.size())) {
         // Unregister and remove
         MainFrame* frame = GetMainFrame();
-        if (frame && g_hotkeysEnabled) frame->UnregisterGlobalHotkeys();
+        if (frame) frame->UnregisterGlobalHotkeys();
         g_hotkeys.erase(g_hotkeys.begin() + sel);
-        if (frame && g_hotkeysEnabled) frame->RegisterGlobalHotkeys();
+        ApplyHotkeys();
         m_hotkeyList->Delete(sel);
 
         // Select next item or previous

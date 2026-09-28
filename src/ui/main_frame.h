@@ -34,6 +34,10 @@ public:
     void RegisterGlobalHotkeys();
     void UnregisterGlobalHotkeys();
 
+    // The main window's keyboard shortcuts, with the user's local hotkeys ahead of
+    // FastPlay's own; built again when the hotkeys change.
+    void BuildAccelerators();
+
     // A file handed over by another FastPlay started with it (e.g. from Explorer).
     void ReceiveFile(const std::wstring& path);
 
@@ -46,7 +50,6 @@ public:
 
 private:
     void BuildMenuBar();
-    void BuildAccelerators();
     void RebuildRecentFilesMenu();
     void OnMenu(wxCommandEvent& event);
     void OnMenuOpen(wxMenuEvent& event);

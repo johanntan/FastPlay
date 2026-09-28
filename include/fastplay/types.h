@@ -24,12 +24,14 @@ struct HotkeyAction {
     const wchar_t* name;
 };
 
-// Global hotkey storage
+// A hotkey of the user's: global (works whichever program has the focus) or local
+// (works in FastPlay's main window, ahead of its own shortcuts)
 struct GlobalHotkey {
     int id;         // Unique ID for RegisterHotKey
     unsigned modifiers; // MOD_ALT, MOD_CONTROL, MOD_SHIFT, MOD_WIN
     unsigned vk;        // Virtual key code
     int actionIdx;  // Index into g_hotkeyActions
+    bool global = true;
 };
 
 // Hotkey dialog data
@@ -38,6 +40,7 @@ struct HotkeyDlgData {
     unsigned vk;
     int actionIdx;
     bool isEdit;
+    bool global = true;
 };
 
 // Stream effect types (tempo stream attributes)

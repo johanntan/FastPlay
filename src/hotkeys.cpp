@@ -110,16 +110,18 @@ void LoadHotkeys() {
         swprintf(key, 32, L"Hotkey%d", i);
         IniGetString(L"Hotkeys", key, L"", value, 64, g_configPath.c_str());
 
-        // Parse "modifiers,vk,actionIdx"
+        // Parse "modifiers,vk,actionIdx[,global]" (hotkeys saved before local
+        // ones existed are all global)
         unsigned mods = 0, vk = 0;
-        int actionIdx = 0;
-        if (swscanf(value, L"%u,%u,%d", &mods, &vk, &actionIdx) == 3) {
+        int actionIdx = 0, global = 1;
+        if (swscanf(value, L"%u,%u,%d,%d", &mods, &vk, &actionIdx, &global) >= 3) {
             if (actionIdx >= 0 && actionIdx < g_hotkeyActionCount) {
                 GlobalHotkey hk;
                 hk.id = g_nextHotkeyId++;
                 hk.modifiers = mods;
                 hk.vk = vk;
                 hk.actionIdx = actionIdx;
+                hk.global = global != 0;
                 g_hotkeys.push_back(hk);
             }
         }
@@ -138,7 +140,8 @@ void SaveHotkeys() {
     for (size_t i = 0; i < g_hotkeys.size(); i++) {
         wchar_t key[32];
         swprintf(key, 32, L"Hotkey%zu", i);
-        swprintf(buf, 64, L"%u,%u,%d", g_hotkeys[i].modifiers, g_hotkeys[i].vk, g_hotkeys[i].actionIdx);
+        swprintf(buf, 64, L"%u,%u,%d,%d", g_hotkeys[i].modifiers, g_hotkeys[i].vk, g_hotkeys[i].actionIdx,
+                 g_hotkeys[i].global ? 1 : 0);
         IniWriteString(L"Hotkeys", key, buf, g_configPath.c_str());
     }
 }

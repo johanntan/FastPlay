@@ -1,4 +1,5 @@
-// The Add / Edit Global Hotkey dialog: an action and the key combination that runs it.
+// The Add / Edit Hotkey dialog: an action, the key combination that runs it, and
+// whether it works everywhere or only in FastPlay's main window.
 
 #include "ui/hotkey_dialog.h"
 #include "ui/ui_common.h"
@@ -25,7 +26,7 @@ const char* const kModifierRequired = "Global hotkeys require at least one modif
 class HotkeyDialog : public wxDialog {
 public:
     HotkeyDialog(wxWindow* parent, const HotkeyDlgData& data)
-        : wxDialog(parent, wxID_ANY, data.isEdit ? "Edit Global Hotkey" : "Add Global Hotkey") {
+        : wxDialog(parent, wxID_ANY, data.isEdit ? "Edit Hotkey" : "Add Hotkey") {
         auto* sizer = new wxBoxSizer(wxVERTICAL);
         auto* grid = new wxFlexGridSizer(2, 6, 6);
         grid->AddGrowableCol(1);
@@ -47,6 +48,10 @@ public:
         grid->Add(m_key, 1, wxEXPAND);
         sizer->Add(grid, 0, wxEXPAND | wxALL, 10);
 
+        m_global = new wxCheckBox(this, wxID_ANY, "&Global (works while other programs are in use)");
+        m_global->SetValue(data.global);
+        sizer->Add(m_global, 0, wxLEFT | wxRIGHT | wxBOTTOM, 10);
+
         auto* buttons = new wxBoxSizer(wxHORIZONTAL);
         auto* ok = new wxButton(this, wxID_OK, "OK");
         ok->SetDefault();
@@ -60,6 +65,7 @@ public:
             m_vk = data.vk;
             m_modifiers = data.modifiers & kAllowedModifiers;
         }
+        m_global->Bind(wxEVT_CHECKBOX, [this](wxCommandEvent&) { m_global->SetFocus(); });
         ShowKey();
 
         Bind(wxEVT_CHAR_HOOK, &HotkeyDialog::OnCharHook, this);
@@ -73,6 +79,7 @@ public:
     int GetActionIdx() const { return m_action->GetSelection(); }
     unsigned GetModifiers() const { return m_modifiers; }
     unsigned GetVk() const { return m_vk; }
+    bool IsGlobal() const { return m_global->GetValue(); }
 
 private:
     void ShowKey() {
@@ -156,12 +163,13 @@ private:
     }
 
     void OnOK(wxCommandEvent&) {
-        // Require at least one modifier for global hotkeys
+        // Require at least one modifier for global hotkeys (a local one may be a
+        // single key, as many of the main window's are)
         if (m_vk == 0) {
             wxMessageBox("Please enter a hotkey.", "Error", wxOK | wxICON_WARNING, this);
             return;
         }
-        if (m_modifiers == 0) {
+        if (m_modifiers == 0 && m_global->GetValue()) {
             wxMessageBox(kModifierRequired, "Error", wxOK | wxICON_WARNING, this);
             return;
         }
@@ -170,6 +178,7 @@ private:
 
     wxChoice* m_action;
     wxTextCtrl* m_key;
+    wxCheckBox* m_global;
     unsigned m_modifiers = 0;
     unsigned m_vk = 0;
 };
@@ -182,5 +191,6 @@ bool ShowHotkeyDialog(wxWindow* parent, HotkeyDlgData& data) {
     data.actionIdx = dlg.GetActionIdx();
     data.modifiers = dlg.GetModifiers();
     data.vk = dlg.GetVk();
+    data.global = dlg.IsGlobal();
     return true;
 }

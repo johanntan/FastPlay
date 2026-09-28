@@ -19,6 +19,7 @@
 #include "scheduler.h"
 #include "tempo_processor.h"
 #include "utils.h"
+#include "keycodes.h"
 #ifdef __WXOSX__
 #include "system_keys.h"
 #endif
@@ -213,6 +214,49 @@ void MainFrame::BuildMenuBar() {
     SetMenuBar(bar);
 }
 
+#ifndef __WXMSW__
+// The wxWidgets key code for a hotkey's Windows virtual key code (keycodes.h), or 0.
+static int WxKeyFromVirtualKey(unsigned vk) {
+    if ((vk >= '0' && vk <= '9') || (vk >= 'A' && vk <= 'Z')) return static_cast<int>(vk);
+    if (vk >= VK_F1 && vk <= VK_F24) return WXK_F1 + static_cast<int>(vk - VK_F1);
+    if (vk >= VK_NUMPAD0 && vk <= VK_NUMPAD9) return WXK_NUMPAD0 + static_cast<int>(vk - VK_NUMPAD0);
+    switch (vk) {
+        case VK_BACK: return WXK_BACK;
+        case VK_TAB: return WXK_TAB;
+        case VK_RETURN: return WXK_RETURN;
+        case VK_ESCAPE: return WXK_ESCAPE;
+        case VK_SPACE: return WXK_SPACE;
+        case VK_PRIOR: return WXK_PAGEUP;
+        case VK_NEXT: return WXK_PAGEDOWN;
+        case VK_END: return WXK_END;
+        case VK_HOME: return WXK_HOME;
+        case VK_LEFT: return WXK_LEFT;
+        case VK_UP: return WXK_UP;
+        case VK_RIGHT: return WXK_RIGHT;
+        case VK_DOWN: return WXK_DOWN;
+        case VK_INSERT: return WXK_INSERT;
+        case VK_DELETE: return WXK_DELETE;
+        case VK_MULTIPLY: return WXK_NUMPAD_MULTIPLY;
+        case VK_ADD: return WXK_NUMPAD_ADD;
+        case VK_SUBTRACT: return WXK_NUMPAD_SUBTRACT;
+        case VK_DECIMAL: return WXK_NUMPAD_DECIMAL;
+        case VK_DIVIDE: return WXK_NUMPAD_DIVIDE;
+        case VK_OEM_1: return ';';
+        case VK_OEM_PLUS: return '=';
+        case VK_OEM_COMMA: return ',';
+        case VK_OEM_MINUS: return '-';
+        case VK_OEM_PERIOD: return '.';
+        case VK_OEM_2: return '/';
+        case VK_OEM_3: return '`';
+        case VK_OEM_4: return '[';
+        case VK_OEM_5: return '\\';
+        case VK_OEM_6: return ']';
+        case VK_OEM_7: return '\'';
+    }
+    return 0;
+}
+#endif
+
 // The keyboard shortcuts. This table is what the keys do; the shortcut text in the
 // menus is only a label (the frame's own table is consulted before the menu bar's,
 // so "Volume Up\tUp" in the menu does not take Up away from the effect controls).
@@ -312,6 +356,19 @@ void MainFrame::BuildAccelerators() {
     // other punctuation into whatever key types that character on the current layout
     // (on a German keyboard '[' is AltGr+8); the old table named the physical keys.
     std::vector<ACCEL> native;
+    // The user's local hotkeys first: of two entries for one key, the first wins.
+    // They are stored as virtual key codes already.
+    for (const auto& hk : g_hotkeys) {
+        if (hk.global) continue;
+        ACCEL a = {};
+        a.fVirt = FVIRTKEY;
+        if (hk.modifiers & MOD_CONTROL) a.fVirt |= FCONTROL;
+        if (hk.modifiers & MOD_SHIFT) a.fVirt |= FSHIFT;
+        if (hk.modifiers & MOD_ALT) a.fVirt |= FALT;
+        a.key = static_cast<WORD>(hk.vk);
+        a.cmd = static_cast<WORD>(g_hotkeyActions[hk.actionIdx].commandId);
+        native.push_back(a);
+    }
     for (const auto& entry : e) {
         ACCEL a = {};
         a.fVirt = FVIRTKEY;
@@ -338,9 +395,23 @@ void MainFrame::BuildAccelerators() {
         a.cmd = static_cast<WORD>(entry.GetCommand());
         native.push_back(a);
     }
+    if (m_nativeAccel) ::DestroyAcceleratorTable(static_cast<HACCEL>(m_nativeAccel));
     m_nativeAccel = ::CreateAcceleratorTableW(native.data(), static_cast<int>(native.size()));
 #else
-    SetAcceleratorTable(wxAcceleratorTable(static_cast<int>(e.size()), e.data()));
+    // The user's local hotkeys first, so they win over FastPlay's own keys
+    std::vector<wxAcceleratorEntry> all;
+    for (const auto& hk : g_hotkeys) {
+        int key = hk.global ? 0 : WxKeyFromVirtualKey(hk.vk);
+        if (key == 0) continue;
+        int flags = wxACCEL_NORMAL;
+        if (hk.modifiers & MOD_CONTROL) flags |= wxACCEL_CTRL;  // Command on macOS
+        if (hk.modifiers & MOD_SHIFT) flags |= wxACCEL_SHIFT;
+        if (hk.modifiers & MOD_ALT) flags |= wxACCEL_ALT;
+        if (hk.modifiers & MOD_WIN) flags |= wxACCEL_RAW_CTRL;  // Control on macOS
+        all.emplace_back(flags, key, g_hotkeyActions[hk.actionIdx].commandId);
+    }
+    all.insert(all.end(), e.begin(), e.end());
+    SetAcceleratorTable(wxAcceleratorTable(static_cast<int>(all.size()), all.data()));
 #endif
 }
 
@@ -771,6 +842,7 @@ void MainFrame::RegisterGlobalHotkeys() {
     // The user's hotkeys are stored as Windows modifier flags and virtual key codes.
     if (g_hotkeysEnabled) {
         for (const auto& hk : g_hotkeys) {
+            if (!hk.global) continue;  // in the main window's key table instead
             int mods = 0;
             if (hk.modifiers & MOD_ALT) mods |= wxMOD_ALT;
             if (hk.modifiers & MOD_CONTROL) mods |= wxMOD_CONTROL;
@@ -788,7 +860,7 @@ void MainFrame::RegisterGlobalHotkeys() {
     });
     if (g_hotkeysEnabled) {
         for (const auto& hk : g_hotkeys) {
-            RegisterSystemHotkey(hk.id, hk.modifiers, hk.vk);
+            if (hk.global) RegisterSystemHotkey(hk.id, hk.modifiers, hk.vk);
         }
     }
     m_hotkeysRegistered = true;
