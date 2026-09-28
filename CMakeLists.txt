@@ -161,6 +161,55 @@ target_compile_definitions(openmpt PRIVATE
     MPT_WITH_STBVORBIS STB_VORBIS_NO_PULLDATA_API STB_VORBIS_NO_STDIO)
 target_compile_options(openmpt PRIVATE ${FASTPLAY_NO_WARNINGS} $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
 
+# --- LAME, libogg and libvorbis ---
+# The encoders for recording to MP3 and OGG Vorbis (FLAC and WAV are FFmpeg's and
+# FastPlay's own). Built here from their release sources, as plain C libraries,
+# with the config headers their configure scripts would write in cmake/config.
+FetchContent_Declare(lame
+    URL https://downloads.sourceforge.net/project/lame/lame/3.100/lame-3.100.tar.gz
+    URL_HASH SHA256=ddfe36cab873794038ae2c1210557ad34857a4b6bdc515785d1da9e175b1da1e
+)
+FetchContent_Declare(libogg
+    URL https://downloads.xiph.org/releases/ogg/libogg-1.3.6.tar.gz
+    URL_HASH SHA256=83e6704730683d004d20e21b8f7f55dcb3383cdf84c0daedf30bde175f774638
+)
+FetchContent_Declare(libvorbis
+    URL https://downloads.xiph.org/releases/vorbis/libvorbis-1.3.7.tar.gz
+    URL_HASH SHA256=0e982409a9c3fc82ee06e08205b1355e5c6aa4c36bca58146ef399621b0ce5ab
+)
+foreach(dep lame libogg libvorbis)
+    FetchContent_GetProperties(${dep})
+    if(NOT ${dep}_POPULATED)
+        FetchContent_Populate(${dep})  # the sources only; built below
+    endif()
+endforeach()
+
+set(LAME_SOURCES bitstream encoder fft gain_analysis id3tag lame mpglib_interface newmdct presets
+    psymodel quantize quantize_pvt reservoir set_get tables takehiro util vbrquantize VbrTag version)
+list(TRANSFORM LAME_SOURCES PREPEND ${lame_SOURCE_DIR}/libmp3lame/)
+list(TRANSFORM LAME_SOURCES APPEND .c)
+add_library(mp3lame STATIC ${LAME_SOURCES})
+target_include_directories(mp3lame
+    PUBLIC ${lame_SOURCE_DIR}/include
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/cmake/config/lame ${lame_SOURCE_DIR}/libmp3lame)
+target_compile_definitions(mp3lame PRIVATE HAVE_CONFIG_H)
+target_compile_options(mp3lame PRIVATE ${FASTPLAY_NO_WARNINGS})
+
+add_library(ogg STATIC ${libogg_SOURCE_DIR}/src/bitwise.c ${libogg_SOURCE_DIR}/src/framing.c)
+target_include_directories(ogg PUBLIC ${libogg_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/cmake/config/ogg)
+target_compile_options(ogg PRIVATE ${FASTPLAY_NO_WARNINGS})
+
+set(VORBIS_SOURCES analysis bitrate block codebook envelope floor0 floor1 info lookup lpc lsp mapping0
+    mdct psy registry res0 sharedbook smallft synthesis vorbisenc window)
+list(TRANSFORM VORBIS_SOURCES PREPEND ${libvorbis_SOURCE_DIR}/lib/)
+list(TRANSFORM VORBIS_SOURCES APPEND .c)
+add_library(vorbis STATIC ${VORBIS_SOURCES})
+target_include_directories(vorbis
+    PUBLIC ${libvorbis_SOURCE_DIR}/include
+    PRIVATE ${libvorbis_SOURCE_DIR}/lib)
+target_link_libraries(vorbis PUBLIC ogg)
+target_compile_options(vorbis PRIVATE ${FASTPLAY_NO_WARNINGS})
+
 option(FASTPLAY_SPEECH "Screen reader speech through UniversalSpeech" ON)
 
 # Configure only the dependencies (used to start the long wxWidgets build early).
@@ -184,6 +233,7 @@ set(FASTPLAY_SOURCES
     src/audio/decoder_ffmpeg.cpp
     src/audio/decoder_midi.cpp
     src/audio/decoder_tracker.cpp
+    src/audio/recorder.cpp
     src/audio/decoders.cpp
     src/audio/engine.cpp
     src/audio/miniaudio.c
@@ -294,7 +344,7 @@ set(FDK_AAC_INSTALL_CMAKE_CONFIG_MODULE OFF CACHE BOOL "" FORCE)
 set(FDK_AAC_INSTALL_PKGCONFIG_MODULE OFF CACHE BOOL "" FORCE)
 add_subdirectory(deps/fdk-aac EXCLUDE_FROM_ALL)
 target_compile_options(fdk-aac PRIVATE ${FASTPLAY_NO_WARNINGS})
-target_link_libraries(FastPlay PRIVATE fdk-aac spessasynth openmpt)
+target_link_libraries(FastPlay PRIVATE fdk-aac spessasynth openmpt mp3lame vorbis)
 
 # The upstream C libraries' warnings are not ours to fix.
 set_source_files_properties(src/sqlite3.c deps/speedy/speedy.c deps/speedy/soniclib.c

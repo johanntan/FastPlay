@@ -1,5 +1,6 @@
 #include "player.h"
 #include "audio.h"
+#include "recorder.h"
 #include "globals.h"
 #include "utils.h"
 #include "http.h"
@@ -1262,12 +1263,40 @@ std::wstring GetTagFilename() {
 }
 
 // ---------------------------------------------------------------------------
-// Recording
+// Recording: what plays (after the effects, before the volume) to a file
 // ---------------------------------------------------------------------------
+
+static std::unique_ptr<audio::Recorder> g_recorder;
+
+static void RecordingTap(const float* samples, int frames, int, int, void* user) {
+    static_cast<audio::Recorder*>(user)->Write(samples, frames);
+}
+
+// The file name from the template, with the format's extension
+static std::wstring GenerateRecordingFilename(int format) {
+    time_t now = time(nullptr);
+    struct tm localTime;
+    LocalTime(now, localTime);
+    wchar_t buffer[256];
+    wcsftime(buffer, 256, g_recordTemplate.c_str(), &localTime);
+
+    const wchar_t* ext;
+    switch (format) {
+        case 1: ext = L".mp3"; break;
+        case 2: ext = L".ogg"; break;
+        case 3: ext = L".flac"; break;
+        default: ext = L".wav"; break;
+    }
+    return std::wstring(buffer) + ext;
+}
 
 void StopRecording() {
     if (!g_isRecording) return;
+    // No more blocks after this; then the file is finished
+    audio::SetTap(nullptr, nullptr);
+    g_recorder.reset();
     g_isRecording = false;
+
     Speak("Recording stopped");
     UpdateStatusBar();
 }
@@ -1277,5 +1306,48 @@ void ToggleRecording() {
         StopRecording();
         return;
     }
-    Speak("Recording is not available in this build yet");
+
+    // Need something playing to record
+    if (!audio::IsLoaded()) {
+        Speak("Nothing to record");
+        return;
+    }
+
+    // The folder: the one chosen, else Music, else the current directory
+    std::wstring outputPath = g_recordPath;
+    if (outputPath.empty()) {
+        outputPath = GetUserMusicDir();
+        if (outputPath.empty()) {
+            std::error_code ec;
+            outputPath = std::filesystem::current_path(ec).wstring();
+        }
+    }
+    {
+        std::error_code ec;
+        std::filesystem::create_directories(std::filesystem::path(outputPath), ec);
+    }
+    if (!outputPath.empty() && outputPath.back() != L'\\' && outputPath.back() != L'/') {
+        outputPath += kPathSeparator;
+    }
+
+    std::wstring error;
+    int format = std::clamp(g_recordFormat, 0, 3);
+    g_recorder = audio::Recorder::Start(outputPath + GenerateRecordingFilename(format),
+                                        static_cast<audio::RecordFormat>(format), g_recordBitrate,
+                                        audio::MixSampleRate(), error);
+    if (!g_recorder && format != 0) {
+        // Fall back to WAV if the chosen encoder cannot start
+        ShowMessage((error + L"\nRecording to WAV instead.").c_str(), APP_NAME, MessageIcon::Warning);
+        g_recorder = audio::Recorder::Start(outputPath + GenerateRecordingFilename(0), audio::RecordFormat::Wav,
+                                            g_recordBitrate, audio::MixSampleRate(), error);
+    }
+    if (!g_recorder) {
+        ShowMessage((L"Failed to start recording.\n\n" + error).c_str(), APP_NAME, MessageIcon::Error);
+        return;
+    }
+
+    audio::SetTap(RecordingTap, g_recorder.get());
+    g_isRecording = true;
+    Speak("Recording started");
+    UpdateStatusBar();
 }
