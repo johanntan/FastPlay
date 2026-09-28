@@ -20,6 +20,7 @@
 #include "tempo_processor.h"
 #include "spatial_audio.h"
 #include "bass_text.h"
+#include "mp4_chapters.h"
 #include "paths.h"
 #include <ctime>
 #include <filesystem>
@@ -776,8 +777,18 @@ static void ParseID3v2Chapters(HSTREAM stream) {
               [](const Chapter& a, const Chapter& b) { return a.position < b.position; });
 }
 
+// Whether a path names an MP4 file (M4A, M4B, MP4), by its extension
+static bool IsMp4Path(const wchar_t* path) {
+    const wchar_t* dot = wcsrchr(path, L'.');
+    if (!dot) return false;
+    for (const wchar_t* ext : {L".m4a", L".m4b", L".m4r", L".mp4"}) {
+        if (WStrICmp(dot, ext) == 0) return true;
+    }
+    return false;
+}
+
 // Parse chapters from the current stream
-void ParseChapters(HSTREAM stream) {
+void ParseChapters(HSTREAM stream, const wchar_t* path) {
     g_chapters.clear();
 
     if (!stream) return;
@@ -788,6 +799,11 @@ void ParseChapters(HSTREAM stream) {
     // If no chapters found, try ID3v2 format (MP3)
     if (g_chapters.empty()) {
         ParseID3v2Chapters(stream);
+    }
+
+    // MP4 keeps its chapters in the file's index rather than its tags
+    if (g_chapters.empty() && path && IsMp4Path(path)) {
+        ReadMp4Chapters(path, g_chapters);
     }
 }
 
@@ -941,7 +957,7 @@ bool LoadFile(const wchar_t* path) {
     // For SoundTouch, use g_fxStream since it owns g_stream
     // For push-based processors, use g_stream (original source)
     HSTREAM chapterStream = g_stream ? g_stream : g_fxStream;
-    ParseChapters(chapterStream);
+    ParseChapters(chapterStream, path);
 
     g_isLoading = false;
     UpdateWindowTitle();

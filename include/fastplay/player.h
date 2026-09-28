@@ -29,8 +29,9 @@ void SeekTracks(int tracks);
 void SeekToPosition(double seconds);
 double GetCurrentPosition();
 
-// Chapter support
-void ParseChapters(HSTREAM stream);
+// Chapter support. The chapters of the stream's tags, or, given the file's path,
+// of the file itself (MP4 keeps them outside the tags).
+void ParseChapters(HSTREAM stream, const wchar_t* path = nullptr);
 bool SeekToNextChapter();
 bool SeekToPrevChapter();
 int GetCurrentChapterIndex();

@@ -118,6 +118,7 @@ set(FASTPLAY_SOURCES
     src/globals.cpp
     src/hotkeys.cpp
     src/http_common.cpp
+    src/mp4_chapters.cpp
     src/mp4_remux.cpp
     src/player.cpp
     src/playlist_io.cpp
