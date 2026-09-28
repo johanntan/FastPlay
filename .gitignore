@@ -60,3 +60,5 @@ Thumbs.db
 
 # CMake build tree (dependencies are fetched into it)
 build/
+ci/ffmpeg/work/
+/ffmpeg/

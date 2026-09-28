@@ -2,7 +2,8 @@ name: Build
 
 on:
   push:
-    branches: [master]
+    # audio-engine: the move from BASS to miniaudio and FFmpeg. Built, never released.
+    branches: [master, audio-engine]
   workflow_dispatch:
 
 permissions:
@@ -26,6 +27,37 @@ jobs:
 
       - name: Download dependencies
         run: .\download-deps.bat
+
+      # FastPlay's audio-only FFmpeg (ci/ffmpeg), built again only when its build
+      # script or version changes. Uploaded for local builds (download-deps fetches it).
+      - name: Cache FFmpeg
+        id: ffmpeg-cache
+        uses: actions/cache@v4
+        with:
+          path: ffmpeg
+          key: ffmpeg-windows-${{ hashFiles('ci/ffmpeg/**') }}
+
+      - name: Set up MSYS2 for the FFmpeg build
+        if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MSYS
+          path-type: inherit
+          install: make diffutils nasm pkgconf
+
+      - name: Build FFmpeg
+        if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
+        shell: msys2 {0}
+        run: |
+          # MSYS2's coreutils link.exe would shadow the MSVC linker
+          rm -f /usr/bin/link.exe
+          JOBS=4 bash ci/ffmpeg/build.sh windows ffmpeg
+
+      - name: Upload FFmpeg
+        uses: actions/upload-artifact@v4
+        with:
+          name: ffmpeg-windows
+          path: ffmpeg
 
       # CMake fetches and builds wxWidgets and UniversalSpeech into build\ on the
       # first build; keep that between runs so each build does not repeat it.
@@ -89,6 +121,23 @@ jobs:
         run: |
           chmod +x download-deps.sh
           ./download-deps.sh
+
+      - name: Cache FFmpeg
+        id: ffmpeg-cache
+        uses: actions/cache@v4
+        with:
+          path: ffmpeg
+          key: ffmpeg-macos-${{ hashFiles('ci/ffmpeg/**') }}
+
+      - name: Build FFmpeg
+        if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
+        run: JOBS="$(sysctl -n hw.ncpu)" bash ci/ffmpeg/build.sh macos ffmpeg
+
+      - name: Upload FFmpeg
+        uses: actions/upload-artifact@v4
+        with:
+          name: ffmpeg-macos
+          path: ffmpeg
 
       # As on Windows: keep the fetched and built wxWidgets between runs.
       - name: Cache CMake dependencies
