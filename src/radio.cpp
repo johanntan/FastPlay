@@ -343,6 +343,12 @@ static std::vector<StreamOption> ParsePlaylistContentMultiple(const std::string&
     return urls;
 }
 
+// An HLS playlist is the stream itself (BASSHLS plays it); its entries are
+// variants or few-second segments, not alternative stream addresses.
+static bool IsHlsPlaylist(const std::wstring& content) {
+    return content.find(L"#EXT-X-") != std::wstring::npos;
+}
+
 // Resolve a TuneIn playlist URL to get the actual stream URL
 static std::wstring ResolveTuneInUrl(const std::wstring& playlistUrl) {
     std::wstring currentUrl = playlistUrl;
@@ -351,6 +357,7 @@ static std::wstring ResolveTuneInUrl(const std::wstring& playlistUrl) {
     for (int i = 0; i < 3; i++) {
         std::wstring content = RadioHttpGet(currentUrl);
         if (content.empty()) return L"";
+        if (IsHlsPlaylist(content)) return currentUrl;
 
         // Convert to narrow string for parsing
         std::string narrow = WideToUtf8(content);
@@ -381,6 +388,10 @@ static std::vector<StreamOption> ResolveTuneInUrls(const std::wstring& playlistU
     // First fetch the playlist
     std::wstring content = RadioHttpGet(currentUrl);
     if (content.empty()) return result;
+    if (IsHlsPlaylist(content)) {
+        result.push_back({currentUrl, L"HLS"});
+        return result;
+    }
 
     std::string narrow = WideToUtf8(content);
 
@@ -391,6 +402,7 @@ static std::vector<StreamOption> ResolveTuneInUrls(const std::wstring& playlistU
     if (result.size() == 1 && IsPlaylistUrl(result[0].url)) {
         // Single result is another playlist, follow it
         std::wstring nested = RadioHttpGet(result[0].url);
+        if (IsHlsPlaylist(nested)) return result;
         if (!nested.empty()) {
             std::string nestedNarrow = WideToUtf8(nested);
             auto nestedUrls = ParsePlaylistContentMultiple(nestedNarrow);
@@ -427,9 +439,7 @@ std::wstring ResolvePlaylistUrl(const std::wstring& url) {
         std::wstring content = RadioHttpGet(currentUrl);
         if (content.empty()) return url;  // Fetch failed - fall back to original.
 
-        // An HLS playlist is the stream itself (BASSHLS plays it); its entries are
-        // variants or few-second segments, not alternative stream addresses.
-        if (content.find(L"#EXT-X-") != std::wstring::npos) return currentUrl;
+        if (IsHlsPlaylist(content)) return currentUrl;
 
         std::string narrow = WideToUtf8(content);
         std::vector<StreamOption> options = ParsePlaylistContentMultiple(narrow);
@@ -598,8 +608,16 @@ bool SearchIHeartRadio(const std::wstring& query, std::vector<RadioSearchResult>
     std::wstring url = L"https://api.iheart.com/api/v2/content/liveStations?countryCode=US&limit=20&q=" + RadioUrlEncode(query);
     std::wstring json = RadioHttpGet(url, L"Accept: application/json\r\n");
 
-    // If v2 fails, try v3
-    if (json.empty() || json.find(L"\"hits\"") == std::wstring::npos) {
+    // If v2 fails or finds nothing, try v3 (v2 search now answers every query
+    // with an empty "hits" list)
+    bool v2Found = false;
+    size_t v2Hits = json.find(L"\"hits\"");
+    if (v2Hits != std::wstring::npos) {
+        size_t open = json.find(L'[', v2Hits);
+        size_t first = open == std::wstring::npos ? open : json.find_first_not_of(L" \t\r\n", open + 1);
+        v2Found = first != std::wstring::npos && json[first] != L']';
+    }
+    if (!v2Found) {
         url = L"https://api.iheart.com/api/v3/search/all?keywords=" + RadioUrlEncode(query) +
               L"&startIndex=0&maxRows=20";
         json = RadioHttpGet(url, L"Accept: application/json\r\n");
