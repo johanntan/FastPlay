@@ -528,6 +528,15 @@ bool LoadURL(const wchar_t* url) {
     // Start playback
     BASS_ChannelPlay(g_fxStream, FALSE);
 
+    // Chapters, as a file has them: a podcast episode played from its URL has the
+    // same tags as the downloaded file (the source is owned by the tempo stream
+    // for SoundTouch, which passes its tags on)
+    if (g_isLiveStream) {
+        g_chapters.clear();
+    } else {
+        ParseChapters(g_stream ? g_stream : g_fxStream);
+    }
+
     g_isLoading = false;
     UpdateWindowTitle();
     UpdateStatusBar();
