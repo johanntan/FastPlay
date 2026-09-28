@@ -80,11 +80,15 @@ case "$platform" in
             --enable-schannel
         cp -r "$work/install-x64/include" "$out/include"
         mkdir -p "$out/lib"
-        # The MSVC toolchain names static libraries libX.a; they are .lib files.
-        for f in "$work/install-x64/lib"/lib*.a; do
-            base="$(basename "$f" .a)"
+        # Static libraries come out as X.lib (or, from older FFmpeg, libX.a)
+        for f in "$work/install-x64/lib"/*.lib "$work/install-x64/lib"/lib*.a; do
+            [ -e "$f" ] || continue
+            base="$(basename "$f")"
+            base="${base%.lib}"
+            base="${base%.a}"
             cp "$f" "$out/lib/${base#lib}.lib"
         done
+        ls "$out/lib"/*.lib > /dev/null
         ;;
     macos)
         min="-mmacosx-version-min=11.0"
@@ -97,7 +101,7 @@ case "$platform" in
                 --cc="clang -arch $arch" \
                 --extra-cflags="$min" --extra-ldflags="$min -arch $arch" \
                 --enable-securetransport --enable-zlib \
-                "${extra[@]}"
+                ${extra[@]+"${extra[@]}"}
         done
         cp -r "$work/install-arm64/include" "$out/include"
         mkdir -p "$out/lib"
