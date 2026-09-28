@@ -135,6 +135,33 @@ int WStrICmp(const wchar_t* a, const wchar_t* b) {
     return WStrNICmp(a, b, static_cast<size_t>(-1));
 }
 
+int WStrNaturalCmp(const wchar_t* a, const wchar_t* b) {
+    auto isDigit = [](wchar_t c) { return c >= L'0' && c <= L'9'; };
+    while (*a && *b) {
+        if (isDigit(*a) && isDigit(*b)) {
+            // Two numbers: the longer one, past leading zeros, is the larger; of
+            // two the same length, the first differing digit decides.
+            while (*a == L'0') a++;
+            while (*b == L'0') b++;
+            const wchar_t* aEnd = a;
+            const wchar_t* bEnd = b;
+            while (isDigit(*aEnd)) aEnd++;
+            while (isDigit(*bEnd)) bEnd++;
+            if (aEnd - a != bEnd - b) return aEnd - a < bEnd - b ? -1 : 1;
+            for (; a < aEnd; a++, b++) {
+                if (*a != *b) return *a < *b ? -1 : 1;
+            }
+            continue;
+        }
+        wchar_t x = towlower(*a), y = towlower(*b);
+        if (x != y) return x < y ? -1 : 1;
+        a++;
+        b++;
+    }
+    if (*a == *b) return 0;
+    return *a ? 1 : -1;
+}
+
 int StrNICmp(const char* a, const char* b, size_t count) {
     for (size_t i = 0; i < count; i++) {
         unsigned char x = static_cast<unsigned char>(a[i]);

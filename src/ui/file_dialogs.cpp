@@ -10,6 +10,7 @@
 
 #include <wx/dirdlg.h>
 #include <wx/filedlg.h>
+#include "utils.h"
 #include <algorithm>
 #include <string>
 
@@ -64,10 +65,12 @@ void ShowAddFolderDialog() {
                     wxDD_DEFAULT_STYLE | wxDD_DIR_MUST_EXIST);
     if (dlg.ShowModal() != wxID_OK) return;
 
-    // Collect all audio files recursively, sorted alphabetically
+    // Collect all audio files recursively, in natural order ("2" before "10")
     std::vector<std::wstring> newFiles;
     AddFilesFromFolder(WS(dlg.GetPath()), newFiles);
-    std::sort(newFiles.begin(), newFiles.end());
+    std::sort(newFiles.begin(), newFiles.end(), [](const std::wstring& a, const std::wstring& b) {
+        return WStrNaturalCmp(a.c_str(), b.c_str()) < 0;
+    });
 
     if (!newFiles.empty()) {
         // Replace playlist with new files and start from the beginning

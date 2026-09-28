@@ -33,7 +33,6 @@ static bool ListFolder(const std::wstring& dir, bool skipLinks, std::vector<Fold
         entries.push_back({fd.cFileName, (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0});
     } while (FindNextFileW(hFind, &fd));
     FindClose(hFind);
-    return true;
 #else
     std::error_code ec;
     std::filesystem::directory_iterator it(std::filesystem::path(dir), ec);
@@ -42,11 +41,13 @@ static bool ListFolder(const std::wstring& dir, bool skipLinks, std::vector<Fold
         if (skipLinks && entry.is_symlink(ec)) continue;
         entries.push_back({entry.path().filename().wstring(), entry.is_directory(ec)});
     }
+#endif
+    // In the order a person would put them: "track 2" before "track 10" (the file
+    // system's own order, where it has one, puts the digits in dictionary order).
     std::sort(entries.begin(), entries.end(), [](const FolderEntry& a, const FolderEntry& b) {
-        return WStrICmp(a.name.c_str(), b.name.c_str()) < 0;
+        return WStrNaturalCmp(a.name.c_str(), b.name.c_str()) < 0;
     });
     return true;
-#endif
 }
 
 static bool IsFolder(const std::wstring& path) {

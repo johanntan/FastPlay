@@ -21,6 +21,9 @@ std::wstring FormatTime(double seconds);
 
 // Case-insensitive comparison (as _wcsicmp / _wcsnicmp)
 int WStrICmp(const wchar_t* a, const wchar_t* b);
+// The same, with runs of digits compared by their value, so that "file 2" sorts
+// before "file 10" as a person would put them.
+int WStrNaturalCmp(const wchar_t* a, const wchar_t* b);
 int WStrNICmp(const wchar_t* a, const wchar_t* b, size_t count);
 // ASCII case-insensitive comparison of narrow strings (as _stricmp / _strnicmp)
 int StrICmp(const char* a, const char* b);
