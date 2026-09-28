@@ -8,6 +8,11 @@
 #include <cmath>
 #include <cstring>
 
+#if defined(_M_X64) || defined(_M_IX86) || defined(__x86_64__) || defined(__i386__)
+#include <xmmintrin.h>
+#define FASTPLAY_X86_FTZ 1
+#endif
+
 using namespace fastplay::audio;
 
 static constexpr float RAD2DEG = 180.0f / 3.14159265358979f;
@@ -394,6 +399,16 @@ void SpatialAudio::UpdateListener() {
 }
 
 void SpatialAudio::ProcessSpeakers(float* buffer, int frameCount, float blend) {
+#ifdef FASTPLAY_X86_FTZ
+    // Reverb tails and filters decaying into silence reach denormal numbers,
+    // which x86 processors handle many times slower. Flush them to zero while
+    // the room renders (ARM has no such penalty).
+    struct FlushDenormals {
+        unsigned saved = _mm_getcsr();
+        FlushDenormals() { _mm_setcsr(saved | 0x8040); }  // FTZ and DAZ
+        ~FlushDenormals() { _mm_setcsr(saved); }
+    } flush;
+#endif
     UpdateListener();
     if (blend >= 1.0f) {
         m_engine->RenderInterleaved(buffer, buffer, frameCount);

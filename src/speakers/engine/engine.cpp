@@ -90,15 +90,23 @@ constexpr float kShellDb = -11.0f;
 // balance alone. The shaper stays behind it, doing nothing until something
 // gets past, so a system built to be far too loud still distorts rather than
 // wrapping round into noise.
-constexpr float kLimitCeiling = 0.92f;
-constexpr float kLimitAttackSeconds = 0.003f;
+//
+// "Behind it" means above the ceiling. With the shaper's knee below the
+// ceiling, everything the limiter let through between the two was bent too --
+// and what an ear would make of a loud system (below) lifts the bass right up
+// to the ceiling whenever there is room, so bass-heavy music spent a tenth of
+// its samples in the shaper, audible as a crackle on the loud notes.
+constexpr float kLimitCeiling = 0.89f;
+constexpr float kShaperKnee = 0.9f;
+constexpr float kLimitLookAheadSeconds = 0.0015f;
 constexpr float kLimitReleaseSeconds = 0.18f;
 
 inline float OutputLimit(float x) {
     float a = std::fabs(x);
-    if (a <= 0.7f) return x;
+    if (a <= kShaperKnee) return x;
     float sign = x < 0.0f ? -1.0f : 1.0f;
-    return sign * (0.7f + 0.3f * std::tanh((a - 0.7f) / 0.3f));
+    float room = 1.0f - kShaperKnee;
+    return sign * (kShaperKnee + room * std::tanh((a - kShaperKnee) / room));
 }
 
 // How far past its nominal level the system is being asked to run, turned
@@ -153,8 +161,14 @@ void Engine::Init(float sampleRate, int maxBlockFrames) {
     m_feelScratchR.assign((size_t)m_maxBlock, 0.0f);
     m_feelRelease = 1.0f - std::exp(-1.0f / (kFeelReleaseSeconds * sampleRate));
     m_feelFall = 1.0f - std::exp(-1.0f / (0.02f * sampleRate));
-    m_limitAttack = 1.0f - std::exp(-1.0f / (kLimitAttackSeconds * sampleRate));
     m_limitRelease = 1.0f - std::exp(-1.0f / (kLimitReleaseSeconds * sampleRate));
+    m_ahead = std::max(1, std::min(1024, (int)std::lround(kLimitLookAheadSeconds * sampleRate)));
+    m_aheadL.assign((size_t)m_ahead, 0.0f);
+    m_aheadR.assign((size_t)m_ahead, 0.0f);
+    m_aheadNeed.assign((size_t)m_ahead, 1.0f);
+    m_aheadHold.assign((size_t)m_ahead, 1.0f);
+    m_aheadSum = m_ahead;
+    m_aheadPos = 0;
     m_room.Derive();
 }
 
@@ -257,6 +271,12 @@ void Engine::Reset() {
     m_feelMakeup = 1.0f;
     m_feelDb = 0.0f;
     m_limitGain = 1.0f;
+    std::fill(m_aheadL.begin(), m_aheadL.end(), 0.0f);
+    std::fill(m_aheadR.begin(), m_aheadR.end(), 0.0f);
+    std::fill(m_aheadNeed.begin(), m_aheadNeed.end(), 1.0f);
+    std::fill(m_aheadHold.begin(), m_aheadHold.end(), 1.0f);
+    m_aheadSum = m_ahead;
+    m_aheadPos = 0;
     m_feelBlend = -1.0f;
     for (int i = 0; i < kFeelStages; ++i) {
         m_feelL[i].Reset();
@@ -419,18 +439,34 @@ void Engine::Render(const float *inL, const float *inR, int frames, float *outL,
     // ---- the limiter -----------------------------------------------------
     // The master level was applied by the speakers themselves. Only the
     // ceiling is left to enforce.
+    //
+    // For the sample leaving the delay, the gain is the average of the least
+    // gain needed around each of the next few samples. Every one of those
+    // windows covers this sample, so the average is never more than it needs:
+    // nothing gets past the ceiling, and the gain slides down over the whole
+    // look-ahead instead of jumping. It comes back up slowly.
+    const int ahead = m_ahead;
     for (int i = 0; i < frames; ++i) {
-        float a = std::max(std::fabs(outL[i]), std::fabs(outR[i]));
+        float l = outL[i], r = outR[i];
+        float a = std::max(std::fabs(l), std::fabs(r));
         m_peak = std::max(m_peak, a);
 
-        // How much gain this sample can be allowed, and a follower that
-        // reaches for it quickly on the way down and slowly on the way back.
-        float want = a > kLimitCeiling ? kLimitCeiling / a : 1.0f;
-        float rate = want < m_limitGain ? m_limitAttack : m_limitRelease;
-        m_limitGain += (want - m_limitGain) * rate;
+        int p = m_aheadPos;
+        float delayedL = m_aheadL[(size_t)p], delayedR = m_aheadR[(size_t)p];
+        float target = (float)(m_aheadSum / ahead);
 
-        outL[i] = OutputLimit(outL[i] * m_limitGain);
-        outR[i] = OutputLimit(outR[i] * m_limitGain);
+        m_aheadNeed[(size_t)p] = a > kLimitCeiling ? kLimitCeiling / a : 1.0f;
+        float hold = 1.0f;
+        for (float need : m_aheadNeed) hold = std::min(hold, need);
+        m_aheadSum += hold - m_aheadHold[(size_t)p];
+        m_aheadHold[(size_t)p] = hold;
+        m_aheadL[(size_t)p] = l;
+        m_aheadR[(size_t)p] = r;
+        m_aheadPos = p + 1 == ahead ? 0 : p + 1;
+
+        m_limitGain = target < m_limitGain ? target : m_limitGain + (target - m_limitGain) * m_limitRelease;
+        outL[i] = OutputLimit(delayedL * m_limitGain);
+        outR[i] = OutputLimit(delayedR * m_limitGain);
     }
 }
 

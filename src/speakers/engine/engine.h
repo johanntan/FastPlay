@@ -144,8 +144,19 @@ private:
 
     // The output stage holds its ceiling by gain rather than by shaping, so
     // that a loud bass note does not eat the rest of the music with it.
+    //
+    // It looks ahead: the output is a millisecond and a half late, and the gain
+    // for each sample is already down by the time a peak arrives, ramped over
+    // that time rather than snapped. Reacting to a peak as it came meant the
+    // first half cycle of every bass note got past before the gain had fallen.
     float m_limitGain = 1.0f;
-    float m_limitAttack = 0.0f, m_limitRelease = 0.0f;
+    float m_limitRelease = 0.0f;
+    int m_ahead = 1;                           // look-ahead, in samples
+    int m_aheadPos = 0;
+    std::vector<float> m_aheadL, m_aheadR;     // the output, delayed
+    std::vector<float> m_aheadNeed;            // the gain each of those samples needs
+    std::vector<float> m_aheadHold;            // the least needed near each one
+    double m_aheadSum = 0.0;                   // of m_aheadHold
 
     float m_peak = 0.0f;
     std::string m_emptyLabel;
