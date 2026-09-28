@@ -2,21 +2,23 @@
 #ifndef FASTPLAY_PLAYER_H
 #define FASTPLAY_PLAYER_H
 
+// Playback as the rest of FastPlay sees it: the playlist, tracks, seeking, volume,
+// devices, tags and recording, on top of the audio engine (audio.h).
+
 #include <string>
 #include <vector>
-#include "bass.h"
 
-// BASS initialization
-// windowHandle: the main window's native handle (see GetMainWindowHandle()).
-bool InitBass(void* windowHandle);
-void FreeBass();
-void LoadBassPlugins();
-std::wstring GetLoadedPluginsInfo();
+// The audio engine, on the saved device (or the default)
+bool InitAudio();
+void FreeAudio();
+// What the engine is and plays through, for Help
+std::wstring GetAudioEngineInfo();
 
 // Playback control
 bool LoadFile(const wchar_t* path);
 bool LoadURL(const wchar_t* url);
 bool IsURL(const wchar_t* path);
+bool IsPlaying();
 void PlayPause();
 void Play();
 void Pause();
@@ -28,10 +30,9 @@ void Seek(double seconds);
 void SeekTracks(int tracks);
 void SeekToPosition(double seconds);
 double GetCurrentPosition();
+double GetCurrentLength();  // 0 for a live stream
 
-// Chapter support. The chapters of the stream's tags, or, given the file's path,
-// of the file itself (MP4 keeps them outside the tags).
-void ParseChapters(HSTREAM stream, const wchar_t* path = nullptr);
+// Chapters
 bool SeekToNextChapter();
 bool SeekToPrevChapter();
 int GetCurrentChapterIndex();
@@ -40,6 +41,7 @@ int GetCurrentChapterIndex();
 void SetVolume(float vol);
 void ToggleMute();
 void RefreshReplayGain();  // Recompute and re-apply ReplayGain for the current track (after settings change)
+void UpdateOutputGain();   // Apply volume, mute and ReplayGain
 
 // Track navigation
 void NextTrack(bool autoPlay = true);
@@ -48,24 +50,23 @@ void PlayTrack(int index, bool autoPlay = true);
 void ToggleRepeatMode();
 void ResetShuffleOrder();  // Discard the current shuffle order (fresh shuffle on next advance)
 
-// Track end callback
-void CALLBACK OnTrackEnd(HSYNC handle, DWORD channel, DWORD data, void* user);
-
-// Stream metadata change callback (for internet radio)
-void CALLBACK OnMetaChange(HSYNC handle, DWORD channel, DWORD data, void* user);
+// A stream's title changed (internet radio): record it, and say it if wanted
 void AnnounceStreamMetadata();
 
-// Device management
-bool ReinitBass(int device);
+// Devices. A device is its number in the system's list, from 1; -1 the default.
+bool SwitchAudioDevice(int device);
 int FindDeviceByName(const std::wstring& name);
 std::wstring GetDeviceName(int device);
 struct AudioDeviceInfo {
-    int index;          // BASS device number
+    int index;          // device number
     std::wstring name;
     bool current;       // the device FastPlay is using
 };
 std::vector<AudioDeviceInfo> GetAudioDevices();
 void SelectAudioDevice(int deviceIndex);
+
+// MIDI settings (SoundFont, voices)
+void ApplyMidiSettings();
 
 // Speak functions
 void SpeakElapsed();
@@ -82,6 +83,7 @@ void SpeakTagGenre();
 void SpeakTagComment();
 void SpeakTagBitrate();
 int GetCurrentBitrate();  // Returns current stream bitrate in kbps, or 0 if unavailable
+bool IsCurrentVbr();      // A variable bitrate file
 void SpeakTagDuration();
 void SpeakTagFilename();
 

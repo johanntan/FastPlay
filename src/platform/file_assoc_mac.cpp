@@ -2,7 +2,7 @@
 // Info.plist; registering makes FastPlay the default app for each of them, as
 // Finder's "Change All..." would.
 
-// Before FastPlay's headers: bass.h (through globals.h) defines Windows-style names.
+// Before FastPlay's headers, as the system headers expect to come first.
 #include <CoreServices/CoreServices.h>
 
 #include "file_assoc.h"

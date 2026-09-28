@@ -94,6 +94,19 @@ if(WIN32)
     set(UNIVERSALSPEECH_DIR ${universalspeech_SOURCE_DIR})
 endif()
 
+# --- miniaudio ---
+# Audio output: the playback devices on every system (WASAPI, Core Audio...).
+# One header, compiled once by src/audio/miniaudio.c.
+FetchContent_Declare(miniaudio
+    GIT_REPOSITORY https://github.com/mackron/miniaudio.git
+    GIT_TAG 0.11.25
+    GIT_SHALLOW TRUE
+)
+FetchContent_GetProperties(miniaudio)
+if(NOT miniaudio_POPULATED)
+    FetchContent_Populate(miniaudio)  # the header only; not its own build
+endif()
+
 option(FASTPLAY_SPEECH "Screen reader speech through UniversalSpeech" ON)
 
 # Configure only the dependencies (used to start the long wxWidgets build early).
@@ -105,11 +118,20 @@ endif()
 # ---------------------------------------------------------------------------
 # FastPlay
 # ---------------------------------------------------------------------------
-# BASS and the tempo libraries come from download-deps.bat
-# (include/, lib/ and deps/); SQLite's amalgamation is src/sqlite3.c.
+# FFmpeg is FastPlay's own audio-only build (ci/ffmpeg), in ffmpeg/: built by CI,
+# fetched for local builds by download-deps. The tempo libraries come from
+# download-deps (deps/); SQLite's amalgamation is src/sqlite3.c.
+set(FASTPLAY_FFMPEG_DIR ${CMAKE_CURRENT_SOURCE_DIR}/ffmpeg)
+if(NOT EXISTS ${FASTPLAY_FFMPEG_DIR}/include/libavformat/avformat.h)
+    message(FATAL_ERROR "FFmpeg is missing from ffmpeg/. Run download-deps, or build it with ci/ffmpeg/build.sh.")
+endif()
 
 set(FASTPLAY_SOURCES
-    src/bass_text.cpp
+    src/audio/decoder_ffmpeg.cpp
+    src/audio/decoders.cpp
+    src/audio/engine.cpp
+    src/audio/miniaudio.c
+    src/audio/tempo_processor.cpp
     src/center_cancel.cpp
     src/convolution.cpp
     src/database.cpp
@@ -128,7 +150,6 @@ set(FASTPLAY_SOURCES
     src/scheduler.cpp
     src/settings.cpp
     src/spatial_audio.cpp
-    src/tempo_processor.cpp
     src/updater.cpp
     src/utils.cpp
     src/xheaac.cpp
@@ -209,7 +230,7 @@ endif()
 
 add_executable(FastPlay WIN32 MACOSX_BUNDLE ${FASTPLAY_SOURCES})
 
-# Fraunhofer FDK AAC, for xHE-AAC, which no BASS decoder handles. Its decoder only;
+# Fraunhofer FDK AAC, for xHE-AAC (src/xheaac.cpp). Its decoder only;
 # nothing of it is installed.
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 set(BUILD_PROGRAMS OFF CACHE BOOL "" FORCE)
@@ -225,8 +246,11 @@ set_source_files_properties(src/sqlite3.c deps/speedy/speedy.c deps/speedy/sonic
 
 target_include_directories(FastPlay PRIVATE
     src
+    src/audio
     include
     include/fastplay
+    ${FASTPLAY_FFMPEG_DIR}/include
+    ${miniaudio_SOURCE_DIR}
     deps/speedy
     deps/sonic
     deps/kissfft
@@ -236,6 +260,8 @@ target_include_directories(FastPlay PRIVATE
 target_compile_definitions(FastPlay PRIVATE
     USE_SPEEDY KISS_FFT SONIC_INTERNAL
     USE_SIGNALSMITH
+    # miniaudio: only its devices and ring buffer
+    MA_NO_DECODING MA_NO_ENCODING MA_NO_GENERATION MA_NO_ENGINE MA_NO_RESOURCE_MANAGER MA_NO_NODE_GRAPH
     $<$<BOOL:${FASTPLAY_SPEECH}>:USE_UNIVERSAL_SPEECH>
 )
 
@@ -295,16 +321,14 @@ if(WIN32 AND FASTPLAY_SPEECH)
 endif()
 
 if(WIN32)
-    # BASS and friends load from lib\ beside the executable (see PlatformStartup),
-    # delay-loaded so the search path can be set first.
-    target_link_directories(FastPlay PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/lib)
+    # FFmpeg's static libraries, and what they use of Windows (sockets, TLS through
+    # SChannel, random numbers)
     target_link_libraries(FastPlay PRIVATE
-        bass bass_fx bass_aac bassmidi bassenc bassenc_mp3 bassenc_ogg bassenc_flac
-        delayimp user32 comctl32 comdlg32 shell32 shlwapi advapi32 ole32 oleaut32
+        ${FASTPLAY_FFMPEG_DIR}/lib/avformat.lib ${FASTPLAY_FFMPEG_DIR}/lib/avcodec.lib
+        ${FASTPLAY_FFMPEG_DIR}/lib/swresample.lib ${FASTPLAY_FFMPEG_DIR}/lib/avutil.lib
+        ws2_32 secur32 ncrypt crypt32 bcrypt
+        user32 comctl32 comdlg32 shell32 shlwapi advapi32 ole32 oleaut32
         uuid version psapi wininet winhttp)
-    target_link_options(FastPlay PRIVATE
-        /DELAYLOAD:bass.dll /DELAYLOAD:bass_fx.dll /DELAYLOAD:bass_aac.dll /DELAYLOAD:bassmidi.dll
-        /DELAYLOAD:bassenc.dll /DELAYLOAD:bassenc_mp3.dll /DELAYLOAD:bassenc_ogg.dll /DELAYLOAD:bassenc_flac.dll)
 
     # FastPlay.exe goes to the repository root, where dist.bat and the installer expect it.
     set_target_properties(FastPlay PROPERTIES
@@ -314,21 +338,19 @@ if(WIN32)
 endif()
 
 if(APPLE)
-    # BASS and friends come from lib/mac (download-deps.sh). Their install names are
-    # @rpath/<name>, found in FastPlay.app/Contents/Frameworks.
-    set(FASTPLAY_MAC_LIB_DIR ${CMAKE_CURRENT_SOURCE_DIR}/lib/mac)
-    # (No bass_aac: it has no Apple silicon build, and Core Audio decodes AAC.)
-    foreach(name bass bass_fx bassmidi bassenc bassenc_mp3 bassenc_ogg bassenc_flac)
-        target_link_libraries(FastPlay PRIVATE ${FASTPLAY_MAC_LIB_DIR}/lib${name}.dylib)
-    endforeach()
+    # FFmpeg's static libraries (universal), with what they use of macOS (TLS through
+    # Secure Transport, zlib); miniaudio plays through Core Audio.
     target_link_libraries(FastPlay PRIVATE
+        ${FASTPLAY_FFMPEG_DIR}/lib/libavformat.a ${FASTPLAY_FFMPEG_DIR}/lib/libavcodec.a
+        ${FASTPLAY_FFMPEG_DIR}/lib/libswresample.a ${FASTPLAY_FFMPEG_DIR}/lib/libavutil.a
+        z "-framework Security" "-framework CoreFoundation" "-framework CoreAudio" "-framework AudioToolbox"
         "-framework AppKit" "-framework AVFoundation" "-framework Carbon"
         "-framework CoreServices" "-framework MediaPlayer")
     set_source_files_properties(src/platform/speech_mac.mm src/platform/system_keys_mac.mm
         src/platform/menu_keys_mac.mm PROPERTIES COMPILE_OPTIONS -fobjc-arc)
 
-    # The app bundle: Info.plist with the version from version.h, the libraries in
-    # Contents/Frameworks and the documentation in Contents/Resources/docs.
+    # The app bundle: Info.plist with the version from version.h and the
+    # documentation in Contents/Resources/docs.
     file(STRINGS include/fastplay/version.h FASTPLAY_VERSION_LINE REGEX "#define APP_VERSION ")
     string(REGEX REPLACE ".*\"([^\"]+)\".*" "\\1" FASTPLAY_VERSION "${FASTPLAY_VERSION_LINE}")
     configure_file(res/mac/Info.plist.in ${CMAKE_CURRENT_BINARY_DIR}/Info.plist @ONLY)
@@ -337,11 +359,7 @@ if(APPLE)
         BUILD_WITH_INSTALL_RPATH TRUE
         INSTALL_RPATH "@executable_path/../Frameworks")
 
-    file(GLOB FASTPLAY_MAC_DYLIBS ${FASTPLAY_MAC_LIB_DIR}/*.dylib)
     add_custom_command(TARGET FastPlay POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_BUNDLE_CONTENT_DIR:FastPlay>/Frameworks
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different ${FASTPLAY_MAC_DYLIBS}
-            $<TARGET_BUNDLE_CONTENT_DIR:FastPlay>/Frameworks
         COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_CURRENT_SOURCE_DIR}/docs
             $<TARGET_BUNDLE_CONTENT_DIR:FastPlay>/Resources/docs)
 endif()

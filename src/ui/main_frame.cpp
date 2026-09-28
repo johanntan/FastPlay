@@ -17,7 +17,7 @@
 #include "updater.h"
 #include "playlist_io.h"
 #include "scheduler.h"
-#include "tempo_processor.h"
+#include "audio.h"
 #include "utils.h"
 #include "keycodes.h"
 #ifdef __WXOSX__
@@ -110,7 +110,7 @@ MainFrame::~MainFrame() {
 }
 
 bool MainFrame::Initialize() {
-    if (!InitBass(GetHandle())) {
+    if (!InitAudio()) {
         return false;
     }
 
@@ -212,7 +212,7 @@ void MainFrame::BuildMenuBar() {
     help->Append(IDM_HELP_README, "&Readme");
     help->Append(IDM_HELP_UPDATES, "Check for &Updates...");
     help->AppendSeparator();
-    help->Append(IDM_HELP_PLUGINS, "&Loaded Plugins...");
+    help->Append(IDM_HELP_PLUGINS, "&Audio Engine...");
 
     auto* bar = new wxMenuBar();
     bar->Append(file, "&File");
@@ -529,7 +529,7 @@ void MainFrame::RunCommand(int id, int param) {
         case IDM_FILE_HIDE_TRAY: HideToTray(); break;
         case IDM_TOOLS_OPTIONS: ShowOptionsDialog(); break;
         case IDM_HELP_PLUGINS:
-            wxMessageBox(WX(GetLoadedPluginsInfo()), "Loaded Plugins", wxOK | wxICON_INFORMATION, this);
+            wxMessageBox(WX(GetAudioEngineInfo()), "Audio Engine", wxOK | wxICON_INFORMATION, this);
             break;
         case IDM_HELP_UPDATES: ShowCheckForUpdatesDialog(false); break;
         case IDM_HELP_README: {
@@ -771,24 +771,19 @@ void MainFrame::UpdateStatus() {
     std::wstring posText = L"--:-- / --:--";
     std::wstring stateText;
 
-    if (g_fxStream) {
-        double pos = 0, len = 0;
-        TempoProcessor* processor = GetTempoProcessor();
-        if (processor && processor->IsActive()) {
-            pos = processor->GetPosition();
-            len = processor->GetLength();
-            if (len > 0) {
-                posText = FormatTime(pos) + L" / " + FormatTime(len);
-            }
+    if (audio::IsLoaded()) {
+        double pos = audio::Position(), len = audio::Length();
+        if (len > 0) {
+            posText = FormatTime(pos) + L" / " + FormatTime(len);
         }
 #ifdef __WXOSX__
-        UpdateNowPlaying(m_nowPlayingTitle, len, pos, BASS_ChannelIsActive(g_fxStream) == BASS_ACTIVE_PLAYING);
+        UpdateNowPlaying(m_nowPlayingTitle, len, pos, IsPlaying());
 #endif
 
-        switch (BASS_ChannelIsActive(g_fxStream)) {
-            case BASS_ACTIVE_PLAYING: stateText = L"Playing"; break;
-            case BASS_ACTIVE_PAUSED:  stateText = L"Paused"; break;
-            case BASS_ACTIVE_STOPPED: stateText = L"Stopped"; break;
+        switch (audio::GetState()) {
+            case audio::State::Playing: stateText = L"Playing"; break;
+            case audio::State::Paused:  stateText = L"Paused"; break;
+            case audio::State::Stopped: stateText = L"Stopped"; break;
             default: stateText = L""; break;
         }
 
@@ -796,8 +791,7 @@ void MainFrame::UpdateStatus() {
         int bitrate = GetCurrentBitrate();
         if (bitrate > 0) {
             if (!stateText.empty()) stateText += L" | ";
-            float vbr = 0;
-            if (g_sourceStream && BASS_ChannelGetAttribute(g_sourceStream, BASS_ATTRIB_VBR, &vbr) && vbr > 0) {
+            if (IsCurrentVbr()) {
                 stateText += L"~" + std::to_wstring(bitrate) + L" kbps VBR";
             } else {
                 stateText += std::to_wstring(bitrate) + L" kbps";
@@ -952,7 +946,7 @@ void MainFrame::ReceiveFile(const std::wstring& path) {
 
     // Files arriving just after startup belong to the batch the program was started
     // with (Explorer starts one FastPlay per selected file and they hand over here).
-    DWORD elapsed = TickCountMs() - g_startupTime;
+    uint32_t elapsed = TickCountMs() - g_startupTime;
     if (!g_disableBatchDelay && elapsed < BATCH_DELAY && !g_playlist.empty()) {
         AddPathTo(g_playlist, path);
     } else {
@@ -1017,14 +1011,14 @@ void MainFrame::OnClose(wxCloseEvent&) {
     StopMediaKeys();  // and leave Control Center's Now Playing
 #endif
     StopRecording();  // Stop recording on exit
-    if (g_fxStream && g_currentTrack >= 0 && g_currentTrack < static_cast<int>(g_playlist.size())) {
+    if (audio::IsLoaded() && g_currentTrack >= 0 && g_currentTrack < static_cast<int>(g_playlist.size())) {
         SaveFilePosition(g_playlist[g_currentTrack]);
     }
     SavePlaybackState();
     SaveSettings();
     YouTubeCleanup();  // Clean up temp files
     CloseDatabase();
-    FreeBass();
+    FreeAudio();
     FreeSpeech();
     Destroy();
 }

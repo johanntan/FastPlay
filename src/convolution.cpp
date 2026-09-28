@@ -1,6 +1,5 @@
 #include "convolution.h"
-#include "bass_text.h"
-#include "bass.h"
+#include "audio.h"
 #include <cmath>
 #include <algorithm>
 #include <cstdio>
@@ -53,43 +52,15 @@ ConvolutionReverb::ConvolutionReverb()
 ConvolutionReverb::~ConvolutionReverb() {
 }
 
-// Load IR from any format BASS supports (WAV, FLAC, MP3, OGG, etc.)
+// Load IR from any audio file FastPlay plays (WAV, FLAC, MP3, OGG, etc.)
 bool ConvolutionReverb::LoadIR(const wchar_t* path) {
-    // Use BASS to decode the file (supports many formats)
-    BassFileName file(path);
-    HSTREAM stream = BASS_StreamCreateFile(FALSE, file.get(), 0, 0,
-        BASS_STREAM_DECODE | BASS_SAMPLE_FLOAT | file.flags());
-    if (!stream) {
+    std::vector<float> interleavedData;
+    int channels = 0, sampleRate = 0;
+    std::wstring error;
+    if (!audio::DecodeWholeFile(path, interleavedData, channels, sampleRate, error)) {
         return false;
     }
-
-    // Get stream info
-    BASS_CHANNELINFO info;
-    if (!BASS_ChannelGetInfo(stream, &info)) {
-        BASS_StreamFree(stream);
-        return false;
-    }
-
-    int channels = info.chans;
-    int sampleRate = info.freq;
-
-    // Get total length in bytes and calculate samples
-    QWORD length = BASS_ChannelGetLength(stream, BASS_POS_BYTE);
-    if (length == (QWORD)-1) {
-        BASS_StreamFree(stream);
-        return false;
-    }
-
-    int numSamples = (int)(length / (sizeof(float) * channels));
-
-    // Read all audio data
-    std::vector<float> interleavedData(numSamples * channels);
-    DWORD bytesRead = BASS_ChannelGetData(stream, interleavedData.data(), (DWORD)length);
-    BASS_StreamFree(stream);
-
-    if (bytesRead == (DWORD)-1) {
-        return false;
-    }
+    int numSamples = static_cast<int>(interleavedData.size() / channels);
 
     // Deinterleave to L/R channels
     std::vector<float> irDataL(numSamples);

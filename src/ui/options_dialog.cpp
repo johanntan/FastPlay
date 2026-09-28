@@ -12,7 +12,7 @@
 #include "hotkeys.h"
 #include "accessibility.h"
 #include "effects.h"
-#include "tempo_processor.h"
+#include "audio.h"
 #include "convolution.h"
 #include "database.h"
 #include "file_assoc.h"
@@ -39,7 +39,6 @@ const wchar_t* const kSeekLabels[] = {
 
 const int kVolumeSteps[] = {1, 2, 5, 10, 15, 20, 25};
 const int kBitrates[] = {128, 160, 192, 224, 256, 320};
-const int kAAFilterLengths[] = {8, 16, 32, 64, 128};
 
 std::wstring FileNameOnly(const std::wstring& path) {
     size_t pos = path.find_last_of(L"\\/");
@@ -87,7 +86,6 @@ private:
     void BuildAdvancedPage(wxNotebook* book);
     void BuildYouTubePage(wxNotebook* book);
     void BuildYouTubeDownloadsPage(wxNotebook* book);
-    void BuildSoundTouchPage(wxNotebook* book);
     void BuildSpeedyPage(wxNotebook* book);
     void BuildSignalsmithPage(wxNotebook* book);
     void BuildMidiPage(wxNotebook* book);
@@ -114,7 +112,7 @@ private:
 
     // Playback
     wxChoice* m_soundcard = nullptr;
-    std::vector<int> m_deviceIndexes;  // BASS device number for each sound card entry
+    std::vector<int> m_deviceIndexes;  // device number for each sound card entry
     wxCheckBox* m_allowAmplify = nullptr;
     wxCheckBox* m_rememberState = nullptr;
     wxChoice* m_rememberPos = nullptr;
@@ -206,15 +204,6 @@ private:
     wxButton* m_removeCookies = nullptr;
     wxTextCtrl* m_ytApiKey = nullptr;
 
-    // SoundTouch
-    wxCheckBox* m_stAAFilter = nullptr;
-    wxChoice* m_stAALength = nullptr;
-    wxCheckBox* m_stQuickAlgo = nullptr;
-    wxCheckBox* m_stPreventClick = nullptr;
-    wxChoice* m_stAlgorithm = nullptr;
-    wxTextCtrl* m_stSequence = nullptr;
-    wxTextCtrl* m_stSeekWindow = nullptr;
-    wxTextCtrl* m_stOverlap = nullptr;
 
     // Speedy
     wxCheckBox* m_speedyNonlinear = nullptr;
@@ -245,7 +234,6 @@ OptionsDialog::OptionsDialog(wxWindow* parent)
     BuildAdvancedPage(m_book);
     BuildYouTubePage(m_book);
     BuildYouTubeDownloadsPage(m_book);
-    BuildSoundTouchPage(m_book);
     BuildSpeedyPage(m_book);
     BuildSignalsmithPage(m_book);
     BuildMidiPage(m_book);
@@ -621,18 +609,10 @@ void OptionsDialog::BuildAdvancedPage(wxNotebook* book) {
     AddText(page, sizer, "Tempo/pitch &algorithm (changes apply on next file load):");
     m_tempoAlgorithm = new wxChoice(page, wxID_ANY, wxDefaultPosition, wxSize(330, -1));
     sizer->Add(m_tempoAlgorithm, 0, wxTOP | wxBOTTOM, 3);
-    m_tempoAlgorithm->Append("SoundTouch (BASS_FX) - Fast, good for speech");
-#ifdef USE_SPEEDY
+    // In the order of TempoAlgorithm (Speedy is 1, Signalsmith 2)
     m_tempoAlgorithm->Append("Speedy (Google) - Nonlinear speech speedup");
-#else
-    m_tempoAlgorithm->Append("Speedy (coming soon)");
-#endif
-#ifdef USE_SIGNALSMITH
     m_tempoAlgorithm->Append("Signalsmith Stretch - High quality time/pitch");
-#else
-    m_tempoAlgorithm->Append("Signalsmith (coming soon)");
-#endif
-    m_tempoAlgorithm->SetSelection(g_tempoAlgorithm);
+    m_tempoAlgorithm->SetSelection(g_tempoAlgorithm == static_cast<int>(TempoAlgorithm::Speedy) ? 0 : 1);
 
     // Initialize EQ frequency edit controls
     AddText(page, sizer, "EQ frequencies (Hz) - changes apply on next EQ enable:");
@@ -772,48 +752,6 @@ void OptionsDialog::OnYtFolderBrowse(wxCommandEvent&) {
     }
 }
 
-void OptionsDialog::BuildSoundTouchPage(wxNotebook* book) {
-    auto* page = new wxPanel(book);
-    auto* sizer = new wxBoxSizer(wxVERTICAL);
-
-    AddText(page, sizer, "SoundTouch settings (changes apply on next file load):");
-    m_stAAFilter = AddCheck(page, sizer, "&Anti-alias filter", g_stAntiAliasFilter);
-
-    // AA filter length combo (8, 16, 32, 64, 128)
-    m_stAALength = AddChoice(page, AddRow(sizer), "AA filter &length:", 80);
-    int aaIndex = 2;  // Default to 32
-    for (int i = 0; i < 5; i++) {
-        m_stAALength->Append(wxString::Format("%d", kAAFilterLengths[i]));
-        if (kAAFilterLengths[i] == g_stAAFilterLength) aaIndex = i;
-    }
-    m_stAALength->SetSelection(aaIndex);
-
-    m_stQuickAlgo = AddCheck(page, sizer, "&Quick algorithm (lower quality, less CPU)", g_stQuickAlgorithm);
-    m_stPreventClick = AddCheck(page, sizer, "&Prevent click (reduces artifacts)", g_stPreventClick);
-
-    // Interpolation algorithm combo
-    m_stAlgorithm = AddChoice(page, AddRow(sizer), "&Interpolation:", 110);
-    m_stAlgorithm->Append("Linear");
-    m_stAlgorithm->Append("Cubic");
-    m_stAlgorithm->Append("Shannon");
-    m_stAlgorithm->SetSelection(g_stAlgorithm);
-
-    // Sequence, seek window, overlap edit controls
-    auto* row = AddRow(sizer);
-    m_stSequence = AddEdit(page, row, "&Sequence (ms):", wxString::Format("%d", g_stSequenceMs), 50);
-    SetDigitsOnly(m_stSequence);
-    m_stSeekWindow = AddEdit(page, row, "See&k window:", wxString::Format("%d", g_stSeekWindowMs), 50);
-    SetDigitsOnly(m_stSeekWindow);
-    m_stOverlap = AddEdit(page, row, "&Overlap:", wxString::Format("%d", g_stOverlapMs), 40);
-    SetDigitsOnly(m_stOverlap);
-
-    AddText(page, sizer, "(0 = automatic for Sequence/Seek window)");
-
-    page->SetSizer(new wxBoxSizer(wxVERTICAL));
-    page->GetSizer()->Add(sizer, 1, wxEXPAND | wxALL, 10);
-    book->AddPage(page, "SoundTouch");
-}
-
 void OptionsDialog::BuildSpeedyPage(wxNotebook* book) {
     auto* page = new wxPanel(book);
     auto* sizer = new wxBoxSizer(wxVERTICAL);
@@ -855,7 +793,7 @@ void OptionsDialog::BuildMidiPage(wxNotebook* book) {
     auto* page = new wxPanel(book);
     auto* sizer = new wxBoxSizer(wxVERTICAL);
 
-    AddText(page, sizer, "MIDI playback settings (BASSMIDI):");
+    AddText(page, sizer, "MIDI playback settings:");
     AddText(page, sizer, "&SoundFont (.sf2/.sf3):");
 
     auto* row = AddRow(sizer);
@@ -941,7 +879,7 @@ void OptionsDialog::OnOK(wxCommandEvent&) {
 
     // Apply device change if needed
     if (newDevice != g_selectedDevice) {
-        ReinitBass(newDevice);
+        SwitchAudioDevice(newDevice);
     }
 
     // Apply amplify setting
@@ -1025,21 +963,19 @@ void OptionsDialog::OnOK(wxCommandEvent&) {
     // Get buffer settings
     {
         int bufferSel = m_bufferSize->GetSelection();
-        if (bufferSel >= 0 && bufferSel < g_bufferSizeCount) {
+        if (bufferSel >= 0 && bufferSel < g_bufferSizeCount && g_bufferSizes[bufferSel] != g_bufferSize) {
+            // The output buffer is made with the device: open it again
             g_bufferSize = g_bufferSizes[bufferSel];
-            BASS_SetConfig(BASS_CONFIG_BUFFER, g_bufferSize);
+            SwitchAudioDevice(g_selectedDevice);
         }
 
         int updateSel = m_updatePeriod->GetSelection();
         if (updateSel >= 0 && updateSel < g_updatePeriodCount) {
             g_updatePeriod = g_updatePeriods[updateSel];
-            BASS_SetConfig(BASS_CONFIG_UPDATEPERIOD, g_updatePeriod);
         }
 
-        int algoSel = m_tempoAlgorithm->GetSelection();
-        if (algoSel >= 0 && algoSel < static_cast<int>(TempoAlgorithm::COUNT)) {
-            g_tempoAlgorithm = algoSel;
-        }
+        g_tempoAlgorithm = static_cast<int>(m_tempoAlgorithm->GetSelection() == 0 ? TempoAlgorithm::Speedy
+                                                                                  : TempoAlgorithm::Signalsmith);
 
         // Get EQ frequencies
         float bassFreq = static_cast<float>(std::wcstod(WS(m_eqBassFreq->GetValue()).c_str(), nullptr));
@@ -1052,25 +988,10 @@ void OptionsDialog::OnOK(wxCommandEvent&) {
         if (trebleFreq >= 2000.0f && trebleFreq <= 20000.0f) g_eqTrebleFreq = trebleFreq;
 
         // Get legacy volume setting
-        bool wasLegacy = g_legacyVolume;
         g_legacyVolume = m_legacyVolume->GetValue();
 
         // Get disable batch delay setting
         g_disableBatchDelay = m_disableBatch->GetValue();
-
-        // Handle mode switch
-        if (wasLegacy != g_legacyVolume && g_fxStream) {
-            if (g_legacyVolume) {
-                // Switching TO legacy: apply volume via BASS_ATTRIB_VOL
-                float curvedVolume = g_muted ? 0.0f : (g_volume * g_volume);
-                BASS_ChannelSetAttribute(g_fxStream, BASS_ATTRIB_VOL, curvedVolume);
-            } else {
-                // Switching FROM legacy: reset BASS_ATTRIB_VOL to 1.0 so DSP works
-                BASS_ChannelSetAttribute(g_fxStream, BASS_ATTRIB_VOL, 1.0f);
-                // Ensure volume DSP is set up
-                ApplyDSPEffects();
-            }
-        }
     }
 
     // Get YouTube settings
@@ -1119,28 +1040,6 @@ void OptionsDialog::OnOK(wxCommandEvent&) {
     g_speechTrackChange = m_speechTrackChange->GetValue();
     g_speechVolume = m_speechVolume->GetValue();
     g_speechEffect = m_speechEffect->GetValue();
-
-    // Get SoundTouch settings
-    {
-        g_stAntiAliasFilter = m_stAAFilter->GetValue();
-        g_stQuickAlgorithm = m_stQuickAlgo->GetValue();
-        g_stPreventClick = m_stPreventClick->GetValue();
-
-        int aaLen = static_cast<int>(std::wcstol(WS(m_stAALength->GetStringSelection()).c_str(), nullptr, 10));
-        if (aaLen >= 8 && aaLen <= 128) g_stAAFilterLength = aaLen;
-
-        int seq = static_cast<int>(std::wcstol(WS(m_stSequence->GetValue()).c_str(), nullptr, 10));
-        if (seq >= 0 && seq <= 200) g_stSequenceMs = seq;
-
-        int seek = static_cast<int>(std::wcstol(WS(m_stSeekWindow->GetValue()).c_str(), nullptr, 10));
-        if (seek >= 0 && seek <= 100) g_stSeekWindowMs = seek;
-
-        int overlap = static_cast<int>(std::wcstol(WS(m_stOverlap->GetValue()).c_str(), nullptr, 10));
-        if (overlap >= 0 && overlap <= 50) g_stOverlapMs = overlap;
-
-        int algoSel = m_stAlgorithm->GetSelection();
-        if (algoSel >= 0 && algoSel <= 2) g_stAlgorithm = algoSel;
-    }
 
     // Get Speedy settings
     g_speedyNonlinear = m_speedyNonlinear->GetValue();

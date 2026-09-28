@@ -1,11 +1,12 @@
-// xHE-AAC files, decoded with FDK AAC and served to BASS as a WAV. See xheaac.h.
+// xHE-AAC files, decoded with FDK AAC. See xheaac.h.
 //
-// BASS_StreamCreateFileUser lets a file be read through callbacks. The callbacks
-// here present a WAV: a 44 byte header, then the decoded 16-bit PCM, produced as
-// BASS reads it. A byte position in that file is a sample position, so seeking is
-// a matter of restarting the decoder at the access unit holding it.
+// The decoded audio is laid out as a virtual WAV file: a 44 byte header, then the
+// decoded 16-bit PCM, produced as it is read. A byte position in that file is a
+// sample position, so seeking is a matter of restarting the decoder at the
+// access unit holding it.
 
 #include "xheaac.h"
+#include "audio_internal.h"
 #include "mp4_index.h"
 #include "utils.h"
 
@@ -13,9 +14,7 @@
 
 #include <algorithm>
 #include <cstring>
-#include <map>
 #include <memory>
-#include <mutex>
 #include <vector>
 
 using namespace mp4;
@@ -144,7 +143,7 @@ public:
         m_bitrate = seconds > 0 ? static_cast<int>(total * 8 / seconds / 1000 + 0.5) : 0;
 
         // The header. RIFF sizes are 32-bit; a file too long for them is served
-        // with the largest they hold, and BASS goes by the file length anyway.
+        // with the largest they hold; readers go by the file length anyway.
         uint32_t data = static_cast<uint32_t>(std::min<uint64_t>(m_dataBytes, 0xFFFFFFFFull - 36));
         auto put32 = [&](size_t at, uint32_t v) {
             for (int i = 0; i < 4; i++) m_header[at + i] = static_cast<uint8_t>(v >> (8 * i));
@@ -171,6 +170,9 @@ public:
     uint64_t Length() const { return kHeaderBytes + m_dataBytes; }
     const std::string& Tags() const { return m_source.tags; }
     int Bitrate() const { return m_bitrate; }
+    int Channels() const { return m_channels; }
+    int Rate() const { return m_rate; }
+    double Seconds() const { return m_bytesPerFrame ? static_cast<double>(m_dataBytes) / m_bytesPerFrame / m_rate : 0.0; }
 
     bool SeekTo(uint64_t offset) {
         if (offset > Length()) return false;
@@ -178,14 +180,14 @@ public:
         return true;
     }
 
-    DWORD Read(uint8_t* out, DWORD length) {
-        DWORD written = 0;
+    uint32_t Read(uint8_t* out, uint32_t length) {
+        uint32_t written = 0;
         while (written < length) {
             if (m_pos < kHeaderBytes) {
                 size_t n = std::min<size_t>(length - written, kHeaderBytes - static_cast<size_t>(m_pos));
                 std::memcpy(out + written, m_header + m_pos, n);
                 m_pos += n;
-                written += static_cast<DWORD>(n);
+                written += static_cast<uint32_t>(n);
                 continue;
             }
             if (m_pos - kHeaderBytes >= m_dataBytes) break;
@@ -196,7 +198,7 @@ public:
             n = std::min<uint64_t>(n, m_endBytes - at);
             std::memcpy(out + written, m_pcm.data() + (at - m_pcmStart), n);
             m_pos += n;
-            written += static_cast<DWORD>(n);
+            written += static_cast<uint32_t>(n);
         }
         return written;
     }
@@ -324,7 +326,7 @@ private:
     uint64_t m_endBytes = 0;    // and ends
     uint8_t m_header[kHeaderBytes] = {};
 
-    uint64_t m_pos = 0;             // where BASS is reading in the virtual file
+    uint64_t m_pos = 0;             // where the virtual file is being read
     std::vector<uint8_t> m_pcm;     // decoded PCM, from offset m_pcmStart of the decoded audio
     uint64_t m_pcmStart = 0;
     size_t m_next = 0;              // the next access unit to decode
@@ -333,40 +335,72 @@ private:
     std::vector<uint8_t> m_unit;
 };
 
-std::mutex g_mutex;
-std::map<HSTREAM, Stream*> g_streams;
-
-void CALLBACK OnClose(void* user) {
-    auto* stream = static_cast<Stream*>(user);
-    {
-        std::lock_guard<std::mutex> lock(g_mutex);
-        for (auto it = g_streams.begin(); it != g_streams.end(); ++it) {
-            if (it->second == stream) {
-                g_streams.erase(it);
-                break;
-            }
-        }
+// The decoded audio of one file, as the audio engine reads it: 16-bit PCM from
+// the virtual WAV, made float and stereo.
+class XheAacDecoder : public audio::Decoder {
+public:
+    explicit XheAacDecoder(std::unique_ptr<Stream> stream) : m_stream(std::move(stream)) {
+        m_stream->SeekTo(kHeaderBytes);
     }
-    delete stream;
-}
 
-QWORD CALLBACK OnLength(void* user) {
-    return static_cast<Stream*>(user)->Length();
-}
+    int SampleRate() const override { return m_stream->Rate(); }
 
-DWORD CALLBACK OnRead(void* buffer, DWORD length, void* user) {
-    return static_cast<Stream*>(user)->Read(static_cast<uint8_t*>(buffer), length);
-}
+    int Read(float* out, int frames) override {
+        const int channels = m_stream->Channels();
+        const size_t frameBytes = static_cast<size_t>(channels) * 2;
+        m_bytes.resize(static_cast<size_t>(frames) * frameBytes);
+        uint32_t got = m_stream->Read(m_bytes.data(), static_cast<uint32_t>(m_bytes.size()));
+        int count = static_cast<int>(got / frameBytes);
+        const int16_t* pcm = reinterpret_cast<const int16_t*>(m_bytes.data());
+        for (int i = 0; i < count; i++) {
+            const int16_t* frame = pcm + static_cast<size_t>(i) * channels;
+            float left = frame[0] / 32768.0f;
+            float right = channels > 1 ? frame[1] / 32768.0f : left;
+            out[i * 2] = left;
+            out[i * 2 + 1] = right;
+        }
+        return count;
+    }
 
-BOOL CALLBACK OnSeek(QWORD offset, void* user) {
-    return static_cast<Stream*>(user)->SeekTo(offset) ? TRUE : FALSE;
-}
+    bool Seek(double seconds) override {
+        const uint64_t frameBytes = static_cast<uint64_t>(m_stream->Channels()) * 2;
+        uint64_t frame = static_cast<uint64_t>(std::max(0.0, seconds) * m_stream->Rate());
+        return m_stream->SeekTo(std::min(kHeaderBytes + frame * frameBytes, m_stream->Length()));
+    }
 
-Stream* Find(HSTREAM handle) {
-    std::lock_guard<std::mutex> lock(g_mutex);
-    auto it = g_streams.find(handle);
-    return it == g_streams.end() ? nullptr : it->second;
-}
+    void Abort() override {}
+    double Length() const override { return m_stream->Seconds(); }
+    bool IsLive() const override { return false; }
+
+    std::string Tag(const std::string& name) const override {
+        // "TITLE=...", "ARTIST=..." and so on, each ending in a zero byte
+        const std::string& tags = m_stream->Tags();
+        for (size_t at = 0; at < tags.size() && tags[at];) {
+            size_t end = tags.find(static_cast<char>(0), at);
+            if (end == std::string::npos) end = tags.size();
+            size_t eq = tags.find('=', at);
+            if (eq != std::string::npos && eq < end && StrNICmp(tags.c_str() + at, name.c_str(), name.size()) == 0 &&
+                eq - at == name.size()) {
+                return tags.substr(eq + 1, end - eq - 1);
+            }
+            at = end + 1;
+        }
+        return "";
+    }
+
+    std::string StreamTitle() const override { return ""; }
+    std::vector<Chapter> Chapters() const override { return {}; }
+    int Bitrate() const override { return m_stream->Bitrate(); }
+    bool IsVbr() const override { return false; }
+    int SourceChannels() const override { return m_stream->Channels(); }
+    int SourceSampleRate() const override { return m_stream->Rate(); }
+    int SourceBits() const override { return 0; }
+    std::string CodecName() const override { return "xHE-AAC"; }
+
+private:
+    std::unique_ptr<Stream> m_stream;
+    std::vector<uint8_t> m_bytes;
+};
 
 }  // namespace
 
@@ -378,35 +412,26 @@ bool IsXheAacFile(const std::wstring& path) {
     return FindSource(f, source);
 }
 
-HSTREAM CreateXheAacStream(const std::wstring& path, DWORD flags) {
+namespace audio {
+
+std::unique_ptr<Decoder> OpenXheAacDecoder(const std::wstring& path, std::wstring& error) {
     FILE* f = FileOpen(path, "rb");
-    if (!f) return 0;
+    if (!f) {
+        error = L"The file could not be opened.";
+        return nullptr;
+    }
     Source source;
     if (!FindSource(f, source)) {
         fclose(f);
-        return 0;
+        error = L"Unsupported file format.";
+        return nullptr;
     }
     auto stream = std::make_unique<Stream>(f, std::move(source));  // owns the file now
-    if (!stream->Open()) return 0;
-
-    BASS_FILEPROCS procs = {OnClose, OnLength, OnRead, OnSeek};
-    Stream* raw = stream.release();  // BASS owns it, and closes it through OnClose
-    HSTREAM handle = BASS_StreamCreateFileUser(STREAMFILE_NOBUFFER, flags, &procs, raw);
-    if (!handle) {
-        delete raw;
-        return 0;
+    if (!stream->Open()) {
+        error = L"Its audio could not be decoded.";
+        return nullptr;
     }
-    std::lock_guard<std::mutex> lock(g_mutex);
-    g_streams[handle] = raw;
-    return handle;
+    return std::make_unique<XheAacDecoder>(std::move(stream));
 }
 
-const char* XheAacTags(HSTREAM stream) {
-    Stream* s = Find(stream);
-    return s && !s->Tags().empty() ? s->Tags().c_str() : nullptr;
-}
-
-int XheAacBitrate(HSTREAM stream) {
-    Stream* s = Find(stream);
-    return s ? s->Bitrate() : 0;
-}
+}  // namespace audio

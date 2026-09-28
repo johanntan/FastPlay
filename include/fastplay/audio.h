@@ -1,0 +1,156 @@
+#pragma once
+#ifndef FASTPLAY_AUDIO_H
+#define FASTPLAY_AUDIO_H
+
+// FastPlay's audio engine.
+//
+// A Decoder turns a file or stream into stereo float PCM: FFmpeg for nearly every
+// format and for internet streams, FDK AAC for xHE-AAC. The engine plays one
+// decoder at a time through a pipeline of three threads:
+//   - the decode thread reads the decoder ahead into a buffer, so a slow network
+//     never stalls playback;
+//   - the mix thread runs the tempo processor (tempo, pitch and rate), the effects
+//     chain and the recording tap, and fills the output buffer;
+//   - miniaudio's device callback plays the output buffer, applying the volume last
+//     so it answers at once and recordings are made at full volume.
+// Control functions are called from the UI thread. The end of a track and a new
+// stream title are reported back on the UI thread.
+
+#include "types.h"
+
+#include <cstdint>
+#include <functional>
+#include <memory>
+#include <string>
+#include <vector>
+
+namespace audio {
+
+// ---------------------------------------------------------------------------
+// Decoding
+// ---------------------------------------------------------------------------
+
+class Decoder {
+public:
+    virtual ~Decoder() = default;
+
+    // The rate of the PCM Read() returns. Always two channels, interleaved.
+    virtual int SampleRate() const = 0;
+    // Up to `frames` frames into `out`; 0 at the end. May block (network).
+    virtual int Read(float* out, int frames) = 0;
+    // To `seconds`; the next Read() starts there. False if it cannot seek.
+    virtual bool Seek(double seconds) = 0;
+    // Asks a blocking Read() or Seek() to give up (from another thread).
+    virtual void Abort() = 0;
+
+    // Seconds, or 0 when unknown (a live stream).
+    virtual double Length() const = 0;
+    // A live stream: no length, no seeking, no pausing.
+    virtual bool IsLive() const = 0;
+
+    // What is known about the source. Safe to call from any thread.
+    // A tag by its common name (TITLE, ARTIST, ALBUM, DATE, TRACK, GENRE, COMMENT,
+    // REPLAYGAIN_TRACK_GAIN...), or a stream header (icy-name, icy-genre, icy-br).
+    virtual std::string Tag(const std::string& name) const = 0;
+    // The current title of an internet radio stream (its StreamTitle), if any.
+    virtual std::string StreamTitle() const = 0;
+    virtual std::vector<Chapter> Chapters() const = 0;
+    // The bitrate in kbps: the recent average of a VBR file, else the nominal one.
+    virtual int Bitrate() const = 0;
+    virtual bool IsVbr() const = 0;
+    // The source's own format, as it was before the conversion to stereo float.
+    virtual int SourceChannels() const = 0;
+    virtual int SourceSampleRate() const = 0;
+    virtual int SourceBits() const = 0;  // 0 for a lossy format
+    virtual std::string CodecName() const = 0;
+};
+
+// Opens a file or URL. Null with `error` set if it cannot be played.
+std::unique_ptr<Decoder> OpenDecoder(const std::wstring& pathOrUrl, std::wstring& error);
+
+// Decodes a whole file (an impulse response) to interleaved float at its own rate
+// and channel count.
+bool DecodeWholeFile(const std::wstring& path, std::vector<float>& samples, int& channels, int& sampleRate,
+                     std::wstring& error);
+
+// The version of the decoding library, for Help > Audio Engine.
+std::string DecoderVersion();
+
+// ---------------------------------------------------------------------------
+// Output
+// ---------------------------------------------------------------------------
+
+struct Device {
+    std::wstring name;
+    bool isDefault = false;
+};
+
+// The playback devices, in the system's order.
+std::vector<Device> ListDevices();
+
+// Opens the named device (empty, or not found: the system default). The output
+// buffer holds `bufferMs` of audio: what effects and tempo changes lag behind.
+bool Init(const std::wstring& deviceName, int bufferMs);
+void Shutdown();
+// Moves to another device. Only while nothing is loaded.
+bool SwitchDevice(const std::wstring& deviceName, int bufferMs);
+// The device in use ("" before Init), and whether it is the system default.
+std::wstring CurrentDeviceName();
+bool UsingDefaultDevice();
+
+// ---------------------------------------------------------------------------
+// Playback
+// ---------------------------------------------------------------------------
+
+enum class State { Empty, Playing, Paused, Stopped };
+
+// Makes `decoder` the one playing (paused until Play()), through the given tempo
+// algorithm. Whatever was loaded is unloaded first.
+bool Load(std::unique_ptr<Decoder> decoder, TempoAlgorithm algorithm);
+void Unload();
+bool IsLoaded();
+// The loaded decoder, for its tags and format (null when nothing is loaded).
+const Decoder* Current();
+
+void Play();
+void Pause();
+// Silent and marked stopped (the player seeks back to the start)
+void Stop();
+State GetState();
+
+// Seconds into the source of what is being heard now.
+double Position();
+double Length();
+bool IsLive();
+// To `seconds` into the source; what was buffered is dropped.
+bool Seek(double seconds);
+
+// Tempo in percent (0 = normal), pitch in semitones, rate as a multiplier that
+// changes speed and pitch together.
+void SetTempo(float percent);
+void SetPitch(float semitones);
+void SetRate(float rate);
+
+// The output gain (volume, ReplayGain and mute together), applied last.
+void SetGain(float linear);
+
+// The effects chain: `proc` is called on the mix thread with each block of stereo
+// audio, in priority order (higher first). Returns an id for RemoveDsp().
+using DspProc = void (*)(float* samples, int frames, int channels, int sampleRate, void* user);
+int AddDsp(DspProc proc, void* user, int priority);
+void RemoveDsp(int id);
+
+// The recording tap: every block after the effects, before the volume. Null stops.
+using TapProc = void (*)(const float* samples, int frames, int channels, int sampleRate, void* user);
+void SetTap(TapProc proc, void* user);
+// The rate the effects and the tap see (the device's).
+int MixSampleRate();
+
+// Called on the UI thread: when the loaded track has played to its end, and when
+// a stream's title changes.
+void SetEndHandler(std::function<void()> handler);
+void SetStreamTitleHandler(std::function<void()> handler);
+
+}  // namespace audio
+
+#endif  // FASTPLAY_AUDIO_H

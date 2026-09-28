@@ -3,7 +3,7 @@
 #define FASTPLAY_EFFECTS_H
 
 #include "types.h"
-#include "bass.h"
+
 #include <string>
 #include <vector>
 

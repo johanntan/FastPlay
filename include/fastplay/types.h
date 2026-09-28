@@ -44,6 +44,19 @@ struct HotkeyDlgData {
 };
 
 // Stream effect types (tempo stream attributes)
+// A chapter of the file playing: where it starts and its title (may be empty).
+struct Chapter {
+    double position;        // Position in seconds
+    std::wstring name;      // Chapter name
+};
+
+// How tempo and pitch are changed. The numbers are what the settings store
+// (1 and 2; 0 was SoundTouch, which is gone and now reads as Signalsmith).
+enum class TempoAlgorithm {
+    Speedy = 1,       // Google's Speedy: nonlinear speedup, for speech
+    Signalsmith = 2,  // Signalsmith Stretch: high quality, for music
+};
+
 enum class StreamEffect {
     Volume,
     Pitch,

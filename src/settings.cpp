@@ -6,7 +6,7 @@
 #include "convolution.h"
 #include "database.h"
 #include "accessibility.h"
-#include "tempo_processor.h"
+#include "audio.h"
 #include "paths.h"
 #include "utils.h"
 #include "commands.h"
@@ -27,7 +27,7 @@ void LoadSettings() {
     wchar_t deviceName[256] = {0};
     IniGetString(L"Playback", L"DeviceName", L"", deviceName, 256, g_configPath.c_str());
     g_selectedDeviceName = deviceName;
-    g_selectedDevice = -1;  // Will be resolved by name in InitBass
+    g_selectedDevice = -1;  // Will be resolved by name in InitAudio
 
     g_rewindOnPauseMs = IniGetInt(L"Playback", L"RewindOnPauseMs", 0, g_configPath.c_str());
     if (g_rewindOnPauseMs < 0) g_rewindOnPauseMs = 0;
@@ -82,9 +82,11 @@ void LoadSettings() {
     if (g_updatePeriod < 5) g_updatePeriod = 5;
     if (g_updatePeriod > 500) g_updatePeriod = 500;
 
-    g_tempoAlgorithm = IniGetInt(L"Advanced", L"TempoAlgorithm", 0, g_configPath.c_str());
-    if (g_tempoAlgorithm < 0) g_tempoAlgorithm = 0;
-    if (g_tempoAlgorithm >= static_cast<int>(TempoAlgorithm::COUNT)) g_tempoAlgorithm = 0;
+    // 1 Speedy, 2 Signalsmith. 0 was SoundTouch, which is gone: Signalsmith instead.
+    g_tempoAlgorithm = IniGetInt(L"Advanced", L"TempoAlgorithm", 2, g_configPath.c_str());
+    if (g_tempoAlgorithm != static_cast<int>(TempoAlgorithm::Speedy)) {
+        g_tempoAlgorithm = static_cast<int>(TempoAlgorithm::Signalsmith);
+    }
 
     g_legacyVolume = IniGetInt(L"Advanced", L"LegacyVolume", 0, g_configPath.c_str()) != 0;
     g_disableBatchDelay = IniGetInt(L"Advanced", L"DisableBatchDelay", 0, g_configPath.c_str()) != 0;
@@ -817,31 +819,23 @@ void LoadPlaybackState() {
 
 // Save position for a specific file (if it's long enough)
 void SaveFilePosition(const std::wstring& filePath) {
-    if (g_rememberPosMinutes == 0 || !g_fxStream) return;
+    if (g_rememberPosMinutes == 0 || !audio::IsLoaded()) return;
 
-    // Use tempo processor to get length and position
-    TempoProcessor* processor = GetTempoProcessor();
-    if (!processor || !processor->IsActive()) return;
-
-    double length = processor->GetLength();
+    double length = audio::Length();
 
     // Only save if file is longer than threshold
     if (length < g_rememberPosMinutes * 60.0) return;
 
-    double position = processor->GetPosition();
+    double position = audio::Position();
 
     SaveFilePositionDB(filePath, position);
 }
 
 // Load saved position for a specific file (returns 0 if none or file too short)
 double LoadFilePosition(const std::wstring& filePath) {
-    if (g_rememberPosMinutes == 0 || !g_fxStream) return 0.0;
+    if (g_rememberPosMinutes == 0 || !audio::IsLoaded()) return 0.0;
 
-    // Use tempo processor to get length
-    TempoProcessor* processor = GetTempoProcessor();
-    if (!processor || !processor->IsActive()) return 0.0;
-
-    double length = processor->GetLength();
+    double length = audio::Length();
 
     // Only load if file is longer than threshold
     if (length < g_rememberPosMinutes * 60.0) return 0.0;

@@ -70,6 +70,10 @@ Source: "{#SourceDir}\docs\changelog.txt"; DestDir: "{app}\docs"; Flags: ignorev
 ; Create installed marker file
 Source: "{#SourceDir}\FastPlay.exe"; DestDir: "{app}"; AfterInstall: CreateInstalledMarker; Flags: ignoreversion
 
+[InstallDelete]
+; The BASS libraries of versions before the audio engine moved to FFmpeg and miniaudio
+Type: files; Name: "{app}\lib\bass*.dll"
+
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
 Name: "{group}\Readme"; Filename: "{app}\docs\readme.txt"

@@ -5,12 +5,7 @@
 const wchar_t* APP_NAME = L"FastPlay";
 const wchar_t* MUTEX_NAME = L"FastPlaySingleInstance";
 
-// BASS state
-HSTREAM g_stream = 0;      // Source stream
-HSTREAM g_fxStream = 0;    // Tempo stream (wraps g_stream for pitch/tempo)
-HSTREAM g_sourceStream = 0; // Original decode stream (for bitrate queries)
-HSYNC g_endSync = 0;
-HSYNC g_metaSync = 0;      // Sync for stream metadata changes
+// Playback state (what is loaded is the audio engine's: see audio.h)
 float g_volume = 1.0f;
 bool g_muted = false;      // Muted state (recording still works)
 bool g_legacyVolume = false;  // Use legacy volume (faster, but affects recordings)
@@ -26,7 +21,6 @@ float g_replayGainScale = 1.0f;    // No change until a track with tags is loade
 float g_tempo = 0.0f;
 float g_pitch = 0.0f;
 float g_rate = 1.0f;
-float g_originalFreq = 44100.0f;  // Default, updated when loading files
 bool g_isLiveStream = false;      // True if current stream is non-seekable
 int g_currentBitrate = 0;         // Cached bitrate of current file (kbps)
 
@@ -58,14 +52,14 @@ bool g_allowMultipleInstances = false;  // Allow multiple instances (default fal
 
 // File batching
 std::vector<std::wstring> g_pendingFiles;
-DWORD g_startupTime = 0;
+uint32_t g_startupTime = 0;
 
 // Recent files
 std::vector<std::wstring> g_recentFiles;
 
-// File associations - all formats BASS and its plugins can play
+// File associations - all the formats FastPlay plays
 const FileAssoc g_fileAssocs[] = {
-    // Core BASS formats
+    // Common formats
     {L".mp3", L"MP3 Audio"},
     {L".mp2", L"MP2 Audio"},
     {L".mp1", L"MP1 Audio"},
@@ -105,7 +99,7 @@ const FileAssoc g_fileAssocs[] = {
     {L".cda", L"CD Audio"},
     // HLS streaming
     // (no file extension - network only)
-    // MOD/tracker formats (built into BASS)
+    // MOD/tracker formats
     {L".mod", L"MOD Audio"},
     {L".s3m", L"S3M Audio"},
     {L".xm", L"XM Audio"},
@@ -211,7 +205,7 @@ bool g_effectEnabled[4] = {true, false, false, false};  // Volume enabled by def
 int g_currentEffectIndex = 0;
 int g_rateStepMode = 0;  // 0=0.01x, 1=Semitone
 
-// Advanced settings (BASS buffer)
+// Advanced settings (audio buffer)
 int g_bufferSize = 500;    // Default 500ms
 int g_updatePeriod = 100;  // Default 100ms
 
@@ -224,7 +218,7 @@ const int g_updatePeriods[] = {5, 10, 20, 50, 100, 200};
 const int g_updatePeriodCount = sizeof(g_updatePeriods) / sizeof(g_updatePeriods[0]);
 
 // Tempo/pitch algorithm (0=SoundTouch, 1=Speedy, 2=Signalsmith)
-int g_tempoAlgorithm = 0;  // Default to SoundTouch
+int g_tempoAlgorithm = 2;  // Signalsmith (TempoAlgorithm)
 
 // SoundTouch settings
 bool g_stAntiAliasFilter = true;   // Enable anti-alias filter
@@ -249,7 +243,7 @@ int g_reverbAlgorithm = 0;
 // Convolution reverb settings
 std::wstring g_convolutionIRPath;
 
-// MIDI settings (BASSMIDI)
+// MIDI settings
 std::wstring g_midiSoundFont;      // Path to SoundFont file
 int g_midiMaxVoices = 128;         // Max polyphony (1-1000)
 bool g_midiSincInterp = false;     // Use sinc interpolation
@@ -276,7 +270,6 @@ std::wstring g_recordTemplate = L"%Y-%m-%d_%H-%M-%S";  // Filename template
 int g_recordFormat = 0;                             // 0=WAV, 1=MP3, 2=OGG, 3=FLAC
 int g_recordBitrate = 192;                          // Bitrate for MP3/OGG
 bool g_isRecording = false;                         // Currently recording?
-HENCODE g_encoder = 0;                              // BASS encoder handle
 
 // Speech settings
 bool g_speechTrackChange = false;                   // Announce track changes (default off)

@@ -3,8 +3,9 @@
 #include "globals.h"
 #include "accessibility.h"
 #include "app_ui.h"
-#include "bass_fx.h"
-#include "tempo_processor.h"
+#include "audio.h"
+#include "audio/basic_effects.h"
+#include "player.h"
 #include "center_cancel.h"
 #include "convolution.h"
 #include "reverb/reverb.h"
@@ -92,19 +93,21 @@ static const ParamDef g_paramDefs[] = {
 };
 static const int g_paramDefCount = sizeof(g_paramDefs) / sizeof(g_paramDefs[0]);
 
-// DSP effect handles
-static HFX g_hfxEcho = 0;
-static HFX g_hfxEQPreamp = 0;
-static HFX g_hfxEQBass = 0;
-static HFX g_hfxEQMid = 0;
-static HFX g_hfxEQTreble = 0;
-static HFX g_hfxCompressor = 0;
-static HDSP g_hdspReverb = 0;       // Custom DSP for the reverbs
-static HDSP g_hdspStereoWidth = 0;  // Custom DSP for stereo width
-static HDSP g_hdspCenterCancel = 0; // Custom DSP for center cancel/extract
-static HDSP g_hdspConvolution = 0;  // Custom DSP for convolution reverb
-static HDSP g_hdspSpatialAudio = 0;  // Custom DSP for 3D audio (HRTF)
-static HDSP g_hdspVolume = 0;       // Custom DSP for volume (runs LAST, after encoder)
+// The effects in the audio engine's chain (0 when not in it)
+static int g_dspEcho = 0;
+static int g_dspEQ = 0;             // preamp and the three bands, in one
+static int g_dspCompressor = 0;
+static int g_dspReverb = 0;         // the reverbs
+static int g_dspStereoWidth = 0;
+static int g_dspCenterCancel = 0;   // center cancel/extract
+static int g_dspConvolution = 0;    // convolution reverb
+static int g_dspSpatialAudio = 0;   // 3D audio
+
+// Echo, EQ and compressor (src/audio/basic_effects.h)
+static audio::Echo g_echo;
+static audio::Gain g_eqPreamp;
+static audio::PeakingEq g_eqBass, g_eqMid, g_eqTreble;
+static audio::Compressor g_compressor;
 
 // DSP effect enabled states
 static bool g_dspEnabled[(int)DSPEffectType::COUNT] = {false, false, false, false, false, false, false, false};
@@ -192,7 +195,7 @@ static const int g_advancedReverbPresetCount = sizeof(g_advancedReverbPresets) /
 static const float kReverbHighCutOff = 20000.0f;
 
 struct ReverbEngine {
-    std::mutex mutex;  // params are set from the UI thread, processing runs on BASS's
+    std::mutex mutex;  // params are set from the UI thread, processing runs on the mix thread
     fastplay::audio::Reverb simple;
     fastplay::audio::EfxReverb advanced;
     fastplay::audio::ReverbParams simpleParams;
@@ -303,24 +306,16 @@ static void ResetReverbEngine(int sampleRate) {
     g_reverbEngine.dryCurrent = g_reverbEngine.dry;
 }
 
-static void CALLBACK ReverbDSPProc(HDSP handle, DWORD channel, void* buffer, DWORD length, void* user) {
-    BASS_CHANNELINFO info;
-    if (!BASS_ChannelGetInfo(channel, &info) || !(info.flags & BASS_SAMPLE_FLOAT) || info.chans == 0) return;
-
+static void ReverbDSPProc(float* samples, int frames, int chans, int, void*) {
     ReverbEngine& e = g_reverbEngine;
     std::lock_guard<std::mutex> lock(e.mutex);
-    if (e.algorithm == 0 || e.sampleRate <= 0) return;
-
-    float* samples = static_cast<float*>(buffer);
-    const int chans = static_cast<int>(info.chans);
-    const int frames = static_cast<int>(length / (sizeof(float) * chans));
-    if (frames <= 0) return;
+    if (e.algorithm == 0 || e.sampleRate <= 0 || frames <= 0) return;
 
     e.inL.resize(frames); e.inR.resize(frames);
     e.outL.assign(frames, 0.0f); e.outR.assign(frames, 0.0f);
     for (int i = 0; i < frames; i++) {
         e.inL[i] = samples[i * chans];
-        e.inR[i] = samples[i * chans + (chans > 1 ? 1 : 0)];
+        e.inR[i] = samples[i * chans + 1];
     }
 
     if (e.algorithm == 2) {
@@ -334,13 +329,8 @@ static void CALLBACK ReverbDSPProc(HDSP handle, DWORD channel, void* buffer, DWO
     for (int i = 0; i < frames; i++) {
         const float dry = dry0 + dryStep * (i + 1);
         float* frame = samples + static_cast<size_t>(i) * chans;
-        if (chans == 1) {
-            frame[0] = frame[0] * dry + 0.5f * (e.outL[i] + e.outR[i]);
-            continue;
-        }
         frame[0] = frame[0] * dry + e.outL[i];
         frame[1] = frame[1] * dry + e.outR[i];
-        for (int c = 2; c < chans; c++) frame[c] *= dry;
     }
     e.dryCurrent = e.dry;
 }
@@ -500,18 +490,24 @@ void SetReverbAlgorithm(int algorithm) {
     if (algorithm < 0 || algorithm >= (int)ReverbAlgorithm::COUNT) return;
 
     // Remove existing reverb effect if any
-    if (g_hdspReverb && g_fxStream) {
-        BASS_ChannelRemoveDSP(g_fxStream, g_hdspReverb);
-        g_hdspReverb = 0;
+    if (g_dspReverb) {
+        audio::RemoveDsp(g_dspReverb);
+        g_dspReverb = 0;
     }
 
     g_reverbAlgorithm = algorithm;
     UpdateReverbParams();
 
-    // Apply new reverb if enabled and stream exists
-    if (algorithm > 0 && g_fxStream) {
+    // Apply new reverb if enabled and something is playing
+    if (algorithm > 0 && audio::IsLoaded()) {
         ApplyDSPEffects();
     }
+}
+
+// Take one effect out of the chain
+static void RemoveDsp(int& id) {
+    if (id) audio::RemoveDsp(id);
+    id = 0;
 }
 
 // Enable or disable a DSP effect
@@ -521,272 +517,128 @@ void EnableDSPEffect(DSPEffectType type, bool enable) {
     bool wasEnabled = g_dspEnabled[(int)type];
     g_dspEnabled[(int)type] = enable;
 
-    // If stream exists, apply/remove effect immediately
-    if (g_fxStream) {
+    // If something is playing, apply/remove the effect immediately
+    if (audio::IsLoaded()) {
         if (enable && !wasEnabled) {
             ApplyDSPEffects();
         } else if (!enable && wasEnabled) {
-            // Remove just this effect
             switch (type) {
-                case DSPEffectType::Reverb:
-                    if (g_hdspReverb) { BASS_ChannelRemoveDSP(g_fxStream, g_hdspReverb); g_hdspReverb = 0; }
-                    break;
-                case DSPEffectType::Echo:
-                    if (g_hfxEcho) { BASS_ChannelRemoveFX(g_fxStream, g_hfxEcho); g_hfxEcho = 0; }
-                    break;
-                case DSPEffectType::EQ:
-                    if (g_hfxEQPreamp) { BASS_ChannelRemoveFX(g_fxStream, g_hfxEQPreamp); g_hfxEQPreamp = 0; }
-                    if (g_hfxEQBass) { BASS_ChannelRemoveFX(g_fxStream, g_hfxEQBass); g_hfxEQBass = 0; }
-                    if (g_hfxEQMid) { BASS_ChannelRemoveFX(g_fxStream, g_hfxEQMid); g_hfxEQMid = 0; }
-                    if (g_hfxEQTreble) { BASS_ChannelRemoveFX(g_fxStream, g_hfxEQTreble); g_hfxEQTreble = 0; }
-                    break;
-                case DSPEffectType::Compressor:
-                    if (g_hfxCompressor) { BASS_ChannelRemoveFX(g_fxStream, g_hfxCompressor); g_hfxCompressor = 0; }
-                    break;
-                case DSPEffectType::StereoWidth:
-                    if (g_hdspStereoWidth) { BASS_ChannelRemoveDSP(g_fxStream, g_hdspStereoWidth); g_hdspStereoWidth = 0; }
-                    break;
-                case DSPEffectType::CenterCancel:
-                    if (g_hdspCenterCancel) { BASS_ChannelRemoveDSP(g_fxStream, g_hdspCenterCancel); g_hdspCenterCancel = 0; }
-                    break;
-                case DSPEffectType::Convolution:
-                    if (g_hdspConvolution) { BASS_ChannelRemoveDSP(g_fxStream, g_hdspConvolution); g_hdspConvolution = 0; }
-                    break;
-                case DSPEffectType::SpatialAudio:
-                    if (g_hdspSpatialAudio) { BASS_ChannelRemoveDSP(g_fxStream, g_hdspSpatialAudio); g_hdspSpatialAudio = 0; }
-                    break;
-                default:
-                    break;
+                case DSPEffectType::Reverb: RemoveDsp(g_dspReverb); break;
+                case DSPEffectType::Echo: RemoveDsp(g_dspEcho); break;
+                case DSPEffectType::EQ: RemoveDsp(g_dspEQ); break;
+                case DSPEffectType::Compressor: RemoveDsp(g_dspCompressor); break;
+                case DSPEffectType::StereoWidth: RemoveDsp(g_dspStereoWidth); break;
+                case DSPEffectType::CenterCancel: RemoveDsp(g_dspCenterCancel); break;
+                case DSPEffectType::Convolution: RemoveDsp(g_dspConvolution); break;
+                case DSPEffectType::SpatialAudio: RemoveDsp(g_dspSpatialAudio); break;
+                default: break;
             }
         }
     }
 }
 
-// Stereo width DSP callback - uses Mid/Side processing
+// Echo, EQ and compressor, set from the parameter values
+static void UpdateEcho() {
+    audio::Echo::Params p;
+    p.dry = 1.0f - (g_paramValues[(int)ParamId::EchoMix] / 100.0f);
+    p.wet = g_paramValues[(int)ParamId::EchoMix] / 100.0f;
+    p.feedback = g_paramValues[(int)ParamId::EchoFeedback] / 100.0f;
+    p.delay = g_paramValues[(int)ParamId::EchoDelay] / 1000.0f;  // ms to seconds
+    p.stereo = true;
+    g_echo.Set(p);
+}
+
+static void UpdateEQ() {
+    g_eqPreamp.Set(powf(10.0f, g_paramValues[(int)ParamId::EQPreamp] / 20.0f));
+    g_eqBass.Set(g_eqBassFreq, 2.5f, g_paramValues[(int)ParamId::EQBass]);
+    g_eqMid.Set(g_eqMidFreq, 2.5f, g_paramValues[(int)ParamId::EQMid]);
+    g_eqTreble.Set(g_eqTrebleFreq, 2.5f, g_paramValues[(int)ParamId::EQTreble]);
+}
+
+static void UpdateCompressor() {
+    audio::Compressor::Params p;
+    p.gainDb = g_paramValues[(int)ParamId::CompGain];
+    p.thresholdDb = g_paramValues[(int)ParamId::CompThreshold];
+    p.ratio = g_paramValues[(int)ParamId::CompRatio];
+    p.attackMs = g_paramValues[(int)ParamId::CompAttack];
+    p.releaseMs = g_paramValues[(int)ParamId::CompRelease];
+    g_compressor.Set(p);
+}
+
+static void EchoDSPProc(float* samples, int frames, int, int sampleRate, void*) {
+    g_echo.Process(samples, frames, sampleRate);
+}
+
+static void EQDSPProc(float* samples, int frames, int, int sampleRate, void*) {
+    g_eqPreamp.Process(samples, frames);
+    g_eqBass.Process(samples, frames, sampleRate);
+    g_eqMid.Process(samples, frames, sampleRate);
+    g_eqTreble.Process(samples, frames, sampleRate);
+}
+
+static void CompressorDSPProc(float* samples, int frames, int, int sampleRate, void*) {
+    g_compressor.Process(samples, frames, sampleRate);
+}
+
+// Stereo width - uses Mid/Side processing
 // Width 0% = mono, 100% = normal stereo, 200% = extra wide
-static void CALLBACK StereoWidthDSPProc(HDSP handle, DWORD channel, void* buffer, DWORD length, void* user) {
-    // Get channel info to check format
-    BASS_CHANNELINFO info;
-    if (!BASS_ChannelGetInfo(channel, &info)) return;
-
-    // Only process stereo content
-    if (info.chans != 2) return;
-
-    // Get width value (0-200, where 100 is normal)
+static void StereoWidthDSPProc(float* samples, int frames, int, int, void*) {
     float width = g_paramValues[(int)ParamId::StereoWidth] / 100.0f;
-
-    // Check if float format (BASS_FX tempo streams use float)
-    if (info.flags & BASS_SAMPLE_FLOAT) {
-        float* samples = static_cast<float*>(buffer);
-        DWORD frameCount = length / (sizeof(float) * 2);  // 2 channels
-
-        for (DWORD i = 0; i < frameCount; i++) {
-            float left = samples[i * 2];
-            float right = samples[i * 2 + 1];
-
-            // Convert to Mid/Side
-            float mid = (left + right) * 0.5f;
-            float side = (left - right) * 0.5f;
-
-            // Apply width to side signal
-            side *= width;
-
-            // Convert back to Left/Right
-            samples[i * 2] = mid + side;
-            samples[i * 2 + 1] = mid - side;
-        }
-    } else {
-        // 16-bit format
-        short* samples = static_cast<short*>(buffer);
-        DWORD frameCount = length / (sizeof(short) * 2);  // 2 channels
-
-        for (DWORD i = 0; i < frameCount; i++) {
-            float left = samples[i * 2] / 32768.0f;
-            float right = samples[i * 2 + 1] / 32768.0f;
-
-            // Convert to Mid/Side
-            float mid = (left + right) * 0.5f;
-            float side = (left - right) * 0.5f;
-
-            // Apply width to side signal
-            side *= width;
-
-            // Convert back to Left/Right and clamp
-            float outL = mid + side;
-            float outR = mid - side;
-            if (outL > 1.0f) outL = 1.0f; else if (outL < -1.0f) outL = -1.0f;
-            if (outR > 1.0f) outR = 1.0f; else if (outR < -1.0f) outR = -1.0f;
-
-            samples[i * 2] = static_cast<short>(outL * 32767.0f);
-            samples[i * 2 + 1] = static_cast<short>(outR * 32767.0f);
-        }
+    for (int i = 0; i < frames; i++) {
+        float left = samples[i * 2];
+        float right = samples[i * 2 + 1];
+        float mid = (left + right) * 0.5f;
+        float side = (left - right) * 0.5f * width;
+        samples[i * 2] = mid + side;
+        samples[i * 2 + 1] = mid - side;
     }
 }
 
-// Center cancel/extract DSP callback - FFT-based spectral processing
+// Center cancel/extract - FFT-based spectral processing
 // -100% = extract center (isolate vocals), 0% = no effect, +100% = cancel center (remove vocals)
-static void CALLBACK CenterCancelDSPProc(HDSP handle, DWORD channel, void* buffer, DWORD length, void* user) {
-    // Get channel info to check format
-    BASS_CHANNELINFO info;
-    if (!BASS_ChannelGetInfo(channel, &info)) return;
-
-    // Only process stereo content
-    if (info.chans != 2) return;
-
-    // Get center cancel value (-100 to +100, where 0 is no effect)
+static void CenterCancelDSPProc(float* samples, int frames, int, int sampleRate, void*) {
     float amount = g_paramValues[(int)ParamId::CenterCancel] / 100.0f;
 
-    // Get or initialize the processor
     CenterCancelProcessor* processor = GetCenterCancelProcessor();
     if (!processor) {
-        InitCenterCancelProcessor((int)info.freq);
+        InitCenterCancelProcessor(sampleRate);
         processor = GetCenterCancelProcessor();
     }
     if (!processor || !processor->IsInitialized()) return;
-
-    // Update the amount
     processor->SetAmount(amount);
 
-    // If amount is 0, processor will passthrough
-    if (info.flags & BASS_SAMPLE_FLOAT) {
-        float* samples = static_cast<float*>(buffer);
-        int frameCount = length / (sizeof(float) * 2);
-        int outputFrames = 0;
-
-        // Process in-place
-        std::vector<float> tempOut(frameCount * 2);
-        processor->ProcessFloat(samples, frameCount, tempOut.data(), outputFrames);
-
-        // Copy output back (outputFrames should equal frameCount for steady-state)
-        for (int i = 0; i < outputFrames * 2; i++) {
-            samples[i] = tempOut[i];
-        }
-    } else {
-        // 16-bit format
-        short* samples = static_cast<short*>(buffer);
-        int frameCount = length / (sizeof(short) * 2);
-        int outputFrames = 0;
-
-        std::vector<short> tempOut(frameCount * 2);
-        processor->ProcessInt16(samples, frameCount, tempOut.data(), outputFrames);
-
-        for (int i = 0; i < outputFrames * 2; i++) {
-            samples[i] = tempOut[i];
-        }
-    }
+    // If amount is 0, the processor passes the audio through
+    static std::vector<float> tempOut;
+    tempOut.resize(static_cast<size_t>(frames) * 2);
+    int outputFrames = 0;
+    processor->ProcessFloat(samples, frames, tempOut.data(), outputFrames);
+    // outputFrames equals frames in the steady state
+    std::copy(tempOut.begin(), tempOut.begin() + static_cast<size_t>(outputFrames) * 2, samples);
 }
 
-// Convolution reverb DSP callback
-static void CALLBACK ConvolutionDSPProc(HDSP handle, DWORD channel, void* buffer, DWORD length, void* user) {
-    BASS_CHANNELINFO info;
-    if (!BASS_ChannelGetInfo(channel, &info)) return;
-
-    // Only process stereo content
-    if (info.chans != 2) return;
-
+// Convolution reverb
+static void ConvolutionDSPProc(float* samples, int frames, int, int sampleRate, void*) {
     ConvolutionReverb* conv = GetConvolutionReverb();
     if (!conv) return;
 
     // Initialize if IR is loaded but not yet initialized
     if (conv->IsLoaded() && !conv->IsInitialized()) {
-        conv->Init((int)info.freq);
+        conv->Init(sampleRate);
     }
 
     conv->SetMix(g_paramValues[(int)ParamId::ConvolutionMix]);
     conv->SetGain(g_paramValues[(int)ParamId::ConvolutionGain]);
-
-    // Handle both float and 16-bit formats
-    if (info.flags & BASS_SAMPLE_FLOAT) {
-        float* samples = static_cast<float*>(buffer);
-        int frameCount = length / (sizeof(float) * 2);
-        conv->Process(samples, frameCount);
-    } else {
-        // Convert 16-bit to float, process, convert back
-        short* samples = static_cast<short*>(buffer);
-        int frameCount = length / (sizeof(short) * 2);
-
-        std::vector<float> floatBuf(frameCount * 2);
-        for (int i = 0; i < frameCount * 2; i++) {
-            floatBuf[i] = samples[i] / 32768.0f;
-        }
-
-        conv->Process(floatBuf.data(), frameCount);
-
-        for (int i = 0; i < frameCount * 2; i++) {
-            float val = floatBuf[i];
-            if (val > 1.0f) val = 1.0f;
-            if (val < -1.0f) val = -1.0f;
-            samples[i] = static_cast<short>(val * 32767.0f);
-        }
-    }
+    conv->Process(samples, frames);
 }
 
-// 3D Audio DSP callback - HRTF binaural rendering
-static void CALLBACK SpatialAudioDSPProc(HDSP handle, DWORD channel, void* buffer, DWORD length, void* user) {
-    BASS_CHANNELINFO info;
-    if (!BASS_ChannelGetInfo(channel, &info)) return;
-    if (info.chans != 2) return;
-
+// 3D Audio - HRTF binaural rendering and the room presets
+static void SpatialAudioDSPProc(float* samples, int frames, int, int, void*) {
     SpatialAudio* spatial = GetSpatialAudio();
     if (!spatial || !spatial->IsInitialized()) return;
 
     float blend = g_paramValues[(int)ParamId::SpatialBlend] / 100.0f;
     if (blend <= 0.0f) return;
-
-    if (info.flags & BASS_SAMPLE_FLOAT) {
-        float* samples = static_cast<float*>(buffer);
-        int frameCount = length / (sizeof(float) * 2);
-        spatial->Process(samples, frameCount, blend);
-    } else {
-        short* samples = static_cast<short*>(buffer);
-        int frameCount = length / (sizeof(short) * 2);
-        int totalSamples = frameCount * 2;
-        float* floatBuf = spatial->GetConversionBuffer(totalSamples);
-        if (!floatBuf) return;
-        for (int i = 0; i < totalSamples; i++)
-            floatBuf[i] = samples[i] / 32768.0f;
-        spatial->Process(floatBuf, frameCount, blend);
-        for (int i = 0; i < totalSamples; i++) {
-            float v = floatBuf[i];
-            if (v > 1.0f) v = 1.0f; else if (v < -1.0f) v = -1.0f;
-            samples[i] = static_cast<short>(v * 32767.0f);
-        }
-    }
-}
-
-// Volume DSP - runs LAST (very low priority) so encoder captures full volume
-// This allows recording at full volume while playback respects g_volume/g_muted
-// Only used when legacy volume mode is disabled
-static void CALLBACK VolumeDSPProc(HDSP handle, DWORD channel, void* buffer, DWORD length, void* user) {
-    (void)handle; (void)channel; (void)user;
-
-    // Skip if using legacy volume (handled by BASS_ATTRIB_VOL instead)
-    if (g_legacyVolume) return;
-
-    float volume = g_muted ? 0.0f : g_volume;
-
-    // Apply perceptual volume curve (quadratic) to match BASS_ATTRIB_VOL behavior
-    // This makes lower volumes feel more gradual and natural, then fold in the
-    // ReplayGain multiplier so loudness normalization applies in normal volume mode.
-    float curvedVolume = volume * volume * g_replayGainScale;
-    if (curvedVolume == 1.0f) return; // No processing needed
-
-    BASS_CHANNELINFO info;
-    if (!BASS_ChannelGetInfo(channel, &info)) return;
-
-    if (info.flags & BASS_SAMPLE_FLOAT) {
-        float* samples = static_cast<float*>(buffer);
-        int sampleCount = length / sizeof(float);
-        for (int i = 0; i < sampleCount; i++) {
-            samples[i] *= curvedVolume;
-        }
-    } else {
-        short* samples = static_cast<short*>(buffer);
-        int sampleCount = length / sizeof(short);
-        for (int i = 0; i < sampleCount; i++) {
-            samples[i] = static_cast<short>(samples[i] * curvedVolume);
-        }
-    }
+    spatial->Process(samples, frames, blend);
 }
 
 bool IsDSPEffectEnabled(DSPEffectType type) {
@@ -798,183 +650,84 @@ bool IsDSPEffectEnabled(DSPEffectType type) {
     return g_dspEnabled[(int)type];
 }
 
-// Apply DSP effects to current stream
+// Put the enabled effects into the audio engine's chain, fresh, for what was just
+// loaded. They run in the order added; all have the same priority.
 void ApplyDSPEffects() {
-    if (!g_fxStream) return;
+    if (!audio::IsLoaded()) return;
+    const int sampleRate = audio::MixSampleRate();
 
     // Reverb (based on selected algorithm)
-    if (g_reverbAlgorithm > 0 && !g_hdspReverb) {
-        BASS_CHANNELINFO info;
-        if (BASS_ChannelGetInfo(g_fxStream, &info)) {
-            ResetReverbEngine((int)info.freq);
-            g_hdspReverb = BASS_ChannelSetDSP(g_fxStream, ReverbDSPProc, nullptr, 0);
-        }
+    if (g_reverbAlgorithm > 0 && !g_dspReverb) {
+        ResetReverbEngine(sampleRate);
+        g_dspReverb = audio::AddDsp(ReverbDSPProc, nullptr, 0);
     }
 
     // Echo
-    if (g_dspEnabled[(int)DSPEffectType::Echo] && !g_hfxEcho) {
-        g_hfxEcho = BASS_ChannelSetFX(g_fxStream, BASS_FX_BFX_ECHO4, 0);
-        if (g_hfxEcho) {
-            BASS_BFX_ECHO4 echo;
-            echo.fDryMix = 1.0f - (g_paramValues[(int)ParamId::EchoMix] / 100.0f);
-            echo.fWetMix = g_paramValues[(int)ParamId::EchoMix] / 100.0f;
-            echo.fFeedback = g_paramValues[(int)ParamId::EchoFeedback] / 100.0f;
-            echo.fDelay = g_paramValues[(int)ParamId::EchoDelay] / 1000.0f;  // Convert ms to seconds
-            echo.bStereo = TRUE;
-            echo.lChannel = BASS_BFX_CHANALL;
-            BASS_FXSetParameters(g_hfxEcho, &echo);
-        }
+    if (g_dspEnabled[(int)DSPEffectType::Echo] && !g_dspEcho) {
+        UpdateEcho();
+        g_dspEcho = audio::AddDsp(EchoDSPProc, nullptr, 0);
     }
 
-    // EQ (3-band using peaking EQ)
-    if (g_dspEnabled[(int)DSPEffectType::EQ]) {
-        // Preamp (gain reduction to prevent clipping)
-        if (!g_hfxEQPreamp) {
-            g_hfxEQPreamp = BASS_ChannelSetFX(g_fxStream, BASS_FX_BFX_VOLUME, 0);
-            if (g_hfxEQPreamp) {
-                BASS_BFX_VOLUME vol = {0};
-                vol.lChannel = BASS_BFX_CHANALL;
-                // Convert dB to linear: linear = 10^(dB/20)
-                vol.fVolume = powf(10.0f, g_paramValues[(int)ParamId::EQPreamp] / 20.0f);
-                BASS_FXSetParameters(g_hfxEQPreamp, &vol);
-            }
-        }
-        // Bass (60 Hz)
-        if (!g_hfxEQBass) {
-            g_hfxEQBass = BASS_ChannelSetFX(g_fxStream, BASS_FX_BFX_PEAKEQ, 0);
-            if (g_hfxEQBass) {
-                BASS_BFX_PEAKEQ eq = {0};
-                eq.lBand = 0;
-                eq.fBandwidth = 2.5f;  // Octaves
-                eq.fQ = 0.0f;
-                eq.fCenter = g_eqBassFreq;  // Bass center frequency
-                eq.fGain = g_paramValues[(int)ParamId::EQBass];
-                eq.lChannel = BASS_BFX_CHANALL;
-                BASS_FXSetParameters(g_hfxEQBass, &eq);
-            }
-        }
-        // Mid (1000 Hz)
-        if (!g_hfxEQMid) {
-            g_hfxEQMid = BASS_ChannelSetFX(g_fxStream, BASS_FX_BFX_PEAKEQ, 0);
-            if (g_hfxEQMid) {
-                BASS_BFX_PEAKEQ eq = {0};
-                eq.lBand = 0;
-                eq.fBandwidth = 2.5f;  // Octaves
-                eq.fQ = 0.0f;
-                eq.fCenter = g_eqMidFreq;   // Mid center frequency
-                eq.fGain = g_paramValues[(int)ParamId::EQMid];
-                eq.lChannel = BASS_BFX_CHANALL;
-                BASS_FXSetParameters(g_hfxEQMid, &eq);
-            }
-        }
-        // Treble (8000 Hz)
-        if (!g_hfxEQTreble) {
-            g_hfxEQTreble = BASS_ChannelSetFX(g_fxStream, BASS_FX_BFX_PEAKEQ, 0);
-            if (g_hfxEQTreble) {
-                BASS_BFX_PEAKEQ eq = {0};
-                eq.lBand = 0;
-                eq.fBandwidth = 2.5f;  // Octaves
-                eq.fQ = 0.0f;
-                eq.fCenter = g_eqTrebleFreq; // Treble center frequency
-                eq.fGain = g_paramValues[(int)ParamId::EQTreble];
-                eq.lChannel = BASS_BFX_CHANALL;
-                BASS_FXSetParameters(g_hfxEQTreble, &eq);
-            }
-        }
+    // EQ (preamp and three peaking bands)
+    if (g_dspEnabled[(int)DSPEffectType::EQ] && !g_dspEQ) {
+        UpdateEQ();
+        g_dspEQ = audio::AddDsp(EQDSPProc, nullptr, 0);
     }
 
     // Compressor
-    if (g_dspEnabled[(int)DSPEffectType::Compressor] && !g_hfxCompressor) {
-        g_hfxCompressor = BASS_ChannelSetFX(g_fxStream, BASS_FX_BFX_COMPRESSOR2, 0);
-        if (g_hfxCompressor) {
-            BASS_BFX_COMPRESSOR2 comp = {0};
-            comp.fGain = g_paramValues[(int)ParamId::CompGain];
-            comp.fThreshold = g_paramValues[(int)ParamId::CompThreshold];
-            comp.fRatio = g_paramValues[(int)ParamId::CompRatio];
-            comp.fAttack = g_paramValues[(int)ParamId::CompAttack];
-            comp.fRelease = g_paramValues[(int)ParamId::CompRelease];
-            comp.lChannel = BASS_BFX_CHANALL;
-            BASS_FXSetParameters(g_hfxCompressor, &comp);
-        }
+    if (g_dspEnabled[(int)DSPEffectType::Compressor] && !g_dspCompressor) {
+        UpdateCompressor();
+        g_dspCompressor = audio::AddDsp(CompressorDSPProc, nullptr, 0);
     }
 
-    // Stereo Width (custom DSP)
-    if (g_dspEnabled[(int)DSPEffectType::StereoWidth] && !g_hdspStereoWidth) {
-        g_hdspStereoWidth = BASS_ChannelSetDSP(g_fxStream, StereoWidthDSPProc, nullptr, 0);
+    // Stereo Width
+    if (g_dspEnabled[(int)DSPEffectType::StereoWidth] && !g_dspStereoWidth) {
+        g_dspStereoWidth = audio::AddDsp(StereoWidthDSPProc, nullptr, 0);
     }
 
-    // Center Cancel/Extract (custom DSP)
-    if (g_dspEnabled[(int)DSPEffectType::CenterCancel] && !g_hdspCenterCancel) {
-        g_hdspCenterCancel = BASS_ChannelSetDSP(g_fxStream, CenterCancelDSPProc, nullptr, 0);
+    // Center Cancel/Extract
+    if (g_dspEnabled[(int)DSPEffectType::CenterCancel] && !g_dspCenterCancel) {
+        g_dspCenterCancel = audio::AddDsp(CenterCancelDSPProc, nullptr, 0);
     }
 
-    // Convolution Reverb (custom DSP)
-    if (g_dspEnabled[(int)DSPEffectType::Convolution] && !g_hdspConvolution) {
+    // Convolution Reverb
+    if (g_dspEnabled[(int)DSPEffectType::Convolution] && !g_dspConvolution) {
         ConvolutionReverb* conv = GetConvolutionReverb();
-        if (conv && conv->IsLoaded()) {
-            BASS_CHANNELINFO info;
-            if (BASS_ChannelGetInfo(g_fxStream, &info)) {
-                conv->Init((int)info.freq);
-            }
-        }
-        g_hdspConvolution = BASS_ChannelSetDSP(g_fxStream, ConvolutionDSPProc, nullptr, 0);
+        if (conv && conv->IsLoaded()) conv->Init(sampleRate);
+        g_dspConvolution = audio::AddDsp(ConvolutionDSPProc, nullptr, 0);
     }
 
-    // 3D Audio (HRTF)
-    if (g_dspEnabled[(int)DSPEffectType::SpatialAudio] && !g_hdspSpatialAudio) {
+    // 3D Audio
+    if (g_dspEnabled[(int)DSPEffectType::SpatialAudio] && !g_dspSpatialAudio) {
         bool initOk = false;
         SpatialAudio* spatial = GetSpatialAudio();
         if (spatial) {
-            BASS_CHANNELINFO info;
-            if (BASS_ChannelGetInfo(g_fxStream, &info)) {
-                initOk = spatial->Initialize((int)info.freq);
-                if (!initOk) {
-                    const wchar_t* err = spatial->GetLastError();
-                    if (err && err[0]) {
-                        ShowMessage(err, L"3D Audio Error", MessageIcon::Error);
-                    }
-                    g_dspEnabled[(int)DSPEffectType::SpatialAudio] = false;
+            initOk = spatial->Initialize(sampleRate);
+            if (!initOk) {
+                const wchar_t* err = spatial->GetLastError();
+                if (err && err[0]) {
+                    ShowMessage(err, L"3D Audio Error", MessageIcon::Error);
                 }
+                g_dspEnabled[(int)DSPEffectType::SpatialAudio] = false;
             }
         }
         if (initOk) {
-            g_hdspSpatialAudio = BASS_ChannelSetDSP(g_fxStream, SpatialAudioDSPProc, nullptr, 0);
+            g_dspSpatialAudio = audio::AddDsp(SpatialAudioDSPProc, nullptr, 0);
         }
     }
-
-    // Legacy volume mode - apply volume directly to stream attribute
-    // This must be done every time a new stream is created
-    if (g_legacyVolume) {
-        float curvedVolume = (g_muted ? 0.0f : (g_volume * g_volume)) * g_replayGainScale;
-        BASS_ChannelSetAttribute(g_fxStream, BASS_ATTRIB_VOL, curvedVolume);
-    }
-
-    // Volume DSP - added with very low priority so it runs LAST (after encoder)
-    // This ensures encoders capture full-volume audio, while playback is adjusted
-    // Only used when legacy volume mode is disabled
-    // Priority -2000000000 ensures it runs after encoder (priority 0)
-    if (!g_legacyVolume && !g_hdspVolume) {
-        g_hdspVolume = BASS_ChannelSetDSP(g_fxStream, VolumeDSPProc, nullptr, -2000000000);
-    }
 }
 
-// Remove all DSP effects from stream
 void RemoveDSPEffects() {
-    if (g_hdspReverb) { if (g_fxStream) BASS_ChannelRemoveDSP(g_fxStream, g_hdspReverb); g_hdspReverb = 0; }
-    if (g_hfxEcho) { if (g_fxStream) BASS_ChannelRemoveFX(g_fxStream, g_hfxEcho); g_hfxEcho = 0; }
-    if (g_hfxEQPreamp) { if (g_fxStream) BASS_ChannelRemoveFX(g_fxStream, g_hfxEQPreamp); g_hfxEQPreamp = 0; }
-    if (g_hfxEQBass) { if (g_fxStream) BASS_ChannelRemoveFX(g_fxStream, g_hfxEQBass); g_hfxEQBass = 0; }
-    if (g_hfxEQMid) { if (g_fxStream) BASS_ChannelRemoveFX(g_fxStream, g_hfxEQMid); g_hfxEQMid = 0; }
-    if (g_hfxEQTreble) { if (g_fxStream) BASS_ChannelRemoveFX(g_fxStream, g_hfxEQTreble); g_hfxEQTreble = 0; }
-    if (g_hfxCompressor) { if (g_fxStream) BASS_ChannelRemoveFX(g_fxStream, g_hfxCompressor); g_hfxCompressor = 0; }
-    if (g_hdspStereoWidth) { if (g_fxStream) BASS_ChannelRemoveDSP(g_fxStream, g_hdspStereoWidth); g_hdspStereoWidth = 0; }
-    if (g_hdspCenterCancel) { if (g_fxStream) BASS_ChannelRemoveDSP(g_fxStream, g_hdspCenterCancel); g_hdspCenterCancel = 0; }
-    if (g_hdspConvolution) { if (g_fxStream) BASS_ChannelRemoveDSP(g_fxStream, g_hdspConvolution); g_hdspConvolution = 0; }
-    if (g_hdspSpatialAudio) { if (g_fxStream) BASS_ChannelRemoveDSP(g_fxStream, g_hdspSpatialAudio); g_hdspSpatialAudio = 0; }
-    if (g_hdspVolume) { if (g_fxStream) BASS_ChannelRemoveDSP(g_fxStream, g_hdspVolume); g_hdspVolume = 0; }
+    RemoveDsp(g_dspReverb);
+    RemoveDsp(g_dspEcho);
+    RemoveDsp(g_dspEQ);
+    RemoveDsp(g_dspCompressor);
+    RemoveDsp(g_dspStereoWidth);
+    RemoveDsp(g_dspCenterCancel);
+    RemoveDsp(g_dspConvolution);
+    RemoveDsp(g_dspSpatialAudio);
 }
 
-// Get parameter definition
 const ParamDef* GetParamDef(ParamId id) {
     for (int i = 0; i < g_paramDefCount; i++) {
         if (g_paramDefs[i].id == id) return &g_paramDefs[i];
@@ -1023,39 +776,19 @@ void SetParamValue(ParamId id, float value) {
     switch (id) {
         case ParamId::Volume:
             g_volume = value;
-            // In legacy mode, apply via BASS_ATTRIB_VOL
-            // In normal mode, volume DSP automatically uses updated g_volume
-            if (g_legacyVolume && g_fxStream) {
-                float curvedVolume = (g_muted ? 0.0f : (g_volume * g_volume)) * g_replayGainScale;
-                BASS_ChannelSetAttribute(g_fxStream, BASS_ATTRIB_VOL, curvedVolume);
-            }
+            UpdateOutputGain();
             break;
         case ParamId::Pitch:
             g_pitch = value;
-            if (g_fxStream) {
-                TempoProcessor* processor = GetTempoProcessor();
-                if (processor && processor->IsActive()) {
-                    processor->SetPitch(g_pitch);
-                }
-            }
+            audio::SetPitch(g_pitch);
             break;
         case ParamId::Tempo:
             g_tempo = value;
-            // Skip applying tempo to live streams (not supported)
-            if (g_fxStream && !g_isLiveStream) {
-                TempoProcessor* processor = GetTempoProcessor();
-                if (processor && processor->IsActive()) {
-                    processor->SetTempo(g_tempo);
-                }
-            }
+            audio::SetTempo(g_tempo);  // live streams keep their speed
             break;
         case ParamId::Rate:
             g_rate = value;
-            // Skip applying rate to live streams (not supported)
-            if (g_fxStream && !g_isLiveStream) {
-                // Use native BASS frequency attribute (changes speed and pitch together)
-                BASS_ChannelSetAttribute(g_fxStream, BASS_ATTRIB_FREQ, g_originalFreq * g_rate);
-            }
+            audio::SetRate(g_rate);  // speed and pitch together; not for live streams
             break;
         // Reverb parameters: a preset sets the others, then both reverbs are updated
         case ParamId::ReverbPreset:
@@ -1087,66 +820,20 @@ void SetParamValue(ParamId id, float value) {
         case ParamId::EchoDelay:
         case ParamId::EchoFeedback:
         case ParamId::EchoMix:
-            if (g_hfxEcho) {
-                BASS_BFX_ECHO4 echo;
-                BASS_FXGetParameters(g_hfxEcho, &echo);
-                echo.fDryMix = 1.0f - (g_paramValues[(int)ParamId::EchoMix] / 100.0f);
-                echo.fWetMix = g_paramValues[(int)ParamId::EchoMix] / 100.0f;
-                echo.fFeedback = g_paramValues[(int)ParamId::EchoFeedback] / 100.0f;
-                echo.fDelay = g_paramValues[(int)ParamId::EchoDelay] / 1000.0f;
-                BASS_FXSetParameters(g_hfxEcho, &echo);
-            }
+            UpdateEcho();
             break;
         case ParamId::EQPreamp:
-            if (g_hfxEQPreamp) {
-                BASS_BFX_VOLUME vol = {0};
-                vol.lChannel = BASS_BFX_CHANALL;
-                vol.fVolume = powf(10.0f, value / 20.0f);
-                BASS_FXSetParameters(g_hfxEQPreamp, &vol);
-            }
-            break;
         case ParamId::EQBass:
-            if (g_hfxEQBass) {
-                BASS_BFX_PEAKEQ eq = {0};
-                eq.lBand = 0;
-                BASS_FXGetParameters(g_hfxEQBass, &eq);
-                eq.fGain = value;
-                BASS_FXSetParameters(g_hfxEQBass, &eq);
-            }
-            break;
         case ParamId::EQMid:
-            if (g_hfxEQMid) {
-                BASS_BFX_PEAKEQ eq = {0};
-                eq.lBand = 0;
-                BASS_FXGetParameters(g_hfxEQMid, &eq);
-                eq.fGain = value;
-                BASS_FXSetParameters(g_hfxEQMid, &eq);
-            }
-            break;
         case ParamId::EQTreble:
-            if (g_hfxEQTreble) {
-                BASS_BFX_PEAKEQ eq = {0};
-                eq.lBand = 0;
-                BASS_FXGetParameters(g_hfxEQTreble, &eq);
-                eq.fGain = value;
-                BASS_FXSetParameters(g_hfxEQTreble, &eq);
-            }
+            UpdateEQ();
             break;
         case ParamId::CompThreshold:
         case ParamId::CompRatio:
         case ParamId::CompAttack:
         case ParamId::CompRelease:
         case ParamId::CompGain:
-            if (g_hfxCompressor) {
-                BASS_BFX_COMPRESSOR2 comp = {0};
-                BASS_FXGetParameters(g_hfxCompressor, &comp);
-                comp.fThreshold = g_paramValues[(int)ParamId::CompThreshold];
-                comp.fRatio = g_paramValues[(int)ParamId::CompRatio];
-                comp.fAttack = g_paramValues[(int)ParamId::CompAttack];
-                comp.fRelease = g_paramValues[(int)ParamId::CompRelease];
-                comp.fGain = g_paramValues[(int)ParamId::CompGain];
-                BASS_FXSetParameters(g_hfxCompressor, &comp);
-            }
+            UpdateCompressor();
             break;
         case ParamId::SpatialMode: {
             SpatialAudio* spatial = GetSpatialAudio();

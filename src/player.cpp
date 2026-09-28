@@ -1,4 +1,5 @@
 #include "player.h"
+#include "audio.h"
 #include "globals.h"
 #include "utils.h"
 #include "http.h"
@@ -10,70 +11,52 @@
 #include "effects.h"
 #include "database.h"
 #include "commands.h"
-#include "bass_fx.h"
-#include "bass_aac.h"
-#include "bassmidi.h"
-#include "bassenc.h"
-#include "bassenc_mp3.h"
-#include "bassenc_ogg.h"
-#include "bassenc_flac.h"
-#include "tempo_processor.h"
 #include "spatial_audio.h"
-#include "bass_text.h"
 #include "mp4_chapters.h"
-#include "xheaac.h"
 #include "paths.h"
 #include <ctime>
 #include <filesystem>
-#include <map>
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
+#include <cstring>
 
-// BASS_Init's window: an HWND on Windows, an opaque pointer elsewhere.
-#ifdef _WIN32
-static HWND BassWindow(void* handle) { return static_cast<HWND>(handle); }
-#else
-static void* BassWindow(void* handle) { return handle; }
-#endif
+// Tag reading helpers (defined later in the file)
+static std::string GetMetadataTag(const char* tagName);
+static std::string GetStreamTitle();
 
-// Forward declarations for tag reading helpers (defined later in file)
-static std::string GetMetadataTag(HSTREAM stream, const char* tagName);
-static std::string GetStreamTitle(HSTREAM stream);
-static std::string GetTrimmedTag(const char* data, size_t maxLen);
-static std::string GetID3v2UserText(const unsigned char* tag, const char* desc);
+// ---------------------------------------------------------------------------
+// Output gain: volume, ReplayGain and mute, applied by the audio engine last
+// (after the recording tap, so recordings are at full volume).
+// ---------------------------------------------------------------------------
 
-// Read a ReplayGain tag value by name, trying the standard tag lists first
-// (Vorbis/APE/MP4/WMA) and then ID3v2 TXXX frames (common for MP3).
-static std::string GetReplayGainTag(HSTREAM stream, const char* name) {
-    std::string v = GetMetadataTag(stream, name);
-    if (!v.empty()) return v;
-    const unsigned char* id3v2 = (const unsigned char*)BASS_ChannelGetTags(stream, BASS_TAG_ID3V2);
-    if (id3v2) return GetID3v2UserText(id3v2, name);
-    return "";
+void UpdateOutputGain() {
+    // A perceptual (quadratic) volume curve, then ReplayGain
+    float gain = g_muted ? 0.0f : g_volume * g_volume * g_replayGainScale;
+    audio::SetGain(gain);
 }
 
-// Compute the linear ReplayGain multiplier for a freshly-loaded source stream and
-// store it in g_replayGainScale. Reads REPLAYGAIN_TRACK_GAIN / REPLAYGAIN_ALBUM_GAIN
-// (and the matching _PEAK tags) which BASS exposes through Vorbis/APE/MP4/WMA/ID3v2
-// comments. Returns 1.0 (no change) when disabled or when the file has no gain tag,
-// so untagged files and live streams play untouched.
-static void ComputeReplayGainScale(HSTREAM stream) {
+// Compute the linear ReplayGain multiplier for what was just loaded and store it
+// in g_replayGainScale. Reads REPLAYGAIN_TRACK_GAIN / REPLAYGAIN_ALBUM_GAIN (and
+// the matching _PEAK tags). 1.0 (no change) when disabled or when the file has no
+// gain tag, so untagged files and live streams play untouched.
+static void ComputeReplayGainScale() {
     g_replayGainScale = 1.0f;
-    if (g_replayGainMode == 0 || !stream) return;
+    const audio::Decoder* decoder = audio::Current();
+    if (g_replayGainMode == 0 || !decoder) return;
 
     std::string gainStr, peakStr;
     if (g_replayGainMode == 2) {
         // Album mode, falling back to track gain when no album tag is present.
-        gainStr = GetReplayGainTag(stream, "REPLAYGAIN_ALBUM_GAIN");
-        peakStr = GetReplayGainTag(stream, "REPLAYGAIN_ALBUM_PEAK");
+        gainStr = decoder->Tag("REPLAYGAIN_ALBUM_GAIN");
+        peakStr = decoder->Tag("REPLAYGAIN_ALBUM_PEAK");
         if (gainStr.empty()) {
-            gainStr = GetReplayGainTag(stream, "REPLAYGAIN_TRACK_GAIN");
-            peakStr = GetReplayGainTag(stream, "REPLAYGAIN_TRACK_PEAK");
+            gainStr = decoder->Tag("REPLAYGAIN_TRACK_GAIN");
+            peakStr = decoder->Tag("REPLAYGAIN_TRACK_PEAK");
         }
     } else {
-        gainStr = GetReplayGainTag(stream, "REPLAYGAIN_TRACK_GAIN");
-        peakStr = GetReplayGainTag(stream, "REPLAYGAIN_TRACK_PEAK");
+        gainStr = decoder->Tag("REPLAYGAIN_TRACK_GAIN");
+        peakStr = decoder->Tag("REPLAYGAIN_TRACK_PEAK");
     }
 
     if (gainStr.empty()) return;  // No ReplayGain info: leave the file untouched.
@@ -95,246 +78,94 @@ static void ComputeReplayGainScale(HSTREAM stream) {
     if (scale > 0.0f) g_replayGainScale = scale;
 }
 
-// Global SoundFont handle for MIDI playback
-static HSOUNDFONT g_hSoundFont = 0;
+// ---------------------------------------------------------------------------
+// Devices
+// ---------------------------------------------------------------------------
 
-// Track loaded plugins for debugging
-static std::vector<std::wstring> g_loadedPlugins;
-static std::vector<std::wstring> g_failedPlugins;
-
-void LoadBassPlugins() {
-    std::wstring exeDir = GetExecutableDir();
-    std::wstring libPath = GetLibraryDir();
-
-    // List of plugins to load (playback-related)
-#ifdef _WIN32
-    const wchar_t* plugins[] = {
-        L"bassflac.dll",   // FLAC
-        L"bassopus.dll",   // Opus
-        L"basswma.dll",    // WMA
-        L"basswv.dll",     // WavPack
-        L"bassape.dll",    // Monkey's Audio (APE)
-        L"bassalac.dll",   // Apple Lossless (ALAC)
-        L"bassmidi.dll",   // MIDI
-        L"basscd.dll",     // CD Audio
-        L"bassdsd.dll",    // DSD
-        L"basshls.dll",    // HLS streaming
-        L"bassmix.dll",    // Mixer (for some stream types)
-        L"bass_aac.dll",   // AAC/M4A (if available)
-    };
-#else
-    // macOS decodes AAC, ALAC and MP4 itself through Core Audio.
-    const wchar_t* plugins[] = {
-        L"libbassflac.dylib",  // FLAC
-        L"libbassopus.dylib",  // Opus
-        L"libbasswv.dylib",    // WavPack
-        L"libbassape.dylib",   // Monkey's Audio (APE)
-        L"libbassmidi.dylib",  // MIDI
-        L"libbassdsd.dylib",   // DSD
-        L"libbasshls.dylib",   // HLS streaming
-        L"libbassmix.dylib",   // Mixer (for some stream types)
-    };
-#endif
-
-    for (const wchar_t* plugin : plugins) {
-        BassFileName fullPath(libPath + plugin);
-        HPLUGIN hPlugin = BASS_PluginLoad(fullPath.get(), fullPath.flags());
-        // If the library folder failed, try the executable's folder
-        if (!hPlugin) {
-            BassFileName altPath(exeDir + plugin);
-            hPlugin = BASS_PluginLoad(altPath.get(), altPath.flags());
-        }
-
-        if (hPlugin) {
-            g_loadedPlugins.push_back(plugin);
-        } else {
-            g_failedPlugins.push_back(plugin);
-        }
-    }
-}
-
-// Get list of loaded plugins (for debugging)
-std::wstring GetLoadedPluginsInfo() {
-    std::wstring info = L"Loaded: ";
-    for (size_t i = 0; i < g_loadedPlugins.size(); i++) {
-        if (i > 0) info += L", ";
-        info += g_loadedPlugins[i];
-    }
-    if (g_loadedPlugins.empty()) info += L"(none)";
-
-    info += L"\nFailed: ";
-    for (size_t i = 0; i < g_failedPlugins.size(); i++) {
-        if (i > 0) info += L", ";
-        info += g_failedPlugins[i];
-    }
-    if (g_failedPlugins.empty()) info += L"(none)";
-
-    return info;
-}
-
-// Find device index by name, returns -1 if not found (use default)
+// Device numbers are positions in the system's list, from 1; -1 is the default.
 int FindDeviceByName(const std::wstring& name) {
-    if (name.empty()) return -1;  // Empty name means default device
-
-    BASS_DEVICEINFO info;
-    for (int i = 1; BASS_GetDeviceInfo(i, &info); i++) {
-        if (info.flags & BASS_DEVICE_ENABLED) {
-            std::wstring wideName = BassTextToWide(info.name);
-            if (wideName == name) {
-                return i;
-            }
-        }
+    if (name.empty()) return -1;
+    std::vector<audio::Device> devices = audio::ListDevices();
+    for (size_t i = 0; i < devices.size(); i++) {
+        if (devices[i].name == name) return static_cast<int>(i) + 1;
     }
-    return -1;  // Not found, use default
+    return -1;
 }
 
-// Get device name by index
 std::wstring GetDeviceName(int device) {
-    if (device <= 0) return L"";  // Default device
-
-    BASS_DEVICEINFO info;
-    if (BASS_GetDeviceInfo(device, &info)) {
-        std::wstring wideName = BassTextToWide(info.name);
-        return wideName;
-    }
-    return L"";
+    std::vector<audio::Device> devices = audio::ListDevices();
+    if (device <= 0 || device > static_cast<int>(devices.size())) return L"";
+    return devices[device - 1].name;
 }
 
-// The enabled audio devices, for the main window's device menu
+// The playback devices, for the main window's device menu
 std::vector<AudioDeviceInfo> GetAudioDevices() {
-    std::vector<AudioDeviceInfo> devices;
-    BASS_DEVICEINFO info;
-    for (int i = 1; BASS_GetDeviceInfo(i, &info); i++) {
-        if (info.flags & BASS_DEVICE_ENABLED) {
-            std::wstring wideName = BassTextToWide(info.name);
-
-            AudioDeviceInfo dev;
-            dev.index = i;
-            dev.name = wideName;
-            dev.current = (i == g_selectedDevice || (g_selectedDevice == -1 && (info.flags & BASS_DEVICE_DEFAULT)));
-            devices.push_back(dev);
-        }
+    std::vector<AudioDeviceInfo> list;
+    std::vector<audio::Device> devices = audio::ListDevices();
+    for (size_t i = 0; i < devices.size(); i++) {
+        AudioDeviceInfo dev;
+        dev.index = static_cast<int>(i) + 1;
+        dev.name = devices[i].name;
+        dev.current = dev.index == g_selectedDevice || (g_selectedDevice == -1 && devices[i].isDefault);
+        list.push_back(dev);
     }
-    return devices;
+    return list;
 }
 
 // Select and switch to an audio device
 void SelectAudioDevice(int deviceIndex) {
     if (deviceIndex <= 0) return;
-
-    // Get device name for announcement
     std::wstring deviceName = GetDeviceName(deviceIndex);
-
-    // Try to reinitialize BASS with the new device
-    if (ReinitBass(deviceIndex)) {
-        g_selectedDevice = deviceIndex;
-        g_selectedDeviceName = deviceName;
+    if (SwitchAudioDevice(deviceIndex)) {
         SaveSettings();
-
-        // Announce the change
-        std::string msg = "Switched to " + WideToUtf8(deviceName);
-        Speak(msg.c_str());
+        Speak("Switched to " + WideToUtf8(deviceName));
     } else {
         Speak("Failed to switch audio device");
     }
 }
 
-// Check if file is a MIDI file by extension
-static bool IsMidiFile(const wchar_t* path) {
-    const wchar_t* ext = wcsrchr(path, L'.');
-    if (!ext) return false;
-    return (WStrICmp(ext, L".mid") == 0 || WStrICmp(ext, L".midi") == 0 ||
-            WStrICmp(ext, L".kar") == 0 || WStrICmp(ext, L".rmi") == 0);
-}
+// MIDI playback settings (SoundFont, voices): used once MIDI plays again.
+void ApplyMidiSettings() {}
 
-// Apply MIDI settings (SoundFont, max voices)
-void ApplyMidiSettings() {
-    // Free previous SoundFont if any
-    if (g_hSoundFont) {
-        BASS_MIDI_FontFree(g_hSoundFont);
-        g_hSoundFont = 0;
-    }
-
-    // Set max voices for MIDI playback
-    BASS_SetConfig(BASS_CONFIG_MIDI_VOICES, g_midiMaxVoices);
-
-    // Load SoundFont if configured
-    if (!g_midiSoundFont.empty()) {
-        BassFileName fontFile(g_midiSoundFont);
-        g_hSoundFont = BASS_MIDI_FontInit(fontFile.get(), fontFile.flags());
-        if (g_hSoundFont) {
-            // Set as default SoundFont for all MIDI streams
-            BASS_MIDI_FONT font;
-            font.font = g_hSoundFont;
-            font.preset = -1;  // All presets
-            font.bank = 0;
-            BASS_MIDI_StreamSetFonts(0, &font, 1);  // 0 = set default
-        }
+// The track has played to its end: the next one, playing or not.
+static void OnTrackEnd() {
+    if (g_autoAdvance || g_repeatMode != 0) {
+        PostCommand(IDM_PLAY_NEXT, 0);
+    } else {
+        // Load the next track but don't play it (lParam 1)
+        PostCommand(IDM_PLAY_NEXT, 1);
     }
 }
 
-// Initialize BASS library
-bool InitBass(void* windowHandle) {
-    // Apply buffer settings before init
-    BASS_SetConfig(BASS_CONFIG_BUFFER, g_bufferSize);
-    BASS_SetConfig(BASS_CONFIG_UPDATEPERIOD, g_updatePeriod);
-
-    // Use logarithmic volume curve (more natural for human perception)
-    BASS_SetConfig(BASS_CONFIG_CURVE_VOL, TRUE);
-
-    // Find device by saved name
-    int device = FindDeviceByName(g_selectedDeviceName);
-    g_selectedDevice = device;
-
-    if (!BASS_Init(device, 44100, 0, BassWindow(windowHandle), nullptr)) {
-        // Try default device as fallback
-        if (device != -1) {
-            if (BASS_Init(-1, 44100, 0, BassWindow(windowHandle), nullptr)) {
-                g_selectedDevice = -1;
-                g_selectedDeviceName.clear();
-            } else {
-                ShowMessage(L"Failed to initialize BASS audio library.", APP_NAME, MessageIcon::Error);
-                return false;
-            }
-        } else {
-            ShowMessage(L"Failed to initialize BASS audio library.", APP_NAME, MessageIcon::Error);
-            return false;
-        }
+// Start the audio engine on the saved device (or the default)
+bool InitAudio() {
+    audio::SetEndHandler(OnTrackEnd);
+    audio::SetStreamTitleHandler([]() {
+        AnnounceStreamMetadata();
+        UpdateWindowTitle();
+    });
+    if (!audio::Init(g_selectedDeviceName, g_bufferSize)) {
+        ShowMessage(L"FastPlay could not open an audio device.", APP_NAME, MessageIcon::Error);
+        return false;
     }
-
-    // Load BASS_FX now. Echo, EQ and Compressor are its effects, and BASS knows of
-    // them only once it is loaded; on Windows it is delay-loaded, so with a tempo
-    // algorithm other than SoundTouch nothing else would ever load it.
-    BASS_FX_GetVersion();
-
-    // Load plugins for additional format support
-    LoadBassPlugins();
-
-    // Apply MIDI settings (SoundFont, max voices)
+    g_selectedDevice = audio::UsingDefaultDevice() ? -1 : FindDeviceByName(audio::CurrentDeviceName());
+    if (g_selectedDevice == -1) g_selectedDeviceName.clear();
+    UpdateOutputGain();
     ApplyMidiSettings();
-
-    // Configure network settings for URL streaming (radio, podcasts)
-    BASS_SetConfigPtr(BASS_CONFIG_NET_AGENT, UserAgent().c_str());
-    BASS_SetConfig(BASS_CONFIG_NET_TIMEOUT, 30000);  // 30 second timeout
-    BASS_SetConfig(BASS_CONFIG_NET_BUFFER, 10000);   // 10 second network buffer (helps with long streams)
-    BASS_SetConfig(BASS_CONFIG_NET_PREBUF, 50);      // Start playback when 50% buffered
-
     return true;
 }
 
-// Free BASS resources
-void FreeBass() {
-    if (g_fxStream) {
-        BASS_StreamFree(g_fxStream);
-        g_fxStream = 0;
-    }
-    if (g_stream) {
-        BASS_StreamFree(g_stream);
-        g_stream = 0;
-    }
-    g_sourceStream = 0;  // Don't free - owned by tempo processor
+void FreeAudio() {
+    RemoveDSPEffects();
+    audio::Shutdown();
     g_currentBitrate = 0;
-    BASS_Free();
+}
+
+std::wstring GetAudioEngineInfo() {
+    std::wstring info = L"Audio engine: miniaudio, with " + Utf8ToWide(audio::DecoderVersion());
+    info += L"\nOutput: " + audio::CurrentDeviceName();
+    info += L", " + std::to_wstring(audio::MixSampleRate()) + L" Hz";
+    return info;
 }
 
 // Check if a path is a URL
@@ -347,438 +178,11 @@ bool IsURL(const wchar_t* path) {
 
 // Move playback to `seconds`, and tell 3D Audio so the room it simulates does
 // not go on sounding of where the music was.
-static void JumpTo(TempoProcessor* processor, double seconds) {
-    processor->SetPosition(seconds);
+static void JumpTo(double seconds) {
+    audio::Seek(seconds);
     if (SpatialAudio* spatial = GetSpatialAudio()) spatial->ClearTails();
 }
 
-// Load and play a URL stream
-bool LoadURL(const wchar_t* url) {
-    g_isLoading = true;
-
-    // Free existing streams safely
-    if (g_fxStream) {
-        if (g_endSync) {
-            BASS_ChannelRemoveSync(g_fxStream, g_endSync);
-            g_endSync = 0;
-        }
-        RemoveDSPEffects();
-        BASS_ChannelStop(g_fxStream);
-        BASS_StreamFree(g_fxStream);
-        g_fxStream = 0;
-    }
-    if (g_stream) {
-        if (g_metaSync) {
-            BASS_ChannelRemoveSync(g_stream, g_metaSync);
-            g_metaSync = 0;
-        }
-        BASS_StreamFree(g_stream);
-        g_stream = 0;
-    }
-
-    // If the URL points at a playlist file (.m3u/.pls/.m3u8), resolve it to a
-    // direct stream URL first - BASS can't parse a playlist. This covers saved
-    // favorites and directly-opened URLs; the radio search path resolves
-    // separately. Falls back to the original URL if resolution fails.
-    std::wstring resolvedUrl = ResolvePlaylistUrl(url);
-    const wchar_t* playUrl = resolvedUrl.c_str();
-
-    // Convert URL to UTF-8 for BASS
-    std::string urlUtf8 = WideToUtf8(playUrl);
-
-    // Create URL stream - try without BLOCK first (allows seeking for podcasts);
-    // BLOCK mode is only needed for live streams where seeking isn't expected.
-    // AAC first (handles raw AAC/M4A better), then generic, each in non-BLOCK
-    // then BLOCK mode. macOS has no BASS_AAC for Apple silicon; BASS plays AAC
-    // there through Core Audio.
-    auto tryCreateStream = [](const std::string& u) -> HSTREAM {
-        DWORD f = BASS_STREAM_DECODE | BASS_STREAM_STATUS | BASS_SAMPLE_FLOAT;
-        HSTREAM s = 0;
-#ifdef _WIN32
-        s = BASS_AAC_StreamCreateURL(u.c_str(), 0, f, nullptr, nullptr);
-#endif
-        if (!s) s = BASS_StreamCreateURL(u.c_str(), 0, f, nullptr, nullptr);
-        if (!s) {
-            f = BASS_STREAM_DECODE | BASS_STREAM_STATUS | BASS_STREAM_BLOCK | BASS_SAMPLE_FLOAT;
-#ifdef _WIN32
-            s = BASS_AAC_StreamCreateURL(u.c_str(), 0, f, nullptr, nullptr);
-#endif
-            if (!s) s = BASS_StreamCreateURL(u.c_str(), 0, f, nullptr, nullptr);
-        }
-        return s;
-    };
-
-    g_stream = tryCreateStream(urlUtf8);
-
-    // If BASS couldn't open it, the URL may redirect somewhere BASS won't follow
-    // (e.g. a podcast enclosure that 302s to a delivery-script URL). Resolve the
-    // redirect chain ourselves and retry with the final direct URL.
-    if (!g_stream) {
-        std::wstring finalUrl = ResolveHttpRedirects(resolvedUrl);
-        if (finalUrl != resolvedUrl) {
-            std::string finalUtf8 = WideToUtf8(finalUrl);
-            g_stream = tryCreateStream(finalUtf8);
-        }
-    }
-
-    if (!g_stream) {
-        g_isLoading = false;
-        int error = BASS_ErrorGetCode();
-        const wchar_t* errorMsg;
-        switch (error) {
-            case BASS_ERROR_NONET:    errorMsg = L"No internet connection."; break;
-            case BASS_ERROR_FILEOPEN: errorMsg = L"Could not connect to URL."; break;
-            case BASS_ERROR_FILEFORM: errorMsg = L"Unsupported stream format. Check bass_aac.dll is in lib folder."; break;
-            case BASS_ERROR_CODEC:    errorMsg = L"Required codec is not available."; break;
-            case BASS_ERROR_FORMAT:   errorMsg = L"Unsupported sample format."; break;
-            case BASS_ERROR_TIMEOUT:  errorMsg = L"Connection timed out."; break;
-            case BASS_ERROR_SSL:      errorMsg = L"SSL/HTTPS not supported."; break;
-            default:                  errorMsg = L"Could not open stream."; break;
-        }
-        // Show truncated URL in error message
-        std::wstring displayUrl = url;
-        if (displayUrl.length() > 100) {
-            displayUrl = displayUrl.substr(0, 100) + L"...";
-        }
-        std::wstring msg = L"Cannot play URL:\n";
-        msg += displayUrl;
-        msg += L"\n\nError: ";
-        msg += errorMsg;
-        msg += L" (code ";
-        msg += std::to_wstring(error);
-        msg += L")";
-        ShowMessage(msg.c_str(), APP_NAME, MessageIcon::Error);
-        return false;
-    }
-
-    // Get original sample frequency for rate control
-    BASS_CHANNELINFO info;
-    BASS_ChannelGetInfo(g_stream, &info);
-    g_originalFreq = static_cast<float>(info.freq);
-
-    // Store source stream for bitrate queries
-    g_sourceStream = g_stream;
-
-    // Capture initial bitrate (may come from stream headers or BASS attribute)
-    float bitrate = 0;
-    BASS_ChannelGetAttribute(g_stream, BASS_ATTRIB_BITRATE, &bitrate);
-    g_currentBitrate = static_cast<int>(bitrate);
-    // If no BASS bitrate, ICY headers will be checked by GetCurrentBitrate()
-
-    // Set up metadata sync for stream title changes (internet radio)
-    g_metaSync = BASS_ChannelSetSync(g_stream, BASS_SYNC_META, 0, OnMetaChange, nullptr);
-
-    // For internet streams, always use SoundTouch - Speedy and Signalsmith
-    // use push-based processing that doesn't work well with network buffering
-    SetCurrentAlgorithm(TempoAlgorithm::SoundTouch);
-
-    // Check if this is a live (non-seekable) stream BEFORE setting up tempo
-    // Live streams have unknown length (-1 or 0)
-    QWORD streamLen = BASS_ChannelGetLength(g_stream, BASS_POS_BYTE);
-    g_isLiveStream = (streamLen == (QWORD)-1 || streamLen == 0);
-
-    // Create or reinitialize tempo processor
-    FreeTempoProcessor();
-    TempoProcessor* processor = GetTempoProcessor();
-    if (!processor) {
-        BASS_StreamFree(g_stream);
-        g_stream = 0;
-        g_isLoading = false;
-        ShowMessage(L"Failed to create tempo processor.", APP_NAME, MessageIcon::Error);
-        return false;
-    }
-
-    // Restore pitch settings (always works)
-    // Only restore tempo if not a live stream (tempo doesn't work on live streams)
-    if (!g_isLiveStream) {
-        processor->SetTempo(g_tempo);
-    }
-    processor->SetPitch(g_pitch);
-
-    // Initialize processor - this creates the output stream
-    g_fxStream = processor->Initialize(g_stream, g_originalFreq);
-    if (!g_fxStream) {
-        BASS_StreamFree(g_stream);
-        g_stream = 0;
-        g_isLoading = false;
-        ShowMessage(L"Failed to create tempo stream for URL.", APP_NAME, MessageIcon::Error);
-        return false;
-    }
-
-    // For SoundTouch, g_stream is now owned by g_fxStream (BASS_FX_FREESOURCE)
-    if (processor->GetAlgorithm() == TempoAlgorithm::SoundTouch) {
-        g_stream = 0;  // Prevent double-free
-    }
-
-    // Apply rate using native BASS frequency attribute (skip for live streams)
-    if (g_rate != 1.0f && !g_isLiveStream) {
-        BASS_ChannelSetAttribute(g_fxStream, BASS_ATTRIB_FREQ, g_originalFreq * g_rate);
-    }
-
-    // Set larger playback buffer for streams (helps prevent choppiness during long playback)
-    BASS_ChannelSetAttribute(g_fxStream, BASS_ATTRIB_BUFFER, 1.0f);  // 1 second buffer
-
-    // Compute ReplayGain from tags (live streams normally have none, so this stays 1.0)
-    ComputeReplayGainScale(g_sourceStream ? g_sourceStream : g_fxStream);
-
-    // Apply DSP effects (including volume DSP which handles g_volume/g_muted)
-    ApplyDSPEffects();
-
-    // Set up end sync for auto-advance
-    g_endSync = BASS_ChannelSetSync(g_fxStream, BASS_SYNC_END, 0, OnTrackEnd, nullptr);
-
-    // Start playback
-    BASS_ChannelPlay(g_fxStream, FALSE);
-
-    // Chapters, as a file has them: a podcast episode played from its URL has the
-    // same tags as the downloaded file (the source is owned by the tempo stream
-    // for SoundTouch, which passes its tags on)
-    if (g_isLiveStream) {
-        g_chapters.clear();
-    } else {
-        ParseChapters(g_stream ? g_stream : g_fxStream);
-    }
-
-    g_isLoading = false;
-    UpdateWindowTitle();
-    UpdateStatusBar();
-    return true;
-}
-
-// Parse time string in format HH:MM:SS.mmm or MM:SS.mmm or SS.mmm
-static double ParseChapterTime(const char* timeStr) {
-    int hours = 0, mins = 0;
-    double secs = 0.0;
-
-    // Try HH:MM:SS.mmm format
-    if (sscanf(timeStr, "%d:%d:%lf", &hours, &mins, &secs) == 3) {
-        return hours * 3600.0 + mins * 60.0 + secs;
-    }
-    // Try MM:SS.mmm format
-    if (sscanf(timeStr, "%d:%lf", &mins, &secs) == 2) {
-        return mins * 60.0 + secs;
-    }
-    // Try SS.mmm format
-    if (sscanf(timeStr, "%lf", &secs) == 1) {
-        return secs;
-    }
-    return 0.0;
-}
-
-// Parse VorbisComment chapters (used by Ogg, FLAC, Opus)
-// Format: CHAPTER001=00:00:00.000 and CHAPTER001NAME=Chapter Name
-static void ParseVorbisCommentChapters(HSTREAM stream) {
-    const char* tags = BASS_ChannelGetTags(stream, BASS_TAG_OGG);
-    if (!tags) return;
-
-    // Build a map of chapter numbers to times and names
-    std::map<int, std::pair<double, std::string>> chapterMap;
-
-    // Iterate through all tags
-    while (*tags) {
-        std::string tag = tags;
-        tags += tag.length() + 1;
-
-        // Check for CHAPTERnnn= format
-        if (StrNICmp(tag.c_str(), "CHAPTER", 7) == 0) {
-            const char* p = tag.c_str() + 7;
-            // Parse the chapter number
-            int num = 0;
-            while (*p >= '0' && *p <= '9') {
-                num = num * 10 + (*p - '0');
-                p++;
-            }
-            if (num > 0) {
-                if (StrNICmp(p, "NAME=", 5) == 0) {
-                    // This is a chapter name
-                    chapterMap[num].second = p + 5;
-                } else if (*p == '=') {
-                    // This is a chapter time
-                    chapterMap[num].first = ParseChapterTime(p + 1);
-                }
-            }
-        }
-    }
-
-    // Convert map to sorted chapter list
-    for (const auto& kv : chapterMap) {
-        if (kv.second.first > 0 || kv.first == 1) {  // Allow chapter 1 at 0:00
-            Chapter ch;
-            ch.position = kv.second.first;
-            if (kv.second.second.empty()) {
-                // Generate default name
-                wchar_t buf[32];
-                swprintf(buf, 32, L"Chapter %d", kv.first);
-                ch.name = buf;
-            } else {
-                ch.name = Utf8ToWide(kv.second.second);
-            }
-            g_chapters.push_back(ch);
-        }
-    }
-}
-
-// Parse ID3v2 CHAP frames (used by MP3)
-// CHAP frame structure:
-//   Element ID (null-terminated string)
-//   Start time (4 bytes, big-endian, milliseconds)
-//   End time (4 bytes)
-//   Start offset (4 bytes)
-//   End offset (4 bytes)
-//   Optional sub-frames (e.g., TIT2 for title)
-static void ParseID3v2Chapters(HSTREAM stream) {
-    const unsigned char* id3v2 = (const unsigned char*)BASS_ChannelGetTags(stream, BASS_TAG_ID3V2);
-    if (!id3v2) return;
-
-    // Check ID3v2 header
-    if (memcmp(id3v2, "ID3", 3) != 0) return;
-
-    unsigned char version = id3v2[3];
-    unsigned char flags = id3v2[5];
-
-    // Calculate tag size (syncsafe integer)
-    size_t tagSize = ((id3v2[6] & 0x7F) << 21) |
-                     ((id3v2[7] & 0x7F) << 14) |
-                     ((id3v2[8] & 0x7F) << 7) |
-                     (id3v2[9] & 0x7F);
-
-    size_t pos = 10;  // Header size
-
-    // Skip extended header if present
-    if (flags & 0x40) {
-        size_t extSize = (version >= 4) ?
-            (((id3v2[pos] & 0x7F) << 21) | ((id3v2[pos+1] & 0x7F) << 14) |
-             ((id3v2[pos+2] & 0x7F) << 7) | (id3v2[pos+3] & 0x7F)) :
-            ((id3v2[pos] << 24) | (id3v2[pos+1] << 16) |
-             (id3v2[pos+2] << 8) | id3v2[pos+3]);
-        pos += (version >= 4) ? extSize : (extSize + 4);
-    }
-
-    // Parse frames
-    while (pos + 10 < tagSize + 10) {
-        const unsigned char* frame = id3v2 + pos;
-
-        // Check for padding (all zeros)
-        if (frame[0] == 0) break;
-
-        // Get frame ID
-        char frameId[5] = {0};
-        memcpy(frameId, frame, 4);
-
-        // Get frame size
-        size_t frameSize;
-        if (version >= 4) {
-            // v2.4 uses syncsafe integers
-            frameSize = ((frame[4] & 0x7F) << 21) |
-                        ((frame[5] & 0x7F) << 14) |
-                        ((frame[6] & 0x7F) << 7) |
-                        (frame[7] & 0x7F);
-        } else {
-            // v2.3 uses normal integers
-            frameSize = (frame[4] << 24) | (frame[5] << 16) |
-                        (frame[6] << 8) | frame[7];
-        }
-
-        if (frameSize == 0 || pos + 10 + frameSize > tagSize + 10) break;
-
-        // Check if this is a CHAP frame
-        if (strcmp(frameId, "CHAP") == 0) {
-            const unsigned char* data = frame + 10;
-            size_t dataLen = frameSize;
-
-            // Find end of element ID (null-terminated)
-            size_t elemIdLen = 0;
-            while (elemIdLen < dataLen && data[elemIdLen] != 0) elemIdLen++;
-
-            if (elemIdLen + 17 <= dataLen) {  // Element ID + null + 16 bytes for times/offsets
-                // Start time in milliseconds (big-endian)
-                uint32_t startMs = (data[elemIdLen + 1] << 24) |
-                                   (data[elemIdLen + 2] << 16) |
-                                   (data[elemIdLen + 3] << 8) |
-                                   data[elemIdLen + 4];
-
-                Chapter ch;
-                ch.position = startMs / 1000.0;
-
-                // Look for TIT2 sub-frame for chapter title
-                size_t subPos = elemIdLen + 17;  // After times/offsets
-                while (subPos + 10 < dataLen) {
-                    char subFrameId[5] = {0};
-                    memcpy(subFrameId, data + subPos, 4);
-
-                    size_t subFrameSize;
-                    if (version >= 4) {
-                        subFrameSize = ((data[subPos + 4] & 0x7F) << 21) |
-                                       ((data[subPos + 5] & 0x7F) << 14) |
-                                       ((data[subPos + 6] & 0x7F) << 7) |
-                                       (data[subPos + 7] & 0x7F);
-                    } else {
-                        subFrameSize = (data[subPos + 4] << 24) |
-                                       (data[subPos + 5] << 16) |
-                                       (data[subPos + 6] << 8) |
-                                       data[subPos + 7];
-                    }
-
-                    if (subFrameSize == 0 || subPos + 10 + subFrameSize > dataLen) break;
-
-                    if (strcmp(subFrameId, "TIT2") == 0 && subFrameSize > 1) {
-                        // TIT2 frame: first byte is encoding, rest is text
-                        unsigned char encoding = data[subPos + 10];
-                        const unsigned char* textStart = data + subPos + 11;
-                        size_t textLen = subFrameSize - 1;
-
-                        if (encoding == 0 || encoding == 3) {
-                            // ISO-8859-1 or UTF-8
-                            std::string text((const char*)textStart, textLen);
-                            // Remove trailing nulls
-                            while (!text.empty() && text.back() == 0) text.pop_back();
-                            ch.name = Utf8ToWide(text);
-                        } else if (encoding == 1 || encoding == 2) {
-                            // UTF-16 with or without BOM
-                            if (textLen >= 2) {
-                                bool bigEndian = (encoding == 2) ||
-                                                 (textStart[0] == 0xFE && textStart[1] == 0xFF);
-                                const unsigned char* start = textStart;
-                                if (textStart[0] == 0xFF || textStart[0] == 0xFE) {
-                                    start += 2;
-                                    textLen -= 2;
-                                }
-                                std::wstring wtext;
-                                for (size_t i = 0; i + 1 < textLen; i += 2) {
-                                    wchar_t wc = bigEndian ?
-                                        ((start[i] << 8) | start[i + 1]) :
-                                        (start[i] | (start[i + 1] << 8));
-                                    if (wc == 0) break;
-                                    wtext += wc;
-                                }
-                                ch.name = wtext;
-                            }
-                        }
-                        break;
-                    }
-                    subPos += 10 + subFrameSize;
-                }
-
-                // Generate default name if none found
-                if (ch.name.empty()) {
-                    wchar_t buf[32];
-                    swprintf(buf, 32, L"Chapter %d", (int)g_chapters.size() + 1);
-                    ch.name = buf;
-                }
-
-                g_chapters.push_back(ch);
-            }
-        }
-
-        pos += 10 + frameSize;
-    }
-
-    // Sort chapters by position
-    std::sort(g_chapters.begin(), g_chapters.end(),
-              [](const Chapter& a, const Chapter& b) { return a.position < b.position; });
-}
-
-// Whether a path names an MP4 file (M4A, M4B, MP4), by its extension
 static bool IsMp4Path(const wchar_t* path) {
     const wchar_t* dot = wcsrchr(path, L'.');
     if (!dot) return false;
@@ -788,215 +192,123 @@ static bool IsMp4Path(const wchar_t* path) {
     return false;
 }
 
-// Parse chapters from the current stream
-void ParseChapters(HSTREAM stream, const wchar_t* path) {
+// The chapters of what was just loaded: the decoder's, or for an MP4 file FastPlay's
+// own reading of it if the decoder found none.
+static void ReadChapters(const wchar_t* path) {
     g_chapters.clear();
-
-    if (!stream) return;
-
-    // Try VorbisComment format (Ogg/FLAC/Opus)
-    ParseVorbisCommentChapters(stream);
-
-    // If no chapters found, try ID3v2 format (MP3)
-    if (g_chapters.empty()) {
-        ParseID3v2Chapters(stream);
-    }
-
-    // MP4 keeps its chapters in the file's index rather than its tags
-    if (g_chapters.empty() && path && IsMp4Path(path)) {
+    if (const audio::Decoder* decoder = audio::Current()) g_chapters = decoder->Chapters();
+    if (g_chapters.empty() && path && !IsURL(path) && IsMp4Path(path)) {
         ReadMp4Chapters(path, g_chapters);
     }
 }
 
-// Load and play a file (or URL)
-bool LoadFile(const wchar_t* path) {
-    // Check if this is a URL
-    if (IsURL(path)) {
-        return LoadURL(path);
-    }
-    g_isLoading = true;
-    g_isLiveStream = false;  // Local files are always seekable
+// Unload whatever is playing, effects first.
+static void UnloadCurrent() {
+    RemoveDSPEffects();
+    audio::Unload();
+    g_isLiveStream = false;
+    g_currentBitrate = 0;
+}
 
-    // Free existing streams safely
-    if (g_fxStream) {
-        // Remove sync first to prevent callbacks during cleanup
-        if (g_endSync) {
-            BASS_ChannelRemoveSync(g_fxStream, g_endSync);
-            g_endSync = 0;
-        }
-        // Remove DSP effects before freeing stream
-        RemoveDSPEffects();
-        // Stop playback before freeing
-        BASS_ChannelStop(g_fxStream);
-        BASS_StreamFree(g_fxStream);
-        g_fxStream = 0;
-    }
-    if (g_stream) {
-        BASS_StreamFree(g_stream);
-        g_stream = 0;
-    }
+// Play a decoder just opened for `path`: the effects, gain, chapters and saved
+// position, then play.
+static bool StartDecoder(std::unique_ptr<audio::Decoder> decoder, const wchar_t* path) {
+    g_isLiveStream = decoder->IsLive();
+    g_currentBitrate = decoder->Bitrate();
 
-    // Create source stream (use MIDI-specific function for MIDI files if sinc interp enabled)
-    BassFileName file(path);
-    if (IsMidiFile(path) && g_midiSincInterp) {
-        DWORD flags = file.flags() | BASS_STREAM_DECODE | BASS_SAMPLE_FLOAT | BASS_MIDI_SINCINTER;
-        g_stream = BASS_MIDI_StreamCreateFile(FALSE, file.get(), 0, 0, flags, 0);
-        // Apply SoundFont to this specific stream if loaded
-        if (g_stream && g_hSoundFont) {
-            BASS_MIDI_FONT font;
-            font.font = g_hSoundFont;
-            font.preset = -1;
-            font.bank = 0;
-            BASS_MIDI_StreamSetFonts(g_stream, &font, 1);
-        }
-    } else if (IsMp4Path(path) && IsXheAacFile(path)) {
-        // xHE-AAC, which no BASS decoder handles
-        g_stream = CreateXheAacStream(path, BASS_STREAM_DECODE | BASS_SAMPLE_FLOAT);
-    } else {
-        g_stream = BASS_StreamCreateFile(FALSE, file.get(), 0, 0, file.flags() | BASS_STREAM_DECODE | BASS_SAMPLE_FLOAT);
-    }
-    if (!g_stream) {
+    // The engine keeps these for the tempo processor (live streams keep their speed)
+    audio::SetTempo(g_tempo);
+    audio::SetPitch(g_pitch);
+    audio::SetRate(g_rate);
+    if (!audio::Load(std::move(decoder), static_cast<TempoAlgorithm>(g_tempoAlgorithm))) {
         g_isLoading = false;
-        // Only show error if this is the only file in the playlist
-        if (g_playlist.size() <= 1) {
-            int error = BASS_ErrorGetCode();
-            const wchar_t* errorMsg;
-            switch (error) {
-                case BASS_ERROR_FILEOPEN: errorMsg = L"Could not open the file."; break;
-                case BASS_ERROR_FILEFORM: errorMsg = L"Unsupported file format."; break;
-                case BASS_ERROR_CODEC:    errorMsg = L"Required codec is not available."; break;
-                case BASS_ERROR_FORMAT:   errorMsg = L"Unsupported sample format."; break;
-                case BASS_ERROR_MEM:      errorMsg = L"Out of memory."; break;
-                case BASS_ERROR_NO3D:     errorMsg = L"3D sound is not available."; break;
-                default:                  errorMsg = L"Unknown error."; break;
-            }
-            std::wstring msg = L"Cannot play file:\n";
-            msg += GetFileName(path);
-            msg += L"\n\n";
-            msg += errorMsg;
-            ShowMessage(msg.c_str(), APP_NAME, MessageIcon::Error);
-        }
+        g_isLiveStream = false;
+        if (g_playlist.size() <= 1) ShowMessage(L"FastPlay could not play it.", APP_NAME, MessageIcon::Error);
         return false;
     }
 
-    // Get original sample frequency for rate control
-    BASS_CHANNELINFO info;
-    BASS_ChannelGetInfo(g_stream, &info);
-    g_originalFreq = static_cast<float>(info.freq);
-
-    // Store source stream for VBR bitrate queries (not freed separately - owned by tempo processor)
-    g_sourceStream = g_stream;
-
-    // Capture initial bitrate (an xHE-AAC stream reads as PCM to BASS)
-    float bitrate = 0;
-    BASS_ChannelGetAttribute(g_stream, BASS_ATTRIB_BITRATE, &bitrate);
-    g_currentBitrate = static_cast<int>(bitrate);
-    if (int xhe = XheAacBitrate(g_stream)) g_currentBitrate = xhe;
-
-    // Set up tempo processor based on selected algorithm
-    TempoAlgorithm algo = static_cast<TempoAlgorithm>(g_tempoAlgorithm);
-    SetCurrentAlgorithm(algo);
-
-    // Create or reinitialize tempo processor
-    FreeTempoProcessor();
-    TempoProcessor* processor = GetTempoProcessor();
-
-    // Restore tempo/pitch settings to processor before initializing
-    // Note: Rate is handled via BASS_ATTRIB_FREQ below, not through tempo processor
-    processor->SetTempo(g_tempo);
-    processor->SetPitch(g_pitch);
-
-    // Initialize processor - this creates the output stream
-    g_fxStream = processor->Initialize(g_stream, g_originalFreq);
-    if (!g_fxStream) {
-        // Fall back to SoundTouch if selected algorithm fails
-        if (algo != TempoAlgorithm::SoundTouch) {
-            FreeTempoProcessor();
-            SetCurrentAlgorithm(TempoAlgorithm::SoundTouch);
-            processor = GetTempoProcessor();
-            processor->SetTempo(g_tempo);
-            processor->SetPitch(g_pitch);
-            g_fxStream = processor->Initialize(g_stream, g_originalFreq);
-        }
-
-        if (!g_fxStream) {
-            BASS_StreamFree(g_stream);
-            g_stream = 0;
-            g_isLoading = false;
-            if (g_playlist.size() <= 1) {
-                ShowMessage(L"Failed to create tempo stream.", APP_NAME, MessageIcon::Error);
-            }
-            return false;
-        }
-    }
-
-    // For SoundTouch, g_stream is now owned by g_fxStream (BASS_FX_FREESOURCE)
-    if (processor->GetAlgorithm() == TempoAlgorithm::SoundTouch) {
-        g_stream = 0;  // Prevent double-free
-    }
-
-    // Apply rate using native BASS frequency attribute
-    if (g_rate != 1.0f) {
-        BASS_ChannelSetAttribute(g_fxStream, BASS_ATTRIB_FREQ, g_originalFreq * g_rate);
-    }
-
-    // Compute ReplayGain from the file's tags before the volume DSP is attached
-    ComputeReplayGainScale(g_sourceStream ? g_sourceStream : g_fxStream);
-
-    // Apply DSP effects (including volume DSP which handles g_volume/g_muted)
+    ComputeReplayGainScale();
+    UpdateOutputGain();
     ApplyDSPEffects();
+    ReadChapters(path);
 
-    // Set up end sync for auto-advance on output stream
-    g_endSync = BASS_ChannelSetSync(g_fxStream, BASS_SYNC_END, 0, OnTrackEnd, nullptr);
-
-    // Restore saved position for this file (if any)
-    double savedPos = LoadFilePosition(path);
-    if (savedPos > 0) {
-        JumpTo(processor, savedPos);
+    // Restore the saved position for this file (if any)
+    if (!g_isLiveStream) {
+        double savedPos = LoadFilePosition(path);
+        if (savedPos > 0) JumpTo(savedPos);
     }
 
-    // Start playback on output stream
-    BASS_ChannelPlay(g_fxStream, FALSE);
-
-    // Parse chapters from file (if any)
-    // For SoundTouch, use g_fxStream since it owns g_stream
-    // For push-based processors, use g_stream (original source)
-    HSTREAM chapterStream = g_stream ? g_stream : g_fxStream;
-    ParseChapters(chapterStream, path);
-
+    audio::Play();
     g_isLoading = false;
     UpdateWindowTitle();
     UpdateStatusBar();
     return true;
 }
 
-// Sync callback when track ends
-void CALLBACK OnTrackEnd(HSYNC handle, DWORD channel, DWORD data, void* user) {
-    // Post message to main thread to advance track
-    // Use a custom message if auto-advance is disabled to load but not play
-    if (g_autoAdvance || g_repeatMode != 0) {
-        PostCommand(IDM_PLAY_NEXT, 0);
-    } else {
-        // Load next track but don't auto-play - use lParam=1 to indicate no auto-play
-        PostCommand(IDM_PLAY_NEXT, 1);
+// Load and play a URL stream
+bool LoadURL(const wchar_t* url) {
+    g_isLoading = true;
+    UnloadCurrent();
+
+    // If the URL points at a playlist file (.m3u/.pls/.m3u8), resolve it to a
+    // direct stream URL first. This covers saved favorites and directly-opened
+    // URLs; the radio search path resolves separately. Falls back to the original
+    // URL if resolution fails.
+    std::wstring resolvedUrl = ResolvePlaylistUrl(url);
+
+    std::wstring error;
+    std::unique_ptr<audio::Decoder> decoder = audio::OpenDecoder(resolvedUrl, error);
+
+    // If it couldn't be opened, the URL may redirect somewhere FFmpeg won't follow
+    // (an https podcast enclosure that redirects to http). Resolve the redirect
+    // chain ourselves and try the final URL.
+    if (!decoder) {
+        std::wstring finalUrl = ResolveHttpRedirects(resolvedUrl);
+        if (finalUrl != resolvedUrl) {
+            std::wstring retryError;
+            decoder = audio::OpenDecoder(finalUrl, retryError);
+        }
     }
+
+    if (!decoder) {
+        g_isLoading = false;
+        // Show a shortened URL in the message
+        std::wstring displayUrl = url;
+        if (displayUrl.length() > 100) displayUrl = displayUrl.substr(0, 100) + L"...";
+        ShowMessage((L"Cannot play URL:\n" + displayUrl + L"\n\n" + error).c_str(), APP_NAME, MessageIcon::Error);
+        return false;
+    }
+    return StartDecoder(std::move(decoder), url);
 }
 
-// Sync callback when stream metadata changes (for internet radio)
-void CALLBACK OnMetaChange(HSYNC handle, DWORD channel, DWORD data, void* user) {
-    // Post message to main thread to announce new track
-    RunOnUiThread([]() {
-        AnnounceStreamMetadata();
-        UpdateWindowTitle();
-    });
+// Load and play a file (or URL)
+bool LoadFile(const wchar_t* path) {
+    if (IsURL(path)) {
+        return LoadURL(path);
+    }
+    g_isLoading = true;
+    UnloadCurrent();
+
+    std::wstring error;
+    std::unique_ptr<audio::Decoder> decoder = audio::OpenDecoder(path, error);
+    if (!decoder) {
+        g_isLoading = false;
+        // Only show the error if this is the only file in the playlist
+        if (g_playlist.size() <= 1) {
+            std::wstring msg = L"Cannot play file:\n";
+            msg += GetFileName(path);
+            msg += L"\n\n";
+            msg += error;
+            ShowMessage(msg.c_str(), APP_NAME, MessageIcon::Error);
+        }
+        return false;
+    }
+    return StartDecoder(std::move(decoder), path);
 }
 
-// Called from main thread when metadata changes - announces new stream track
+// Called on the UI thread when a stream's title changes - announces the new track
 void AnnounceStreamMetadata() {
-    HSTREAM stream = g_stream ? g_stream : g_fxStream;
-    if (!stream) return;
-
-    std::string streamTitle = GetStreamTitle(stream);
+    std::string streamTitle = GetStreamTitle();
     if (streamTitle.empty()) return;
 
     // Record to song history (independent of speech setting)
@@ -1007,16 +319,19 @@ void AnnounceStreamMetadata() {
     }
 }
 
+bool IsPlaying() {
+    return audio::GetState() == audio::State::Playing;
+}
+
 // Play or pause current track
 void PlayPause() {
-    if (!g_fxStream) {
+    if (!audio::IsLoaded()) {
         // Nothing loaded - try to reload current track or play first
         Play();
         return;
     }
 
-    DWORD state = BASS_ChannelIsActive(g_fxStream);
-    if (state == BASS_ACTIVE_PLAYING) {
+    if (IsPlaying()) {
         // For live streams, stop instead of pause
         if (g_isLiveStream) {
             Stop();
@@ -1024,7 +339,7 @@ void PlayPause() {
             Pause();
         }
     } else {
-        BASS_ChannelPlay(g_fxStream, FALSE);
+        audio::Play();
         UpdateWindowTitle();
         UpdateStatusBar();
     }
@@ -1032,47 +347,16 @@ void PlayPause() {
 
 // Free current stream (used when stopping live streams)
 void FreeCurrentStream() {
-    if (g_fxStream) {
-        if (g_endSync) {
-            BASS_ChannelRemoveSync(g_fxStream, g_endSync);
-            g_endSync = 0;
-        }
-        RemoveDSPEffects();
-        BASS_ChannelStop(g_fxStream);
-        BASS_StreamFree(g_fxStream);
-        g_fxStream = 0;
-    }
-    if (g_stream) {
-        if (g_metaSync) {
-            BASS_ChannelRemoveSync(g_stream, g_metaSync);
-            g_metaSync = 0;
-        }
-        BASS_StreamFree(g_stream);
-        g_stream = 0;
-    }
-    g_sourceStream = 0;
-    g_isLiveStream = false;
-    g_currentBitrate = 0;
-    FreeTempoProcessor();
+    UnloadCurrent();
 }
 
 // Play (restart if playing, resume if paused/stopped)
 void Play() {
-    if (!g_fxStream) {
-        // Nothing loaded - check if we have a current track to reload
-        // (This handles the case where a live stream was stopped/freed)
+    if (!audio::IsLoaded()) {
+        // Nothing loaded - reload the current track if there is one
+        // (a live stream that was stopped was freed)
         if (g_currentTrack >= 0 && g_currentTrack < static_cast<int>(g_playlist.size())) {
-            const std::wstring& path = g_playlist[g_currentTrack];
-            if (IsURL(path.c_str())) {
-                LoadURL(path.c_str());
-            } else {
-                LoadFile(path.c_str());
-            }
-            if (g_fxStream) {
-                BASS_ChannelPlay(g_fxStream, FALSE);
-                UpdateWindowTitle();
-                UpdateStatusBar();
-            }
+            LoadFile(g_playlist[g_currentTrack].c_str());
             return;
         }
         // No current track, try to play first track
@@ -1082,51 +366,43 @@ void Play() {
         return;
     }
 
-    DWORD state = BASS_ChannelIsActive(g_fxStream);
-    if (state == BASS_ACTIVE_PLAYING) {
+    if (IsPlaying() && !g_isLiveStream) {
         // Already playing - restart from beginning
-        TempoProcessor* processor = GetTempoProcessor();
-        if (processor && processor->IsActive()) {
-            JumpTo(processor, 0);
-        }
+        JumpTo(0);
     }
-    BASS_ChannelPlay(g_fxStream, FALSE);
+    audio::Play();
     UpdateWindowTitle();
     UpdateStatusBar();
 }
 
 // Pause playback
 void Pause() {
-    if (g_fxStream) {
-        // Don't allow pausing live streams
-        if (g_isLiveStream) {
-            Speak("Cannot pause live stream");
-            return;
-        }
-        BASS_ChannelPause(g_fxStream);
-
-        if (g_rewindOnPauseMs > 0) {
-            Seek(-g_rewindOnPauseMs / 1000.0);
-        }
-
-        UpdateWindowTitle();
-        UpdateStatusBar();
+    if (!audio::IsLoaded()) return;
+    // Don't allow pausing live streams
+    if (g_isLiveStream) {
+        Speak("Cannot pause live stream");
+        return;
     }
+    audio::Pause();
+
+    if (g_rewindOnPauseMs > 0) {
+        Seek(-g_rewindOnPauseMs / 1000.0);
+    }
+
+    UpdateWindowTitle();
+    UpdateStatusBar();
 }
 
 // Stop playback
 void Stop() {
-    if (g_fxStream) {
-        // For live streams, free the stream entirely to disconnect
-        // (otherwise BASS buffers it and stop/play acts like pause/resume)
+    if (audio::IsLoaded()) {
+        // A live stream is disconnected entirely (otherwise it would buffer on and
+        // stop/play would act like pause/resume)
         if (g_isLiveStream) {
             FreeCurrentStream();
         } else {
-            BASS_ChannelStop(g_fxStream);
-            TempoProcessor* processor = GetTempoProcessor();
-            if (processor && processor->IsActive()) {
-                JumpTo(processor, 0);
-            }
+            audio::Stop();
+            JumpTo(0);
         }
     }
     UpdateWindowTitle();
@@ -1135,30 +411,16 @@ void Stop() {
 
 // Seek relative to current position
 void Seek(double seconds) {
-    if (!g_fxStream || g_isBusy || g_isLoading) return;
+    if (!audio::IsLoaded() || g_isBusy || g_isLoading || g_isLiveStream) return;
 
-    // Verify stream is still valid
-    DWORD state = BASS_ChannelIsActive(g_fxStream);
-    if (state == BASS_ACTIVE_STOPPED && BASS_ErrorGetCode() == BASS_ERROR_HANDLE) {
-        g_fxStream = 0;
-        g_stream = 0;
-        return;
-    }
-
-    // Use tempo processor for position handling
-    TempoProcessor* processor = GetTempoProcessor();
-    if (!processor || !processor->IsActive()) return;
-
-    double length = processor->GetLength();
+    double length = audio::Length();
     if (length <= 0) return;  // Invalid or unknown length
 
-    double currentPos = processor->GetPosition();
-    double newPos = currentPos + seconds;
+    double newPos = audio::Position() + seconds;
     if (newPos < 0) newPos = 0;
     if (newPos > length) newPos = length;
 
-    JumpTo(processor, newPos);
-
+    JumpTo(newPos);
     UpdateStatusBar();
 }
 
@@ -1179,24 +441,23 @@ void SeekTracks(int tracks) {
 
 // Seek to absolute position in seconds
 void SeekToPosition(double seconds) {
-    if (!g_fxStream) return;
-    TempoProcessor* processor = GetTempoProcessor();
-    if (!processor || !processor->IsActive()) return;
+    if (!audio::IsLoaded() || g_isLiveStream) return;
 
-    double duration = processor->GetLength();
+    double duration = audio::Length();
     if (seconds < 0) seconds = 0;
     if (seconds > duration) seconds = duration;
 
-    JumpTo(processor, seconds);
+    JumpTo(seconds);
     UpdateStatusBar();
 }
 
 // Get current playback position in seconds
 double GetCurrentPosition() {
-    if (!g_fxStream) return 0.0;
-    TempoProcessor* processor = GetTempoProcessor();
-    if (!processor || !processor->IsActive()) return 0.0;
-    return processor->GetPosition();
+    return audio::Position();
+}
+
+double GetCurrentLength() {
+    return audio::Length();
 }
 
 // Get index of current chapter based on playback position (-1 if no chapters)
@@ -1225,7 +486,7 @@ static void SpeakChapter(size_t index) {
 
 // Seek to next chapter (returns true if successful)
 bool SeekToNextChapter() {
-    if (g_chapters.empty() || !g_fxStream) return false;
+    if (g_chapters.empty() || !audio::IsLoaded()) return false;
 
     double pos = GetCurrentPosition();
 
@@ -1243,13 +504,12 @@ bool SeekToNextChapter() {
 
 // Seek to previous chapter (returns true if successful)
 bool SeekToPrevChapter() {
-    if (g_chapters.empty() || !g_fxStream) return false;
+    if (g_chapters.empty() || !audio::IsLoaded()) return false;
 
     double pos = GetCurrentPosition();
 
-    // Find the chapter before current position
-    // If we're more than 3 seconds into a chapter, go to its start
-    // Otherwise go to the previous chapter
+    // If we're more than 3 seconds into a chapter, go to its start;
+    // otherwise go to the previous chapter
     int currentChapter = GetCurrentChapterIndex();
 
     if (currentChapter < 0) {
@@ -1279,21 +539,14 @@ bool SeekToPrevChapter() {
     }
 }
 
-// Set volume (0.0 - 1.0)
-// Volume is applied via DSP (not BASS_ATTRIB_VOL) so recording captures full volume
-// Unless legacy mode is enabled, which uses BASS_ATTRIB_VOL (faster but affects recordings)
+// Set volume (0.0 - 1.0, more when amplifying). Applied after the recording tap,
+// so recording captures full volume.
 void SetVolume(float vol) {
     float maxVol = g_allowAmplify ? MAX_VOLUME_AMPLIFY : MAX_VOLUME_NORMAL;
     if (vol < 0.0f) vol = 0.0f;
     if (vol > maxVol) vol = maxVol;
     g_volume = vol;
-
-    // In legacy mode, use BASS_ATTRIB_VOL (faster but affects recordings)
-    // In normal mode, volume DSP automatically uses updated g_volume
-    if (g_legacyVolume && g_fxStream) {
-        float curvedVolume = vol * vol * g_replayGainScale;  // Apply perceptual curve + ReplayGain
-        BASS_ChannelSetAttribute(g_fxStream, BASS_ATTRIB_VOL, curvedVolume);
-    }
+    UpdateOutputGain();
 
     // Announce volume if setting enabled
     if (g_speechVolume) {
@@ -1305,73 +558,41 @@ void SetVolume(float vol) {
     UpdateStatusBar();
 }
 
-// Toggle mute (recording captures full volume since mute is applied via DSP)
-// In legacy mode, mute uses BASS_ATTRIB_VOL (faster but affects recordings)
+// Toggle mute (recording still captures full volume)
 void ToggleMute() {
     g_muted = !g_muted;
-
-    // In legacy mode, use BASS_ATTRIB_VOL
-    if (g_legacyVolume && g_fxStream) {
-        if (g_muted) {
-            BASS_ChannelSetAttribute(g_fxStream, BASS_ATTRIB_VOL, 0.0f);
-        } else {
-            float curvedVolume = g_volume * g_volume * g_replayGainScale;
-            BASS_ChannelSetAttribute(g_fxStream, BASS_ATTRIB_VOL, curvedVolume);
-        }
-    }
-    // In normal mode, volume DSP automatically uses updated g_muted
-
+    UpdateOutputGain();
     Speak(g_muted ? "Muted" : "Unmuted");
     UpdateStatusBar();
 }
 
-// Recompute ReplayGain for the currently playing track and re-apply it immediately,
-// so changing the ReplayGain options takes effect without restarting the track.
+// Recompute ReplayGain for the current track and apply it at once, so changing
+// the ReplayGain options takes effect without restarting the track.
 void RefreshReplayGain() {
-    ComputeReplayGainScale(g_sourceStream ? g_sourceStream : g_fxStream);
-
-    // In normal volume mode the volume DSP reads g_replayGainScale on the fly. In legacy
-    // mode the gain is baked into BASS_ATTRIB_VOL, so push the updated value now.
-    if (g_legacyVolume && g_fxStream) {
-        float curvedVolume = (g_muted ? 0.0f : (g_volume * g_volume)) * g_replayGainScale;
-        BASS_ChannelSetAttribute(g_fxStream, BASS_ATTRIB_VOL, curvedVolume);
-    }
+    ComputeReplayGainScale();
+    UpdateOutputGain();
 }
 
 // Speak elapsed time
 void SpeakElapsed() {
-    if (!g_fxStream) return;
-    TempoProcessor* processor = GetTempoProcessor();
-    if (!processor || !processor->IsActive()) return;
-    double pos = processor->GetPosition();
-    std::wstring posStr = FormatTime(pos);
-    Speak(WideToUtf8(posStr));
+    if (!audio::IsLoaded()) return;
+    Speak(WideToUtf8(FormatTime(audio::Position())));
 }
 
 // Speak remaining time
 void SpeakRemaining() {
-    if (!g_fxStream) return;
-    TempoProcessor* processor = GetTempoProcessor();
-    if (!processor || !processor->IsActive()) return;
-    double pos = processor->GetPosition();
-    double len = processor->GetLength();
-    double remaining = len - pos;
+    if (!audio::IsLoaded()) return;
+    double remaining = audio::Length() - audio::Position();
     if (remaining < 0) remaining = 0;
-    std::wstring remStr = FormatTime(remaining);
-    Speak(WideToUtf8(remStr));
+    Speak(WideToUtf8(FormatTime(remaining)));
 }
 
 // Speak total time
 void SpeakTotal() {
-    if (!g_fxStream) return;
-    TempoProcessor* processor = GetTempoProcessor();
-    if (!processor || !processor->IsActive()) return;
-    double len = processor->GetLength();
-    std::wstring lenStr = FormatTime(len);
-    Speak(WideToUtf8(lenStr));
+    if (!audio::IsLoaded()) return;
+    Speak(WideToUtf8(FormatTime(audio::Length())));
 }
 
-// Play a specific track by index
 // Shuffle playback order. Rather than picking a random track on every advance
 // (which makes small playlists replay the same handful of tracks before others
 // have played), we build a fixed random permutation of the playlist and walk it
@@ -1388,6 +609,7 @@ void ResetShuffleOrder() {
     g_shufflePos = -1;
 }
 
+// Play a specific track by index
 void PlayTrack(int index, bool autoPlay) {
     // Consume the advance flag up front so it never leaks past an early return.
     bool advancing = g_shuffleAdvance;
@@ -1405,7 +627,7 @@ void PlayTrack(int index, bool autoPlay) {
     g_isBusy = true;
 
     // Save position of current track before switching
-    if (g_fxStream && g_currentTrack >= 0 && g_currentTrack < static_cast<int>(g_playlist.size())) {
+    if (audio::IsLoaded() && g_currentTrack >= 0 && g_currentTrack < static_cast<int>(g_playlist.size())) {
         SaveFilePosition(g_playlist[g_currentTrack]);
     }
 
@@ -1429,9 +651,9 @@ void PlayTrack(int index, bool autoPlay) {
         }
     }
 
-    // If autoPlay is false, pause immediately after loading
-    if (loadedSuccessfully && !autoPlay && g_fxStream) {
-        BASS_ChannelPause(g_fxStream);
+    // If autoPlay is false, pause straight after loading
+    if (loadedSuccessfully && !autoPlay) {
+        audio::Pause();
     }
 
     // Notify playlist dialog about track change
@@ -1442,33 +664,19 @@ void PlayTrack(int index, bool autoPlay) {
     // Announce track change if setting is enabled
     if (loadedSuccessfully && g_speechTrackChange) {
         // For streams, announce the stream title; for files, announce title or filename
-        HSTREAM stream = g_stream ? g_stream : g_fxStream;
-        if (stream) {
-            std::string streamTitle = GetStreamTitle(stream);
-            if (!streamTitle.empty()) {
-                Speak(streamTitle);
+        std::string streamTitle = GetStreamTitle();
+        if (!streamTitle.empty()) {
+            Speak(streamTitle);
+        } else {
+            std::string title = GetMetadataTag("TITLE");
+            std::string artist = GetMetadataTag("ARTIST");
+            if (!title.empty() && !artist.empty()) {
+                Speak(artist + " - " + title);
+            } else if (!title.empty()) {
+                Speak(title);
             } else {
-                std::string title = GetMetadataTag(stream, "TITLE");
-                std::string artist = GetMetadataTag(stream, "ARTIST");
-
-                // Try ID3v1 if nothing found
-                if (title.empty()) {
-                    const TAG_ID3* id3 = (const TAG_ID3*)BASS_ChannelGetTags(stream, BASS_TAG_ID3);
-                    if (id3) {
-                        title = GetTrimmedTag(id3->title, 30);
-                        if (artist.empty()) artist = GetTrimmedTag(id3->artist, 30);
-                    }
-                }
-
-                if (!title.empty() && !artist.empty()) {
-                    Speak(artist + " - " + title);
-                } else if (!title.empty()) {
-                    Speak(title);
-                } else {
-                    // Fall back to filename
-                    std::wstring path = g_playlist[g_currentTrack];
-                    Speak(WideToUtf8(GetTrackName(path)));
-                }
+                // Fall back to filename
+                Speak(WideToUtf8(GetTrackName(g_playlist[g_currentTrack])));
             }
         }
     }
@@ -1574,16 +782,10 @@ void PrevTrack() {
     if (g_playlist.empty() || g_isBusy) return;
 
     // If we're more than 3 seconds in, restart current track
-    if (g_fxStream) {
-        TempoProcessor* processor = GetTempoProcessor();
-        if (processor && processor->IsActive()) {
-            double pos = processor->GetPosition();
-            if (pos > 3.0) {
-                JumpTo(processor, 0);
-                UpdateStatusBar();
-                return;
-            }
-        }
+    if (audio::IsLoaded() && !g_isLiveStream && audio::Position() > 3.0) {
+        JumpTo(0);
+        UpdateStatusBar();
+        return;
     }
 
     int prev;
@@ -1604,398 +806,44 @@ void PrevTrack() {
     PlayTrack(prev);
 }
 
-// Reinitialize BASS with a different device
-bool ReinitBass(int device) {
+// Move playback to another device, carrying on where it was
+bool SwitchAudioDevice(int device) {
     // Save current state
-    bool wasPlaying = g_fxStream && (BASS_ChannelIsActive(g_fxStream) == BASS_ACTIVE_PLAYING);
-    bool wasPaused = g_fxStream && (BASS_ChannelIsActive(g_fxStream) == BASS_ACTIVE_PAUSED);
-    double position = 0;
+    const bool wasLoaded = audio::IsLoaded();
+    const bool wasPlaying = IsPlaying();
+    double position = wasLoaded ? audio::Position() : 0.0;
     std::wstring currentFile;
-
-    if (g_fxStream) {
-        // Use tempo processor to get position
-        TempoProcessor* processor = GetTempoProcessor();
-        if (processor && processor->IsActive()) {
-            position = processor->GetPosition();
-        }
-        if (g_currentTrack >= 0 && g_currentTrack < static_cast<int>(g_playlist.size())) {
-            currentFile = g_playlist[g_currentTrack];
-        }
-        // Remove DSP effects before freeing stream (resets handles to 0)
-        RemoveDSPEffects();
-        // Free tempo processor before freeing BASS
-        FreeTempoProcessor();
-        if (g_fxStream) {
-            BASS_StreamFree(g_fxStream);
-            g_fxStream = 0;
-        }
-        if (g_stream) {
-            BASS_StreamFree(g_stream);
-            g_stream = 0;
-        }
+    if (wasLoaded && g_currentTrack >= 0 && g_currentTrack < static_cast<int>(g_playlist.size())) {
+        currentFile = g_playlist[g_currentTrack];
     }
 
-    BASS_Free();
-
-    if (!BASS_Init(device, 44100, 0, BassWindow(GetMainWindowHandle()), nullptr)) {
-        // Try default device as fallback
-        if (device != -1) {
-            if (BASS_Init(-1, 44100, 0, BassWindow(GetMainWindowHandle()), nullptr)) {
-                g_selectedDevice = -1;
-                g_selectedDeviceName.clear();
-            }
-        }
+    UnloadCurrent();
+    std::wstring name = device > 0 ? GetDeviceName(device) : L"";
+    if (!audio::SwitchDevice(name, g_bufferSize)) {
+        // Back to the default device
+        audio::SwitchDevice(L"", g_bufferSize);
+        g_selectedDevice = -1;
+        g_selectedDeviceName.clear();
         return false;
     }
+    g_selectedDevice = audio::UsingDefaultDevice() ? -1 : device;
+    g_selectedDeviceName = audio::UsingDefaultDevice() ? L"" : audio::CurrentDeviceName();
 
-    g_selectedDevice = device;
-    // Update device name from the actual device
-    g_selectedDeviceName = GetDeviceName(device);
-
-    // Restore playback state if we had a file loaded
-    if (!currentFile.empty()) {
-        LoadFile(currentFile.c_str());
-        if (g_fxStream) {
-            // Use tempo processor to set position
-            TempoProcessor* processor = GetTempoProcessor();
-            if (processor && processor->IsActive()) {
-                JumpTo(processor, position);
-            }
-            // LoadFile() auto-starts playback, so we need to pause/stop if we weren't playing
-            if (!wasPlaying) {
-                if (wasPaused) {
-                    BASS_ChannelPause(g_fxStream);
-                } else {
-                    // Was stopped - pause the stream (stop would reset position)
-                    BASS_ChannelPause(g_fxStream);
-                }
-            }
-            UpdateWindowTitle();
-            UpdateStatusBar();
-        }
+    // Carry on with what was loaded
+    if (!currentFile.empty() && LoadFile(currentFile.c_str())) {
+        if (!g_isLiveStream) JumpTo(position);
+        if (!wasPlaying) audio::Pause();
+        UpdateWindowTitle();
+        UpdateStatusBar();
     }
-
     return true;
 }
 
-// ID3v1 genre names table
-static const char* g_id3Genres[] = {
-    "Blues", "Classic Rock", "Country", "Dance", "Disco", "Funk", "Grunge",
-    "Hip-Hop", "Jazz", "Metal", "New Age", "Oldies", "Other", "Pop", "R&B",
-    "Rap", "Reggae", "Rock", "Techno", "Industrial", "Alternative", "Ska",
-    "Death Metal", "Pranks", "Soundtrack", "Euro-Techno", "Ambient", "Trip-Hop",
-    "Vocal", "Jazz+Funk", "Fusion", "Trance", "Classical", "Instrumental",
-    "Acid", "House", "Game", "Sound Clip", "Gospel", "Noise", "AlternRock",
-    "Bass", "Soul", "Punk", "Space", "Meditative", "Instrumental Pop",
-    "Instrumental Rock", "Ethnic", "Gothic", "Darkwave", "Techno-Industrial",
-    "Electronic", "Pop-Folk", "Eurodance", "Dream", "Southern Rock", "Comedy",
-    "Cult", "Gangsta", "Top 40", "Christian Rap", "Pop/Funk", "Jungle",
-    "Native American", "Cabaret", "New Wave", "Psychadelic", "Rave", "Showtunes",
-    "Trailer", "Lo-Fi", "Tribal", "Acid Punk", "Acid Jazz", "Polka", "Retro",
-    "Musical", "Rock & Roll", "Hard Rock"
-};
-static const int g_id3GenreCount = sizeof(g_id3Genres) / sizeof(g_id3Genres[0]);
-
-// Helper: Get a tag value from null-terminated string list (OGG, APE, MP4, etc.)
-static std::string GetTagFromList(const char* tags, const char* key) {
-    if (!tags || !key) return "";
-
-    size_t keyLen = strlen(key);
-    const char* p = tags;
-
-    while (*p) {
-        // Check if this line starts with key= (case insensitive)
-        if (StrNICmp(p, key, keyLen) == 0 && p[keyLen] == '=') {
-            return std::string(p + keyLen + 1);
-        }
-        p += strlen(p) + 1;  // Move to next string
-    }
-    return "";
-}
-
-// Helper: Parse ID3v2 text frame (handles encoding byte)
-static std::string ParseID3v2TextFrame(const unsigned char* data, size_t size) {
-    if (!data || size < 1) return "";
-
-    unsigned char encoding = data[0];
-    const unsigned char* text = data + 1;
-    size_t textLen = size - 1;
-
-    if (textLen == 0) return "";
-
-    if (encoding == 0) {
-        // ISO-8859-1 (Latin-1) - convert to UTF-8
-        // Remove trailing nulls (single-byte encoding)
-        while (textLen > 0 && text[textLen - 1] == 0) textLen--;
-        if (textLen == 0) return "";
-
-        std::wstring wstr;
-        for (size_t i = 0; i < textLen; i++) {
-            wstr += static_cast<wchar_t>(text[i]);
-        }
-        return WideToUtf8(wstr);
-    } else if (encoding == 1) {
-        // UTF-16 with BOM
-        if (textLen < 2) return "";
-        bool bigEndian = (text[0] == 0xFE && text[1] == 0xFF);
-        const unsigned char* textStart = text + 2;
-        size_t byteCount = textLen - 2;
-
-        // Remove trailing null WORDS (2 bytes at a time for UTF-16)
-        while (byteCount >= 2 && textStart[byteCount - 1] == 0 && textStart[byteCount - 2] == 0) {
-            byteCount -= 2;
-        }
-
-        size_t charCount = byteCount / 2;
-
-        // Collect the UTF-16 units, handling endianness
-        std::u16string wstr;
-        for (size_t i = 0; i < charCount; i++) {
-            char16_t ch;
-            if (bigEndian) {
-                ch = (textStart[i * 2] << 8) | textStart[i * 2 + 1];
-            } else {
-                ch = textStart[i * 2] | (textStart[i * 2 + 1] << 8);
-            }
-            if (ch == 0) break;  // Stop at null terminator
-            wstr += ch;
-        }
-
-        // Convert to UTF-8
-        return Utf16ToUtf8(wstr);
-    } else if (encoding == 2) {
-        // UTF-16BE without BOM
-        // Remove trailing null WORDS (2 bytes at a time)
-        while (textLen >= 2 && text[textLen - 1] == 0 && text[textLen - 2] == 0) {
-            textLen -= 2;
-        }
-
-        size_t charCount = textLen / 2;
-        std::u16string wstr;
-        for (size_t i = 0; i < charCount; i++) {
-            char16_t ch = static_cast<char16_t>((text[i * 2] << 8) | text[i * 2 + 1]);
-            if (ch == 0) break;
-            wstr += ch;
-        }
-        return Utf16ToUtf8(wstr);
-    } else if (encoding == 3) {
-        // UTF-8 - remove trailing nulls (single-byte null terminator)
-        while (textLen > 0 && text[textLen - 1] == 0) textLen--;
-        if (textLen == 0) return "";
-        return std::string((const char*)text, textLen);
-    }
-    return "";
-}
-
-// Helper: Get ID3v2 frame by ID (e.g., "TIT2", "TPE1", "TALB")
-static std::string GetID3v2Frame(const unsigned char* tag, const char* frameId) {
-    if (!tag || !frameId) return "";
-
-    // Check ID3v2 header
-    if (tag[0] != 'I' || tag[1] != 'D' || tag[2] != '3') return "";
-
-    unsigned char version = tag[3];
-    // unsigned char revision = tag[4];
-    unsigned char flags = tag[5];
-
-    // Tag size (syncsafe integer)
-    size_t tagSize = ((tag[6] & 0x7F) << 21) | ((tag[7] & 0x7F) << 14) |
-                     ((tag[8] & 0x7F) << 7) | (tag[9] & 0x7F);
-
-    const unsigned char* pos = tag + 10;
-    const unsigned char* end = tag + 10 + tagSize;
-
-    // Skip extended header if present
-    if (flags & 0x40) {
-        size_t extSize = (pos[0] << 24) | (pos[1] << 16) | (pos[2] << 8) | pos[3];
-        pos += 4 + extSize;
-    }
-
-    // Parse frames
-    while (pos < end - 10) {
-        // Frame header
-        char id[5] = {(char)pos[0], (char)pos[1], (char)pos[2], (char)pos[3], 0};
-
-        // End of frames (padding)
-        if (id[0] == 0) break;
-
-        size_t frameSize;
-        if (version >= 4) {
-            // ID3v2.4: syncsafe integer
-            frameSize = ((pos[4] & 0x7F) << 21) | ((pos[5] & 0x7F) << 14) |
-                        ((pos[6] & 0x7F) << 7) | (pos[7] & 0x7F);
-        } else {
-            // ID3v2.3: regular integer
-            frameSize = (pos[4] << 24) | (pos[5] << 16) | (pos[6] << 8) | pos[7];
-        }
-
-        // unsigned short frameFlags = (pos[8] << 8) | pos[9];
-        pos += 10;
-
-        if (frameSize == 0 || pos + frameSize > end) break;
-
-        // Check if this is the frame we want
-        if (strcmp(id, frameId) == 0) {
-            return ParseID3v2TextFrame(pos, frameSize);
-        }
-
-        pos += frameSize;
-    }
-
-    return "";
-}
-
-// Get the value of an ID3v2 TXXX (user-defined text) frame by its description,
-// e.g. description "REPLAYGAIN_TRACK_GAIN" -> value "-6.48 dB". Handles Latin-1
-// and UTF-8 encoded frames (which is what ReplayGain taggers use); UTF-16 TXXX
-// frames are skipped. Comparison is case-insensitive.
-static std::string GetID3v2UserText(const unsigned char* tag, const char* desc) {
-    if (!tag || !desc) return "";
-    if (tag[0] != 'I' || tag[1] != 'D' || tag[2] != '3') return "";
-
-    unsigned char version = tag[3];
-    unsigned char flags = tag[5];
-    size_t tagSize = ((tag[6] & 0x7F) << 21) | ((tag[7] & 0x7F) << 14) |
-                     ((tag[8] & 0x7F) << 7) | (tag[9] & 0x7F);
-
-    const unsigned char* pos = tag + 10;
-    const unsigned char* end = tag + 10 + tagSize;
-
-    if (flags & 0x40) {
-        size_t extSize = (pos[0] << 24) | (pos[1] << 16) | (pos[2] << 8) | pos[3];
-        pos += 4 + extSize;
-    }
-
-    while (pos < end - 10) {
-        char id[5] = {(char)pos[0], (char)pos[1], (char)pos[2], (char)pos[3], 0};
-        if (id[0] == 0) break;
-
-        size_t frameSize;
-        if (version >= 4) {
-            frameSize = ((pos[4] & 0x7F) << 21) | ((pos[5] & 0x7F) << 14) |
-                        ((pos[6] & 0x7F) << 7) | (pos[7] & 0x7F);
-        } else {
-            frameSize = (pos[4] << 24) | (pos[5] << 16) | (pos[6] << 8) | pos[7];
-        }
-        pos += 10;
-        if (frameSize == 0 || pos + frameSize > end) break;
-
-        if (strcmp(id, "TXXX") == 0 && frameSize >= 2) {
-            unsigned char enc = pos[0];
-            if (enc == 0 || enc == 3) {  // Latin-1 or UTF-8: description is single-byte, null-terminated
-                size_t i = 1;
-                while (i < frameSize && pos[i] != 0) i++;
-                std::string description((const char*)pos + 1, i - 1);
-                if (StrICmp(description.c_str(), desc) == 0) {
-                    size_t valStart = i + 1;
-                    if (valStart <= frameSize) {
-                        size_t valLen = frameSize - valStart;
-                        // Trim trailing nulls
-                        while (valLen > 0 && pos[valStart + valLen - 1] == 0) valLen--;
-                        return std::string((const char*)pos + valStart, valLen);
-                    }
-                }
-            }
-        }
-
-        pos += frameSize;
-    }
-    return "";
-}
-
-// Map common tag names to ID3v2 frame IDs
-static const char* GetID3v2FrameId(const char* tagName) {
-    if (StrICmp(tagName, "TITLE") == 0) return "TIT2";
-    if (StrICmp(tagName, "ARTIST") == 0) return "TPE1";
-    if (StrICmp(tagName, "ALBUM") == 0) return "TALB";
-    if (StrICmp(tagName, "YEAR") == 0) return "TYER";
-    if (StrICmp(tagName, "DATE") == 0) return "TDRC";
-    if (StrICmp(tagName, "TRACK") == 0) return "TRCK";
-    if (StrICmp(tagName, "TRACKNUMBER") == 0) return "TRCK";
-    if (StrICmp(tagName, "GENRE") == 0) return "TCON";
-    if (StrICmp(tagName, "COMMENT") == 0) return "COMM";
-    return nullptr;
-}
-
-// Helper: Get tag string trimmed (for ID3v1 fixed-length fields)
-static std::string GetTrimmedTag(const char* data, size_t maxLen) {
-    if (!data) return "";
-
-    // Find actual length (ID3v1 fields are space-padded)
-    size_t len = 0;
-    for (size_t i = 0; i < maxLen && data[i] != '\0'; i++) {
-        len = i + 1;
-    }
-
-    // Trim trailing spaces
-    while (len > 0 && (data[len - 1] == ' ' || data[len - 1] == '\0')) {
-        len--;
-    }
-
-    return std::string(data, len);
-}
-
-// Helper: Parse ICY headers (format: "key:value\r\n")
-static std::string GetICYTag(const char* tags, const char* key) {
-    if (!tags || !key) return "";
-
-    size_t keyLen = strlen(key);
-    const char* p = tags;
-
-    while (*p) {
-        // Check if line starts with key: (case insensitive)
-        if (StrNICmp(p, key, keyLen) == 0 && p[keyLen] == ':') {
-            const char* value = p + keyLen + 1;
-            // Skip leading spaces
-            while (*value == ' ') value++;
-            // Find end (newline or null)
-            const char* end = value;
-            while (*end && *end != '\r' && *end != '\n') end++;
-            return std::string(value, end - value);
-        }
-        // Move to next line
-        while (*p && *p != '\n') p++;
-        if (*p) p++;
-    }
-    return "";
-}
-
-// Helper: Parse Shoutcast META tags (format: "StreamTitle='value';")
-static std::string GetMetaTag(const char* meta, const char* key) {
-    if (!meta || !key) return "";
-
-    // Try standard Shoutcast format: key='value';
-    // Note: Look for '; to handle apostrophes in titles (e.g., "Don't Call Me Up")
-    std::string searchKey = std::string(key) + "='";
-    const char* start = strstr(meta, searchKey.c_str());
-    if (start) {
-        start += searchKey.length();
-        // Look for '; which marks end of field, not just ' which could be an apostrophe
-        const char* end = strstr(start, "';");
-        if (end) {
-            return std::string(start, end - start);
-        } else {
-            // No semicolon - might be last field, find trailing quote
-            end = start + strlen(start);
-            if (end > start && *(end - 1) == '\'') {
-                return std::string(start, end - start - 1);
-            }
-        }
-    }
-
-    // Try iHeart/alternative format: key="value" (with double quotes)
-    searchKey = std::string(key) + "=\"";
-    start = strstr(meta, searchKey.c_str());
-    if (start) {
-        start += searchKey.length();
-        // Find closing quote, but handle nested quotes in url field
-        const char* end = start;
-        while (*end && *end != '"') end++;
-        if (*end == '"') return std::string(start, end - start);
-    }
-
-    return "";
-}
+// ---------------------------------------------------------------------------
+// Tags. The decoder has them all in one list (ID3v1 and v2, Vorbis comments, APE,
+// MP4, WMA and RIFF tags alike); internet radio adds its stream title and the
+// station's headers.
+// ---------------------------------------------------------------------------
 
 // Helper: Parse iHeart-style StreamTitle
 // Format 1: title="...",artist="...",url="..."
@@ -2017,7 +865,6 @@ static void ParseIHeartTitle(const std::string& streamTitle, std::string& artist
 
     // Check for Format 1: title="...",artist="..."
     if (streamTitle.find("title=\"") != std::string::npos) {
-        // Extract title
         size_t titleStart = streamTitle.find("title=\"");
         if (titleStart != std::string::npos) {
             titleStart += 7;  // Skip 'title="'
@@ -2026,8 +873,6 @@ static void ParseIHeartTitle(const std::string& streamTitle, std::string& artist
                 title = streamTitle.substr(titleStart, titleEnd - titleStart);
             }
         }
-
-        // Extract artist
         size_t artistStart = streamTitle.find("artist=\"");
         if (artistStart != std::string::npos) {
             artistStart += 8;  // Skip 'artist="'
@@ -2061,177 +906,58 @@ static void ParseStreamTitle(const std::string& streamTitle, std::string& artist
     }
 }
 
-// Helper: Try to get a tag from any available format
-static std::string GetMetadataTag(HSTREAM stream, const char* tagName) {
-    if (!stream) return "";
+// The raw title of the stream playing (its StreamTitle), if any
+static std::string RawStreamTitle() {
+    const audio::Decoder* decoder = audio::Current();
+    return decoder ? decoder->StreamTitle() : "";
+}
 
-    std::string result;
+// A tag from the file, or for a stream its title, artist, station and genre
+static std::string GetMetadataTag(const char* tagName) {
+    const audio::Decoder* decoder = audio::Current();
+    if (!decoder) return "";
 
-    // Try OGG/Vorbis comments first (also used by FLAC, Opus)
-    const char* oggTags = BASS_ChannelGetTags(stream, BASS_TAG_OGG);
-    if (oggTags) {
-        result = GetTagFromList(oggTags, tagName);
-        if (!result.empty()) return result;
-    }
+    std::string result = decoder->Tag(tagName);
+    if (!result.empty()) return result;
 
-    // Try APE tags
-    const char* apeTags = BASS_ChannelGetTags(stream, BASS_TAG_APE);
-    if (apeTags) {
-        result = GetTagFromList(apeTags, tagName);
-        if (!result.empty()) return result;
-    }
-
-    // Try MP4/iTunes tags (an xHE-AAC file's come from FastPlay's own reader)
-    const char* mp4Tags = BASS_ChannelGetTags(stream, BASS_TAG_MP4);
-    if (!mp4Tags) mp4Tags = XheAacTags(stream);
-    if (mp4Tags) {
-        result = GetTagFromList(mp4Tags, tagName);
-        if (!result.empty()) return result;
-    }
-
-    // Try WMA tags
-    const char* wmaTags = BASS_ChannelGetTags(stream, BASS_TAG_WMA);
-    if (wmaTags) {
-        result = GetTagFromList(wmaTags, tagName);
-        if (!result.empty()) return result;
-    }
-
-    // Try RIFF INFO tags (for WAV files)
-    const char* riffTags = BASS_ChannelGetTags(stream, BASS_TAG_RIFF_INFO);
-    if (riffTags) {
-        result = GetTagFromList(riffTags, tagName);
-        if (!result.empty()) return result;
-    }
-
-    // Try Media Foundation tags
-    const char* mfTags = BASS_ChannelGetTags(stream, BASS_TAG_MF);
-    if (mfTags) {
-        result = GetTagFromList(mfTags, tagName);
-        if (!result.empty()) return result;
-    }
-
-    // Try ID3v2 tags (common for MP3 files)
-    const unsigned char* id3v2 = (const unsigned char*)BASS_ChannelGetTags(stream, BASS_TAG_ID3V2);
-    if (id3v2) {
-        const char* frameId = GetID3v2FrameId(tagName);
-        if (frameId) {
-            result = GetID3v2Frame(id3v2, frameId);
-            if (!result.empty()) return result;
+    // Internet radio: the current song's title and artist, the station's name
+    // (as the title when there is no song) and genre
+    const bool isTitle = StrICmp(tagName, "TITLE") == 0;
+    const bool isArtist = StrICmp(tagName, "ARTIST") == 0;
+    if (isTitle || isArtist) {
+        std::string streamTitle = decoder->StreamTitle();
+        if (!streamTitle.empty()) {
+            std::string artist, title;
+            ParseStreamTitle(streamTitle, artist, title);
+            if (isTitle && !title.empty()) return title;
+            if (isArtist && !artist.empty()) return artist;
         }
+        if (isTitle) return decoder->Tag("icy-name");
+    } else if (StrICmp(tagName, "GENRE") == 0) {
+        return decoder->Tag("icy-genre");
     }
-
-    // Try ICY (Shoutcast/Icecast) headers for streams
-    const char* icyTags = BASS_ChannelGetTags(stream, BASS_TAG_ICY);
-    if (icyTags) {
-        // Map common tag names to ICY header names
-        if (StrICmp(tagName, "TITLE") == 0 || StrICmp(tagName, "ARTIST") == 0) {
-            // For title/artist, check META first (has current song info)
-            const char* meta = BASS_ChannelGetTags(stream, BASS_TAG_META);
-            if (meta) {
-                std::string streamTitle = GetMetaTag(meta, "StreamTitle");
-                if (!streamTitle.empty()) {
-                    std::string artist, title;
-                    ParseStreamTitle(streamTitle, artist, title);
-                    if (StrICmp(tagName, "TITLE") == 0 && !title.empty()) return title;
-                    if (StrICmp(tagName, "ARTIST") == 0 && !artist.empty()) return artist;
-                }
-            }
-            // Fall back to station name for title
-            if (StrICmp(tagName, "TITLE") == 0) {
-                result = GetICYTag(icyTags, "icy-name");
-                if (!result.empty()) return result;
-            }
-        } else if (StrICmp(tagName, "GENRE") == 0) {
-            result = GetICYTag(icyTags, "icy-genre");
-            if (!result.empty()) return result;
-        }
-    }
-
-    // Also try HTTP headers for streams
-    const char* httpTags = BASS_ChannelGetTags(stream, BASS_TAG_HTTP);
-    if (httpTags) {
-        // HTTP headers use similar format to ICY
-        if (StrICmp(tagName, "TITLE") == 0) {
-            result = GetICYTag(httpTags, "icy-name");
-            if (!result.empty()) return result;
-        } else if (StrICmp(tagName, "GENRE") == 0) {
-            result = GetICYTag(httpTags, "icy-genre");
-            if (!result.empty()) return result;
-        }
-    }
-
     return "";
 }
 
-// Get stream title directly from META tags (for streams)
-// Returns formatted "Artist - Title" or just raw stream title
-static std::string GetStreamTitle(HSTREAM stream) {
-    if (!stream) return "";
+// The stream's title as "Artist - Title" (or just the title)
+static std::string GetStreamTitle() {
+    std::string rawTitle = RawStreamTitle();
+    if (rawTitle.empty()) return "";
 
-    const char* meta = BASS_ChannelGetTags(stream, BASS_TAG_META);
-    if (meta) {
-        std::string rawTitle = GetMetaTag(meta, "StreamTitle");
-        if (!rawTitle.empty()) {
-            // Try to parse iHeart or standard format
-            std::string artist, title;
-            ParseStreamTitle(rawTitle, artist, title);
-
-            // Return formatted string
-            if (!artist.empty() && !title.empty()) {
-                return artist + " - " + title;
-            } else if (!title.empty()) {
-                return title;
-            }
-            // Fall back to raw title if parsing failed
-            return rawTitle;
-        }
+    std::string artist, title;
+    ParseStreamTitle(rawTitle, artist, title);
+    if (!artist.empty() && !title.empty()) {
+        return artist + " - " + title;
+    } else if (!title.empty()) {
+        return title;
     }
-    return "";
+    return rawTitle;  // parsing failed
 }
 
 // Get station name from ICY headers
-static std::string GetStationName(HSTREAM stream) {
-    if (!stream) return "";
-
-    const char* icyTags = BASS_ChannelGetTags(stream, BASS_TAG_ICY);
-    if (icyTags) {
-        std::string name = GetICYTag(icyTags, "icy-name");
-        if (!name.empty()) return name;
-    }
-
-    const char* httpTags = BASS_ChannelGetTags(stream, BASS_TAG_HTTP);
-    if (httpTags) {
-        std::string name = GetICYTag(httpTags, "icy-name");
-        if (!name.empty()) return name;
-    }
-
-    return "";
-}
-
-// Get stream bitrate from ICY headers
-static int GetStreamBitrate(HSTREAM stream) {
-    if (!stream) return 0;
-
-    const char* icyTags = BASS_ChannelGetTags(stream, BASS_TAG_ICY);
-    if (icyTags) {
-        std::string br = GetICYTag(icyTags, "icy-br");
-        if (!br.empty()) return atoi(br.c_str());
-    }
-
-    const char* httpTags = BASS_ChannelGetTags(stream, BASS_TAG_HTTP);
-    if (httpTags) {
-        std::string br = GetICYTag(httpTags, "icy-br");
-        if (!br.empty()) return atoi(br.c_str());
-    }
-
-    return 0;
-}
-
-// Get the underlying stream (before tempo processing) for tag reading
-static HSTREAM GetTagStream() {
-    // For tag reading, we need the original stream, not the tempo stream
-    // g_stream is the original file stream, g_fxStream is the tempo-processed one
-    return g_stream ? g_stream : g_fxStream;
+static std::string GetStationName() {
+    const audio::Decoder* decoder = audio::Current();
+    return decoder ? decoder->Tag("icy-name") : "";
 }
 
 // Helper to speak UTF-8 text with proper Unicode support
@@ -2239,42 +965,42 @@ static void SpeakUtf8(const std::string& text) {
     SpeakW(Utf8ToWide(text));
 }
 
+// "Artist - Title", or whichever there is
+static std::string TitleText() {
+    std::string streamTitle = GetStreamTitle();
+    if (!streamTitle.empty()) return streamTitle;
+    std::string title = GetMetadataTag("TITLE");
+    std::string artist = GetMetadataTag("ARTIST");
+    if (!artist.empty() && !title.empty()) return artist + " - " + title;
+    return !title.empty() ? title : artist;
+}
+
+static std::string YearText() {
+    std::string year = GetMetadataTag("DATE");
+    if (year.empty()) year = GetMetadataTag("YEAR");
+    return year;
+}
+
+static std::string TrackText() {
+    std::string track = GetMetadataTag("TRACKNUMBER");
+    if (track.empty()) track = GetMetadataTag("TRACK");
+    return track;
+}
+
+static std::string CommentText() {
+    std::string comment = GetMetadataTag("COMMENT");
+    if (comment.empty()) comment = GetMetadataTag("DESCRIPTION");
+    return comment;
+}
+
 void SpeakTagTitle() {
-    HSTREAM stream = GetTagStream();
-    if (!stream) {
+    if (!audio::IsLoaded()) {
         Speak("Nothing playing");
         return;
     }
-
-    // For streams, first check if there's a full stream title (often "Artist - Title")
-    std::string streamTitle = GetStreamTitle(stream);
-    if (!streamTitle.empty()) {
-        SpeakUtf8(streamTitle);
-        return;
-    }
-
-    std::string title = GetMetadataTag(stream, "TITLE");
-    std::string artist = GetMetadataTag(stream, "ARTIST");
-
-    // Try ID3v1 if nothing found
-    if (title.empty() || artist.empty()) {
-        const TAG_ID3* id3 = (const TAG_ID3*)BASS_ChannelGetTags(stream, BASS_TAG_ID3);
-        if (id3) {
-            if (title.empty()) {
-                title = GetTrimmedTag(id3->title, 30);
-            }
-            if (artist.empty()) {
-                artist = GetTrimmedTag(id3->artist, 30);
-            }
-        }
-    }
-
-    if (!artist.empty() && !title.empty()) {
-        SpeakUtf8(artist + " - " + title);
-    } else if (!title.empty()) {
-        SpeakUtf8(title);
-    } else if (!artist.empty()) {
-        SpeakUtf8(artist);
+    std::string text = TitleText();
+    if (!text.empty()) {
+        SpeakUtf8(text);
     } else if (g_currentTrack >= 0 && g_currentTrack < static_cast<int>(g_playlist.size())) {
         // No usable metadata - fall back to the filename
         SpeakW(GetTrackName(g_playlist[g_currentTrack]));
@@ -2284,22 +1010,11 @@ void SpeakTagTitle() {
 }
 
 void SpeakTagArtist() {
-    HSTREAM stream = GetTagStream();
-    if (!stream) {
+    if (!audio::IsLoaded()) {
         Speak("Nothing playing");
         return;
     }
-
-    std::string artist = GetMetadataTag(stream, "ARTIST");
-
-    // Try ID3v1 if nothing found
-    if (artist.empty()) {
-        const TAG_ID3* id3 = (const TAG_ID3*)BASS_ChannelGetTags(stream, BASS_TAG_ID3);
-        if (id3) {
-            artist = GetTrimmedTag(id3->artist, 30);
-        }
-    }
-
+    std::string artist = GetMetadataTag("ARTIST");
     if (!artist.empty()) {
         SpeakUtf8("Artist: " + artist);
     } else {
@@ -2308,31 +1023,19 @@ void SpeakTagArtist() {
 }
 
 void SpeakTagAlbum() {
-    HSTREAM stream = GetTagStream();
-    if (!stream) {
+    if (!audio::IsLoaded()) {
         Speak("Nothing playing");
         return;
     }
-
-    std::string album = GetMetadataTag(stream, "ALBUM");
-
-    // Try ID3v1 if nothing found
-    if (album.empty()) {
-        const TAG_ID3* id3 = (const TAG_ID3*)BASS_ChannelGetTags(stream, BASS_TAG_ID3);
-        if (id3) {
-            album = GetTrimmedTag(id3->album, 30);
-        }
-    }
-
+    std::string album = GetMetadataTag("ALBUM");
     // For streams, fall back to station name
     if (album.empty()) {
-        std::string station = GetStationName(stream);
+        std::string station = GetStationName();
         if (!station.empty()) {
             SpeakUtf8("Station: " + station);
             return;
         }
     }
-
     if (!album.empty()) {
         SpeakUtf8("Album: " + album);
     } else {
@@ -2341,23 +1044,11 @@ void SpeakTagAlbum() {
 }
 
 void SpeakTagYear() {
-    HSTREAM stream = GetTagStream();
-    if (!stream) {
+    if (!audio::IsLoaded()) {
         Speak("Nothing playing");
         return;
     }
-
-    std::string year = GetMetadataTag(stream, "DATE");
-    if (year.empty()) year = GetMetadataTag(stream, "YEAR");
-
-    // Try ID3v1 if nothing found
-    if (year.empty()) {
-        const TAG_ID3* id3 = (const TAG_ID3*)BASS_ChannelGetTags(stream, BASS_TAG_ID3);
-        if (id3) {
-            year = GetTrimmedTag(id3->year, 4);
-        }
-    }
-
+    std::string year = YearText();
     if (!year.empty()) {
         SpeakUtf8("Year: " + year);
     } else {
@@ -2366,27 +1057,11 @@ void SpeakTagYear() {
 }
 
 void SpeakTagTrack() {
-    HSTREAM stream = GetTagStream();
-    if (!stream) {
+    if (!audio::IsLoaded()) {
         Speak("Nothing playing");
         return;
     }
-
-    std::string track = GetMetadataTag(stream, "TRACKNUMBER");
-    if (track.empty()) track = GetMetadataTag(stream, "TRACK");
-
-    // Try ID3v1.1 track number (stored in comment field)
-    if (track.empty()) {
-        const TAG_ID3* id3 = (const TAG_ID3*)BASS_ChannelGetTags(stream, BASS_TAG_ID3);
-        if (id3 && id3->comment[28] == '\0' && id3->comment[29] != 0) {
-            // ID3v1.1 format: comment[28] is 0, comment[29] is track number
-            int trackNum = (unsigned char)id3->comment[29];
-            if (trackNum > 0) {
-                track = std::to_string(trackNum);
-            }
-        }
-    }
-
+    std::string track = TrackText();
     if (!track.empty()) {
         SpeakUtf8("Track: " + track);
     } else {
@@ -2395,22 +1070,11 @@ void SpeakTagTrack() {
 }
 
 void SpeakTagGenre() {
-    HSTREAM stream = GetTagStream();
-    if (!stream) {
+    if (!audio::IsLoaded()) {
         Speak("Nothing playing");
         return;
     }
-
-    std::string genre = GetMetadataTag(stream, "GENRE");
-
-    // Try ID3v1 if nothing found
-    if (genre.empty()) {
-        const TAG_ID3* id3 = (const TAG_ID3*)BASS_ChannelGetTags(stream, BASS_TAG_ID3);
-        if (id3 && id3->genre < g_id3GenreCount) {
-            genre = g_id3Genres[id3->genre];
-        }
-    }
-
+    std::string genre = GetMetadataTag("GENRE");
     if (!genre.empty()) {
         SpeakUtf8("Genre: " + genre);
     } else {
@@ -2419,28 +1083,11 @@ void SpeakTagGenre() {
 }
 
 void SpeakTagComment() {
-    HSTREAM stream = GetTagStream();
-    if (!stream) {
+    if (!audio::IsLoaded()) {
         Speak("Nothing playing");
         return;
     }
-
-    std::string comment = GetMetadataTag(stream, "COMMENT");
-    if (comment.empty()) comment = GetMetadataTag(stream, "DESCRIPTION");
-
-    // Try ID3v1 if nothing found
-    if (comment.empty()) {
-        const TAG_ID3* id3 = (const TAG_ID3*)BASS_ChannelGetTags(stream, BASS_TAG_ID3);
-        if (id3) {
-            // Check for ID3v1.1 (comment is only 28 chars if track is present)
-            if (id3->comment[28] == '\0' && id3->comment[29] != 0) {
-                comment = GetTrimmedTag(id3->comment, 28);
-            } else {
-                comment = GetTrimmedTag(id3->comment, 30);
-            }
-        }
-    }
-
+    std::string comment = CommentText();
     if (!comment.empty()) {
         SpeakUtf8("Comment: " + comment);
     } else {
@@ -2448,88 +1095,62 @@ void SpeakTagComment() {
     }
 }
 
+// "128 kbps, 44100 Hz, stereo", or for a lossless file "16-bit, 44100 Hz, stereo"
+static std::string FormatText(bool capitalized) {
+    const audio::Decoder* decoder = audio::Current();
+    if (!decoder) return "";
+    int channels = decoder->SourceChannels();
+    const char* layout = channels == 1 ? (capitalized ? "Mono" : "mono")
+                         : channels == 2 ? (capitalized ? "Stereo" : "stereo")
+                                         : (capitalized ? "Multi-channel" : "multi-channel");
+    int bitrate = GetCurrentBitrate();
+    char buf[128];
+    if (bitrate > 0) {
+        snprintf(buf, sizeof(buf), "%d kbps, %d Hz, %s", bitrate, decoder->SourceSampleRate(), layout);
+    } else if (decoder->SourceBits() > 0) {
+        snprintf(buf, sizeof(buf), "%d-bit, %d Hz, %s", decoder->SourceBits(), decoder->SourceSampleRate(), layout);
+    } else {
+        snprintf(buf, sizeof(buf), "%d Hz, %s", decoder->SourceSampleRate(), layout);
+    }
+    return buf;
+}
+
 void SpeakTagBitrate() {
-    if (!g_fxStream) {
+    if (!audio::IsLoaded()) {
         Speak("Nothing playing");
         return;
     }
-
-    BASS_CHANNELINFO info;
-    if (!BASS_ChannelGetInfo(g_fxStream, &info)) {
-        Speak("Cannot get info");
-        return;
-    }
-
-    HSTREAM sourceStream = g_stream ? g_stream : g_fxStream;
-
-    // Get bitrate if available (for compressed formats)
-    float bitrate = 0;
-    BASS_ChannelGetAttribute(sourceStream, BASS_ATTRIB_BITRATE, &bitrate);
-
-    // If no bitrate from attribute, try ICY headers (for streams)
-    if (bitrate <= 0) {
-        int icyBitrate = GetStreamBitrate(sourceStream);
-        if (icyBitrate > 0) bitrate = (float)icyBitrate;
-    }
-
-    char buf[128];
-    if (bitrate > 0) {
-        snprintf(buf, sizeof(buf), "%d kbps, %d Hz, %s",
-                 (int)bitrate, info.freq,
-                 info.chans == 1 ? "mono" : (info.chans == 2 ? "stereo" : "multi-channel"));
-    } else {
-        // Probably a lossless format
-        int bits = (info.flags & BASS_SAMPLE_8BITS) ? 8 :
-                   (info.flags & BASS_SAMPLE_FLOAT) ? 32 : 16;
-        snprintf(buf, sizeof(buf), "%d-bit, %d Hz, %s",
-                 bits, info.freq,
-                 info.chans == 1 ? "mono" : (info.chans == 2 ? "stereo" : "multi-channel"));
-    }
-
-    Speak(buf);
+    Speak(FormatText(false));
 }
 
 int GetCurrentBitrate() {
-    // Try to get live bitrate from source stream (updates for VBR files)
-    // g_sourceStream is the original decode stream before tempo processing
-    if (g_sourceStream) {
-        float bitrate = 0;
-        if (BASS_ChannelGetAttribute(g_sourceStream, BASS_ATTRIB_BITRATE, &bitrate) && bitrate > 0) {
-            return static_cast<int>(bitrate);
-        }
-    }
+    const audio::Decoder* decoder = audio::Current();
+    if (!decoder) return 0;
+    // The decoder's (a VBR file's recent average), else a stream's header
+    int bitrate = decoder->Bitrate();
+    if (bitrate > 0) return bitrate;
+    std::string icy = decoder->Tag("icy-br");
+    if (!icy.empty()) return atoi(icy.c_str());
+    return g_currentBitrate;
+}
 
-    // Fall back to cached bitrate (captured at load time)
-    if (g_currentBitrate > 0) return g_currentBitrate;
-
-    // Fall back to ICY headers for internet streams
-    if (g_sourceStream) {
-        int icyBitrate = GetStreamBitrate(g_sourceStream);
-        if (icyBitrate > 0) return icyBitrate;
-    }
-
-    return 0;
+bool IsCurrentVbr() {
+    const audio::Decoder* decoder = audio::Current();
+    return decoder && decoder->IsVbr();
 }
 
 void SpeakTagDuration() {
-    if (!g_fxStream) {
+    if (!audio::IsLoaded()) {
         Speak("Nothing playing");
         return;
     }
 
-    TempoProcessor* processor = GetTempoProcessor();
-    double length = 0;
-    if (processor && processor->IsActive()) {
-        length = processor->GetLength();
-    }
-
+    double length = audio::Length();
     if (length <= 0) {
-        // Check if it's a stream (URL)
-        if (g_currentTrack >= 0 && g_currentTrack < (int)g_playlist.size()) {
-            if (IsURL(g_playlist[g_currentTrack].c_str())) {
-                Speak("Live stream");
-                return;
-            }
+        if (g_isLiveStream || (g_currentTrack >= 0 && g_currentTrack < (int)g_playlist.size() &&
+                               IsURL(g_playlist[g_currentTrack].c_str()))) {
+            Speak("Live stream");
+            return;
         }
         Speak("Unknown duration");
         return;
@@ -2567,170 +1188,67 @@ void SpeakTagFilename() {
         return;
     }
 
-    // Get just the filename
-    const wchar_t* lastSlash = wcsrchr(path.c_str(), L'\\');
-    if (!lastSlash) lastSlash = wcsrchr(path.c_str(), L'/');
-
-    std::wstring filename = lastSlash ? (lastSlash + 1) : path;
-
-    SpeakW(L"Filename: " + filename);
+    SpeakW(L"Filename: " + GetFileName(path));
 }
 
 // Tag retrieval functions for display in dialog
 std::wstring GetTagTitle() {
-    HSTREAM stream = GetTagStream();
-    if (!stream) return L"Nothing playing";
-
-    std::string streamTitle = GetStreamTitle(stream);
-    if (!streamTitle.empty()) {
-        return Utf8ToWide(streamTitle);
-    }
-
-    std::string title = GetMetadataTag(stream, "TITLE");
-    std::string artist = GetMetadataTag(stream, "ARTIST");
-
-    if (title.empty() || artist.empty()) {
-        const TAG_ID3* id3 = (const TAG_ID3*)BASS_ChannelGetTags(stream, BASS_TAG_ID3);
-        if (id3) {
-            if (title.empty()) title = GetTrimmedTag(id3->title, 30);
-            if (artist.empty()) artist = GetTrimmedTag(id3->artist, 30);
-        }
-    }
-
-    if (!artist.empty() && !title.empty()) {
-        return Utf8ToWide(artist + " - " + title);
-    } else if (!title.empty()) {
-        return Utf8ToWide(title);
-    } else if (!artist.empty()) {
-        return Utf8ToWide(artist);
-    }
-    return L"No title";
+    if (!audio::IsLoaded()) return L"Nothing playing";
+    std::string text = TitleText();
+    return text.empty() ? L"No title" : Utf8ToWide(text);
 }
 
 std::wstring GetTagArtist() {
-    HSTREAM stream = GetTagStream();
-    if (!stream) return L"Nothing playing";
-
-    std::string artist = GetMetadataTag(stream, "ARTIST");
-    if (artist.empty()) {
-        const TAG_ID3* id3 = (const TAG_ID3*)BASS_ChannelGetTags(stream, BASS_TAG_ID3);
-        if (id3) artist = GetTrimmedTag(id3->artist, 30);
-    }
+    if (!audio::IsLoaded()) return L"Nothing playing";
+    std::string artist = GetMetadataTag("ARTIST");
     return artist.empty() ? L"No artist" : Utf8ToWide(artist);
 }
 
 std::wstring GetTagAlbum() {
-    HSTREAM stream = GetTagStream();
-    if (!stream) return L"Nothing playing";
-
-    std::string album = GetMetadataTag(stream, "ALBUM");
+    if (!audio::IsLoaded()) return L"Nothing playing";
+    std::string album = GetMetadataTag("ALBUM");
     if (album.empty()) {
-        const TAG_ID3* id3 = (const TAG_ID3*)BASS_ChannelGetTags(stream, BASS_TAG_ID3);
-        if (id3) album = GetTrimmedTag(id3->album, 30);
-    }
-    if (album.empty()) {
-        std::string station = GetStationName(stream);
+        std::string station = GetStationName();
         if (!station.empty()) return Utf8ToWide(station);
     }
     return album.empty() ? L"No album" : Utf8ToWide(album);
 }
 
 std::wstring GetTagYear() {
-    HSTREAM stream = GetTagStream();
-    if (!stream) return L"Nothing playing";
-
-    std::string year = GetMetadataTag(stream, "DATE");
-    if (year.empty()) year = GetMetadataTag(stream, "YEAR");
-    if (year.empty()) {
-        const TAG_ID3* id3 = (const TAG_ID3*)BASS_ChannelGetTags(stream, BASS_TAG_ID3);
-        if (id3) year = GetTrimmedTag(id3->year, 4);
-    }
+    if (!audio::IsLoaded()) return L"Nothing playing";
+    std::string year = YearText();
     return year.empty() ? L"No year" : Utf8ToWide(year);
 }
 
 std::wstring GetTagTrack() {
-    HSTREAM stream = GetTagStream();
-    if (!stream) return L"Nothing playing";
-
-    std::string track = GetMetadataTag(stream, "TRACKNUMBER");
-    if (track.empty()) track = GetMetadataTag(stream, "TRACK");
-    if (track.empty()) {
-        // Try ID3v1.1 track number (stored in comment field)
-        const TAG_ID3* id3 = (const TAG_ID3*)BASS_ChannelGetTags(stream, BASS_TAG_ID3);
-        if (id3 && id3->comment[28] == '\0' && id3->comment[29] != 0) {
-            int trackNum = (unsigned char)id3->comment[29];
-            if (trackNum > 0) track = std::to_string(trackNum);
-        }
-    }
+    if (!audio::IsLoaded()) return L"Nothing playing";
+    std::string track = TrackText();
     return track.empty() ? L"No track" : Utf8ToWide(track);
 }
 
 std::wstring GetTagGenre() {
-    HSTREAM stream = GetTagStream();
-    if (!stream) return L"Nothing playing";
-
-    std::string genre = GetMetadataTag(stream, "GENRE");
-    if (genre.empty()) {
-        const TAG_ID3* id3 = (const TAG_ID3*)BASS_ChannelGetTags(stream, BASS_TAG_ID3);
-        if (id3 && id3->genre < 192) {
-            // ID3v1 genre lookup (simplified - first few common ones)
-            static const char* genres[] = {
-                "Blues", "Classic Rock", "Country", "Dance", "Disco", "Funk", "Grunge",
-                "Hip-Hop", "Jazz", "Metal", "New Age", "Oldies", "Other", "Pop", "R&B",
-                "Rap", "Reggae", "Rock", "Techno", "Industrial"
-            };
-            if (id3->genre < 20) genre = genres[id3->genre];
-            else genre = std::to_string(id3->genre);
-        }
-    }
+    if (!audio::IsLoaded()) return L"Nothing playing";
+    std::string genre = GetMetadataTag("GENRE");
     return genre.empty() ? L"No genre" : Utf8ToWide(genre);
 }
 
 std::wstring GetTagComment() {
-    HSTREAM stream = GetTagStream();
-    if (!stream) return L"Nothing playing";
-
-    std::string comment = GetMetadataTag(stream, "COMMENT");
-    if (comment.empty()) comment = GetMetadataTag(stream, "DESCRIPTION");
-    if (comment.empty()) {
-        const TAG_ID3* id3 = (const TAG_ID3*)BASS_ChannelGetTags(stream, BASS_TAG_ID3);
-        if (id3) comment = GetTrimmedTag(id3->comment, 30);
-    }
+    if (!audio::IsLoaded()) return L"Nothing playing";
+    std::string comment = CommentText();
     return comment.empty() ? L"No comment" : Utf8ToWide(comment);
 }
 
 std::wstring GetTagBitrate() {
-    HSTREAM stream = GetTagStream();
-    if (!stream) return L"Nothing playing";
-
-    BASS_CHANNELINFO info;
-    BASS_ChannelGetInfo(stream, &info);
-
-    float bitrate = 0;
-    BASS_ChannelGetAttribute(stream, BASS_ATTRIB_BITRATE, &bitrate);
-
-    if (bitrate > 0) {
-        wchar_t buf[64];
-        swprintf(buf, 64, L"%.0f kbps, %d Hz, %ls",
-            bitrate, info.freq,
-            info.chans == 1 ? L"Mono" : (info.chans == 2 ? L"Stereo" : L"Multi-channel"));
-        return buf;
-    }
-    return L"Unknown bitrate";
+    if (!audio::IsLoaded()) return L"Nothing playing";
+    std::string text = FormatText(true);
+    return text.empty() ? L"Unknown bitrate" : Utf8ToWide(text);
 }
 
 std::wstring GetTagDuration() {
-    HSTREAM stream = GetTagStream();
-    if (!stream) return L"Nothing playing";
-
-    TempoProcessor* processor = GetTempoProcessor();
-    if (!processor || !processor->IsActive()) {
-        QWORD len = BASS_ChannelGetLength(stream, BASS_POS_BYTE);
-        if (len == (QWORD)-1) return L"Unknown duration";
-        double duration = BASS_ChannelBytes2Seconds(stream, len);
-        return FormatTime(duration);
-    }
-    return FormatTime(processor->GetLength());
+    if (!audio::IsLoaded()) return L"Nothing playing";
+    double length = audio::Length();
+    if (length <= 0) return g_isLiveStream ? L"Live stream" : L"Unknown duration";
+    return FormatTime(length);
 }
 
 std::wstring GetTagFilename() {
@@ -2740,164 +1258,24 @@ std::wstring GetTagFilename() {
 
     std::wstring path = g_playlist[g_currentTrack];
     if (IsURL(path.c_str())) return path;
-
-    const wchar_t* lastSlash = wcsrchr(path.c_str(), L'\\');
-    if (!lastSlash) lastSlash = wcsrchr(path.c_str(), L'/');
-    return lastSlash ? (lastSlash + 1) : path;
+    return GetFileName(path);
 }
 
-// Generate output filename based on template
-static std::wstring GenerateRecordingFilename() {
-    // Get current time
-    time_t now = time(nullptr);
-    struct tm localTime;
-    LocalTime(now, localTime);
+// ---------------------------------------------------------------------------
+// Recording
+// ---------------------------------------------------------------------------
 
-    // Format using the template
-    wchar_t buffer[256];
-    wcsftime(buffer, 256, g_recordTemplate.c_str(), &localTime);
-
-    // Add appropriate extension
-    const wchar_t* ext;
-    switch (g_recordFormat) {
-        case 1: ext = L".mp3"; break;
-        case 2: ext = L".ogg"; break;
-        case 3: ext = L".flac"; break;
-        default: ext = L".wav"; break;
-    }
-
-    std::wstring filename = buffer;
-    filename += ext;
-
-    return filename;
-}
-
-// Stop recording
 void StopRecording() {
-    if (!g_isRecording || !g_encoder) return;
-
-    BASS_Encode_Stop(g_encoder);
-    g_encoder = 0;
+    if (!g_isRecording) return;
     g_isRecording = false;
-
     Speak("Recording stopped");
     UpdateStatusBar();
 }
 
-// Toggle recording on/off
 void ToggleRecording() {
-    // If already recording, stop
     if (g_isRecording) {
         StopRecording();
         return;
     }
-
-    // Need a stream to record from
-    if (!g_fxStream) {
-        Speak("Nothing to record");
-        return;
-    }
-
-    // Determine output path
-    std::wstring outputPath;
-    if (g_recordPath.empty()) {
-        // Default to Music folder, falling back to the current directory
-        outputPath = GetUserMusicDir();
-        if (outputPath.empty()) {
-            std::error_code ec;
-            outputPath = std::filesystem::current_path(ec).wstring();
-        }
-    } else {
-        outputPath = g_recordPath;
-    }
-
-    // Ensure output directory exists
-    {
-        std::error_code ec;
-        std::filesystem::create_directory(std::filesystem::path(outputPath), ec);
-    }
-
-    // Generate filename
-    std::wstring filename = GenerateRecordingFilename();
-    std::wstring fullPath = outputPath;
-    if (!fullPath.empty() && fullPath.back() != L'\\' && fullPath.back() != L'/') {
-        fullPath += kPathSeparator;
-    }
-    fullPath += filename;
-    BassFileName outFile(fullPath);
-
-    // Get stream info for encoder setup
-    BASS_CHANNELINFO info;
-    if (!BASS_ChannelGetInfo(g_fxStream, &info)) {
-        Speak("Cannot get stream info");
-        return;
-    }
-
-    // Start appropriate encoder based on format
-    // Note: BASS_ENCODE_FP_16BIT converts floating-point audio to 16-bit integer
-    // which is required for WAV and FLAC encoders
-    DWORD wavFlags = BASS_ENCODE_AUTOFREE | BASS_ENCODE_FP_16BIT;
-
-    switch (g_recordFormat) {
-        case 0: {
-            // WAV - use BASS_Encode_StartPCMFile for direct WAV output
-            g_encoder = BASS_Encode_StartPCMFile(g_fxStream, wavFlags | outFile.flags(), outFile.get());
-            break;
-        }
-        case 1: {
-            // MP3 - use bassenc_mp3
-            wchar_t options[64];
-            swprintf(options, 64, L"--preset cbr %d", g_recordBitrate);
-            g_encoder = BASS_Encode_MP3_StartFile(g_fxStream, BassFileName(options).get(), BASS_ENCODE_AUTOFREE | outFile.flags(), outFile.get());
-            if (!g_encoder) {
-                // Fall back to WAV if MP3 encoding fails
-                ShowMessage(L"MP3 encoding failed.\nFalling back to WAV format.", APP_NAME, MessageIcon::Warning);
-                fullPath = outputPath;
-                if (!fullPath.empty() && fullPath.back() != L'\\') fullPath += L'\\';
-                fullPath += GenerateRecordingFilename();
-                g_encoder = BASS_Encode_StartPCMFile(g_fxStream, wavFlags | outFile.flags(), outFile.get());
-            }
-            break;
-        }
-        case 2: {
-            // OGG - use bassenc_ogg
-            wchar_t options[64];
-            swprintf(options, 64, L"--bitrate %d", g_recordBitrate);
-            g_encoder = BASS_Encode_OGG_StartFile(g_fxStream, BassFileName(options).get(), BASS_ENCODE_AUTOFREE | outFile.flags(), outFile.get());
-            if (!g_encoder) {
-                // Fall back to WAV if OGG encoding fails
-                ShowMessage(L"OGG encoding failed.\nFalling back to WAV format.", APP_NAME, MessageIcon::Warning);
-                fullPath = outputPath;
-                if (!fullPath.empty() && fullPath.back() != L'\\') fullPath += L'\\';
-                fullPath += GenerateRecordingFilename();
-                g_encoder = BASS_Encode_StartPCMFile(g_fxStream, wavFlags | outFile.flags(), outFile.get());
-            }
-            break;
-        }
-        case 3: {
-            // FLAC - use bassenc_flac (also needs FP conversion)
-            g_encoder = BASS_Encode_FLAC_StartFile(g_fxStream, nullptr, wavFlags | outFile.flags(), outFile.get());
-            if (!g_encoder) {
-                // Fall back to WAV if FLAC encoding fails
-                ShowMessage(L"FLAC encoding failed.\nFalling back to WAV format.", APP_NAME, MessageIcon::Warning);
-                fullPath = outputPath;
-                if (!fullPath.empty() && fullPath.back() != L'\\') fullPath += L'\\';
-                fullPath += GenerateRecordingFilename();
-                g_encoder = BASS_Encode_StartPCMFile(g_fxStream, wavFlags | outFile.flags(), outFile.get());
-            }
-            break;
-        }
-    }
-
-    if (!g_encoder) {
-        int err = BASS_ErrorGetCode();
-        wchar_t msg[256];
-        swprintf(msg, 256, L"Failed to start recording (error %d)", err);
-        ShowMessage(msg, APP_NAME, MessageIcon::Error);
-        return;
-    }
-
-    g_isRecording = true;
-    Speak("Recording started");
-    UpdateStatusBar();
+    Speak("Recording is not available in this build yet");
 }

@@ -154,11 +154,13 @@ jobs:
       - name: Build FastPlay.app
         run: cmake --build build --parallel "$(sysctl -n hw.ncpu)" -- -k
 
-      # Ad-hoc signed (no Developer ID): the libraries first, then the app itself.
+      # Ad-hoc signed (no Developer ID): any bundled libraries first, then the app.
       - name: Sign and zip
         run: |
           APP=build/FastPlay.app
-          codesign --force --sign - "$APP"/Contents/Frameworks/*.dylib
+          for lib in "$APP"/Contents/Frameworks/*.dylib; do
+            [ -e "$lib" ] && codesign --force --sign - "$lib"
+          done
           codesign --force --sign - "$APP"
           codesign --verify --verbose "$APP"
           ditto -c -k --keepParent "$APP" FastPlay-macOS.zip

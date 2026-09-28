@@ -2,10 +2,9 @@
 #ifndef FASTPLAY_GLOBALS_H
 #define FASTPLAY_GLOBALS_H
 
+#include <cstdint>
 #include <vector>
 #include <string>
-#include "bass.h"
-#include "bassenc.h"
 #include "types.h"
 
 // Forward declarations
@@ -27,12 +26,7 @@ constexpr int SB_PART_VOLUME = 1;
 constexpr int SB_PART_STATE = 2;
 constexpr int SB_PART_COUNT = 3;
 
-// BASS state
-extern HSTREAM g_stream;      // Source stream
-extern HSTREAM g_fxStream;    // Tempo stream (wraps g_stream for pitch/tempo)
-extern HSTREAM g_sourceStream; // Original decode stream (for bitrate queries, not freed separately)
-extern HSYNC g_endSync;
-extern HSYNC g_metaSync;      // Sync for stream metadata changes
+// Playback state (what is loaded is the audio engine's: see audio.h)
 extern float g_volume;
 extern bool g_muted;          // Muted state (recording still works)
 extern bool g_legacyVolume;   // Use legacy volume (faster, but affects recordings)
@@ -44,11 +38,10 @@ extern float g_replayGainPreamp;    // Extra gain in dB applied on top of the ta
 extern bool g_replayGainPreventClip; // Reduce gain using the peak tag to avoid clipping
 extern float g_replayGainScale;     // Computed linear multiplier for the current track (1.0 = no change)
 
-// Effect state (for BASS_FX)
+// Tempo, pitch and rate
 extern float g_tempo;
 extern float g_pitch;
 extern float g_rate;
-extern float g_originalFreq;  // Original sample rate for rate control
 extern bool g_isLiveStream;   // True if current stream is non-seekable (live stream)
 extern int g_currentBitrate;  // Cached bitrate of current file (kbps)
 
@@ -78,7 +71,7 @@ extern bool g_allowMultipleInstances;      // Allow multiple instances (new wind
 
 // File batching
 extern std::vector<std::wstring> g_pendingFiles;
-extern DWORD g_startupTime;
+extern uint32_t g_startupTime;
 
 // Recent files
 extern std::vector<std::wstring> g_recentFiles;
@@ -116,9 +109,9 @@ extern bool g_effectEnabled[];
 extern int g_currentEffectIndex;
 extern int g_rateStepMode;         // 0=0.01x, 1=Semitone
 
-// Advanced settings (BASS buffer)
-extern int g_bufferSize;       // BASS_CONFIG_BUFFER in ms (default 500)
-extern int g_updatePeriod;     // BASS_CONFIG_UPDATEPERIOD in ms (default 100)
+// Advanced settings (audio buffer)
+extern int g_bufferSize;       // Output buffer in ms (default 500): how far effects and tempo changes lag
+extern int g_updatePeriod;     // Kept in the settings; the audio engine has no use for it
 
 // Buffer size options (in ms)
 extern const int g_bufferSizes[];
@@ -129,7 +122,7 @@ extern const int g_updatePeriods[];
 extern const int g_updatePeriodCount;
 
 // Tempo/pitch algorithm setting
-extern int g_tempoAlgorithm;   // 0=SoundTouch, 1=Speedy, 2=Signalsmith
+extern int g_tempoAlgorithm;   // 1=Speedy, 2=Signalsmith (TempoAlgorithm)
 
 // SoundTouch settings
 extern bool g_stAntiAliasFilter;   // Enable anti-alias filter (default true)
@@ -154,7 +147,7 @@ extern int g_reverbAlgorithm;
 // Convolution reverb settings
 extern std::wstring g_convolutionIRPath;  // Path to impulse response WAV file
 
-// MIDI settings (BASSMIDI)
+// MIDI settings
 extern std::wstring g_midiSoundFont;  // Path to SoundFont (.sf2/.sf3) file
 extern int g_midiMaxVoices;           // Max polyphony (1-1000, default 128)
 extern bool g_midiSincInterp;         // Use sinc interpolation (higher quality, more CPU)
@@ -181,7 +174,6 @@ extern std::wstring g_recordTemplate;   // Filename template (default: "%Y-%m-%d
 extern int g_recordFormat;              // 0=WAV, 1=MP3, 2=OGG, 3=FLAC
 extern int g_recordBitrate;             // MP3/OGG bitrate in kbps (128, 192, 256, 320)
 extern bool g_isRecording;              // Currently recording?
-extern HENCODE g_encoder;               // BASS encoder handle
 
 // Speech settings
 extern bool g_speechTrackChange;        // Announce track changes
@@ -194,10 +186,6 @@ extern bool g_autoAdvance;              // Auto-play next track when current end
 extern int g_repeatMode;                // 0 = off, 1 = repeat one, 2 = repeat all
 
 // Chapter support
-struct Chapter {
-    double position;        // Position in seconds
-    std::wstring name;      // Chapter name
-};
 extern std::vector<Chapter> g_chapters;     // Chapters for current file
 extern bool g_chapterSeekEnabled;           // Enable chapter seeking in movement options
 
