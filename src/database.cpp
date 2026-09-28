@@ -2,6 +2,7 @@
 #include "sqlite3.h"
 #include "utils.h"
 #include "paths.h"
+#include <chrono>
 #include <ctime>
 #include <vector>
 
@@ -158,6 +159,20 @@ bool InitDatabase() {
         "created INTEGER NOT NULL"
         ");";
     sqlite3_exec(g_db, youtubeSql, nullptr, nullptr, nullptr);
+
+    // Recently viewed YouTube searches, channels and playlists
+    const char* youtubeRecentSql =
+        "CREATE TABLE IF NOT EXISTS youtube_recent ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "kind INTEGER NOT NULL, "
+        "target TEXT NOT NULL, "
+        "youtube_id TEXT, "
+        "name TEXT NOT NULL, "
+        "channel TEXT, "
+        "viewed INTEGER NOT NULL, "
+        "UNIQUE (kind, target)"
+        ");";
+    sqlite3_exec(g_db, youtubeRecentSql, nullptr, nullptr, nullptr);
 
     return true;
 }
@@ -1071,4 +1086,99 @@ std::vector<YouTubeFavorite> GetYouTubeFavorites() {
         sqlite3_finalize(stmt);
     }
     return favorites;
+}
+
+// ---------------------------------------------------------------------------
+// Recently viewed on YouTube
+// ---------------------------------------------------------------------------
+
+// How many recent searches, channels and playlists are kept
+static const int kYouTubeRecentLimit = 50;
+
+void AddYouTubeRecent(YouTubeRecentKind kind, const std::wstring& target, const std::wstring& youtubeId,
+                      const std::wstring& name, const std::wstring& channel) {
+    if (!g_db || target.empty()) return;
+
+    std::string targetUtf8 = WideToUtf8(target);
+    std::string idUtf8 = WideToUtf8(youtubeId);
+    std::string nameUtf8 = WideToUtf8(name.empty() ? target : name);
+    std::string channelUtf8 = WideToUtf8(channel);
+    // In milliseconds, so what was viewed a moment later still sorts after
+    int64_t viewed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                         std::chrono::system_clock::now().time_since_epoch()).count();
+
+    // Viewed again: to the top, keeping a name or ID known from before
+    const char* sql =
+        "INSERT INTO youtube_recent (kind, target, youtube_id, name, channel, viewed) VALUES (?, ?, ?, ?, ?, ?) "
+        "ON CONFLICT (kind, target) DO UPDATE SET viewed = excluded.viewed, "
+        "youtube_id = COALESCE(NULLIF(excluded.youtube_id, ''), youtube_id), "
+        "name = CASE WHEN excluded.name = excluded.target THEN name ELSE excluded.name END, "
+        "channel = COALESCE(NULLIF(excluded.channel, ''), channel);";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(g_db, sql, -1, &stmt, nullptr) == SQLITE_OK) {
+        sqlite3_bind_int(stmt, 1, static_cast<int>(kind));
+        sqlite3_bind_text(stmt, 2, targetUtf8.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(stmt, 3, idUtf8.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(stmt, 4, nameUtf8.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(stmt, 5, channelUtf8.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int64(stmt, 6, static_cast<sqlite3_int64>(viewed));
+        sqlite3_step(stmt);
+        sqlite3_finalize(stmt);
+    }
+
+    if (sqlite3_prepare_v2(g_db,
+                           "DELETE FROM youtube_recent WHERE id NOT IN "
+                           "(SELECT id FROM youtube_recent ORDER BY viewed DESC LIMIT ?);",
+                           -1, &stmt, nullptr) == SQLITE_OK) {
+        sqlite3_bind_int(stmt, 1, kYouTubeRecentLimit);
+        sqlite3_step(stmt);
+        sqlite3_finalize(stmt);
+    }
+}
+
+bool RemoveYouTubeRecent(int id) {
+    if (!g_db) return false;
+
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(g_db, "DELETE FROM youtube_recent WHERE id = ?;", -1, &stmt, nullptr) == SQLITE_OK) {
+        sqlite3_bind_int(stmt, 1, id);
+        int rc = sqlite3_step(stmt);
+        sqlite3_finalize(stmt);
+        return rc == SQLITE_DONE;
+    }
+    return false;
+}
+
+void ClearYouTubeRecent() {
+    if (!g_db) return;
+    sqlite3_exec(g_db, "DELETE FROM youtube_recent;", nullptr, nullptr, nullptr);
+}
+
+std::vector<YouTubeRecent> GetYouTubeRecent() {
+    std::vector<YouTubeRecent> recent;
+    if (!g_db) return recent;
+
+    const char* sql = "SELECT id, kind, target, youtube_id, name, channel FROM youtube_recent ORDER BY viewed DESC;";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(g_db, sql, -1, &stmt, nullptr) == SQLITE_OK) {
+        auto text = [stmt](int column) {
+            const char* value = reinterpret_cast<const char*>(sqlite3_column_text(stmt, column));
+            return Utf8ToWide(value ? value : "");
+        };
+        while (sqlite3_step(stmt) == SQLITE_ROW) {
+            YouTubeRecent item;
+            item.id = sqlite3_column_int(stmt, 0);
+            int kind = sqlite3_column_int(stmt, 1);
+            item.kind = kind == 2 ? YouTubeRecentKind::Playlist
+                        : kind == 1 ? YouTubeRecentKind::Channel
+                                    : YouTubeRecentKind::Search;
+            item.target = text(2);
+            item.youtubeId = text(3);
+            item.name = text(4);
+            item.channel = text(5);
+            recent.push_back(item);
+        }
+        sqlite3_finalize(stmt);
+    }
+    return recent;
 }

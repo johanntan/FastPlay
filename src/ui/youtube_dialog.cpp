@@ -1,10 +1,13 @@
-// The YouTube window, with two tabs:
+// The YouTube window, with three tabs:
 // - Search: search YouTube or paste a video, playlist or channel URL. Enter plays a
 //   video or opens a channel or playlist (Backspace goes back); a channel or
 //   playlist, or a video's channel, can be added to the favorites.
 // - Favorites: the favorite channels and playlists, newest upload first or by name.
 //   Enter lists a favorite's videos below it; Delete removes it. Import adds the
 //   channels listed in a text file, one URL, @handle or ID per line.
+// - Recent: the searches, channels and playlists viewed lately, newest first (not
+//   the videos played). Enter searches or opens one again on the Search tab;
+//   Delete removes one.
 // Download, on either tab, saves a video (or a whole playlist) to keep, as
 // Options > YouTube Downloads says.
 // It is modeless, so the main window stays usable while it is open. Searching,
@@ -149,6 +152,7 @@ public:
         m_book = new wxNotebook(this, wxID_ANY);
         BuildSearchPage();
         BuildFavoritesPage();
+        BuildRecentPage();
         sizer->Add(m_book, 1, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, 10);
 
         auto* buttons = new wxBoxSizer(wxHORIZONTAL);
@@ -165,6 +169,7 @@ public:
         Bind(wxEVT_CHAR_HOOK, &YouTubeDialog::OnCharHook, this);
 
         LoadFavorites();
+        LoadRecent();
         RefreshFavorites(RefreshMode::Quiet);
         m_search->SetFocus();
     }
@@ -265,6 +270,31 @@ private:
         download->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { DownloadVideo(); });
     }
 
+    void BuildRecentPage() {
+        auto* page = new wxPanel(m_book);
+        auto* sizer = new wxBoxSizer(wxVERTICAL);
+        sizer->Add(new wxStaticText(page, wxID_ANY, "&Recently viewed:"), 0, wxLEFT | wxRIGHT | wxTOP, 10);
+        m_recentList = new wxListBox(page, wxID_ANY, wxDefaultPosition, ConvertDialogToPixels(wxSize(336, 180)), 0,
+                                     nullptr, wxLB_SINGLE);
+        sizer->Add(m_recentList, 1, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, 10);
+
+        auto* buttons = new wxBoxSizer(wxHORIZONTAL);
+        auto* open = new wxButton(page, wxID_ANY, "&Open");
+        buttons->Add(open, 0, wxRIGHT, 6);
+        auto* remove = new wxButton(page, wxID_ANY, "Re&move");
+        buttons->Add(remove, 0, wxRIGHT, 6);
+        auto* clear = new wxButton(page, wxID_ANY, "&Clear All");
+        buttons->Add(clear);
+        sizer->Add(buttons, 0, wxALL, 10);
+        page->SetSizer(sizer);
+        m_book->AddPage(page, "Recent");
+
+        m_recentList->Bind(wxEVT_LISTBOX_DCLICK, [this](wxCommandEvent&) { OpenRecent(); });
+        open->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { OpenRecent(); });
+        remove->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { RemoveRecent(); });
+        clear->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { ClearRecent(); });
+    }
+
     // Enter acts on the focused control: search from the search box, open or play
     // from a list. Backspace in the results goes back; Delete removes a favorite.
     void OnCharHook(wxKeyEvent& event) {
@@ -275,10 +305,13 @@ private:
             if (focus == m_results) return OpenResult();
             if (focus == m_favoritesList) return OpenFavorite();
             if (focus == m_videos) return PlayVideo();
+            if (focus == m_recentList) return OpenRecent();
         } else if (key == WXK_BACK && focus == m_results && !event.HasAnyModifiers()) {
             return GoBack();
         } else if ((key == WXK_DELETE || key == WXK_NUMPAD_DELETE) && focus == m_favoritesList) {
             return RemoveFavorite();
+        } else if ((key == WXK_DELETE || key == WXK_NUMPAD_DELETE) && focus == m_recentList) {
+            return RemoveRecent();
         }
         event.Skip();
     }
@@ -332,6 +365,7 @@ private:
     // Show a channel's or playlist's videos in the results, keeping what was there
     // for Backspace.
     void OpenList(const std::wstring& listUrl, const YouTubeListInfo& info, const char* loading) {
+        AddRecentList(listUrl, info);
         m_view.selection = m_results->GetSelection();
         m_history.push_back(m_view);
         m_view = ResultsView();
@@ -370,6 +404,8 @@ private:
             return;
         }
 
+        AddYouTubeRecent(YouTubeRecentKind::Search, query, L"", query, L"");
+        LoadRecent();
         m_history.clear();
         m_view = ResultsView();
         m_view.query = query;
@@ -593,6 +629,12 @@ private:
         YouTubeKind kind =
             favorite.kind == YouTubeFavoriteKind::Playlist ? YouTubeKind::Playlist : YouTubeKind::Channel;
         m_videosUrl = YouTubeListUrl(kind, favorite.youtubeId);
+        YouTubeListInfo info;
+        info.kind = kind;
+        info.id = favorite.youtubeId;
+        info.name = favorite.name;
+        info.channel = favorite.channel;
+        AddRecentList(m_videosUrl, info);
         m_videoResults.clear();
         m_videosToken.clear();
         m_videos->Clear();
@@ -770,6 +812,92 @@ private:
         }
     }
 
+    // ------------------------------------------------------------------
+    // Recent tab
+    // ------------------------------------------------------------------
+
+    // A channel or playlist was opened: remember it (a pasted channel URL has no
+    // name yet, and is listed by its @handle, or else its address)
+    void AddRecentList(const std::wstring& listUrl, const YouTubeListInfo& info) {
+        bool playlist = info.kind == YouTubeKind::Playlist;
+        std::wstring name = info.name;
+        size_t handle = listUrl.find(L"/@");
+        if (name.empty() && handle != std::wstring::npos) {
+            size_t end = listUrl.find_first_of(L"/?", handle + 1);
+            name = listUrl.substr(handle + 1, end == std::wstring::npos ? std::wstring::npos : end - handle - 1);
+        }
+        AddYouTubeRecent(playlist ? YouTubeRecentKind::Playlist : YouTubeRecentKind::Channel, listUrl, info.id,
+                         name, playlist ? info.channel : L"");
+        LoadRecent();
+    }
+
+    void LoadRecent() {
+        int keep = m_recentList->GetSelection();
+        m_recent = GetYouTubeRecent();
+        wxArrayString items;
+        for (const auto& item : m_recent) {
+            switch (item.kind) {
+                case YouTubeRecentKind::Search:
+                    items.Add(WX(L"Search: " + item.name));
+                    break;
+                case YouTubeRecentKind::Channel:
+                    items.Add(WX(L"Channel: " + item.name));
+                    break;
+                case YouTubeRecentKind::Playlist:
+                    items.Add(WX(L"Playlist: " + item.name + (item.channel.empty() ? L"" : L" - " + item.channel)));
+                    break;
+            }
+        }
+        m_recentList->Set(items);
+        int count = static_cast<int>(items.size());
+        if (count > 0) m_recentList->SetSelection(keep >= 0 ? std::min(keep, count - 1) : 0);
+    }
+
+    // Search or open the selected one again, on the Search tab
+    void OpenRecent() {
+        int sel = m_recentList->GetSelection();
+        if (sel < 0 || sel >= static_cast<int>(m_recent.size())) return;
+        YouTubeRecent item = m_recent[sel];
+        m_book->SetSelection(0);
+        if (item.kind == YouTubeRecentKind::Search) {
+            m_search->ChangeValue(WX(item.target));
+            DoSearch();
+        } else {
+            YouTubeListInfo info;
+            info.kind = item.kind == YouTubeRecentKind::Playlist ? YouTubeKind::Playlist : YouTubeKind::Channel;
+            info.id = item.youtubeId;
+            info.name = item.name == item.target ? L"" : item.name;
+            info.channel = item.channel;
+            m_history.clear();
+            OpenList(item.target, info,
+                     info.kind == YouTubeKind::Playlist ? "Loading playlist" : "Loading channel");
+            m_history.clear();
+        }
+        m_recentList->SetSelection(0);  // it is the most recent now
+        m_results->SetFocus();
+    }
+
+    void RemoveRecent() {
+        int sel = m_recentList->GetSelection();
+        if (sel < 0 || sel >= static_cast<int>(m_recent.size())) return;
+        std::wstring name = m_recent[sel].name;
+        RemoveYouTubeRecent(m_recent[sel].id);
+        LoadRecent();
+        int count = static_cast<int>(m_recent.size());
+        if (count > 0) m_recentList->SetSelection(std::min(sel, count - 1));
+        SpeakW(L"Removed " + name);
+    }
+
+    void ClearRecent() {
+        if (m_recent.empty()) return;
+        if (wxMessageBox("Clear the recently viewed list?", "Clear Recent", wxYES_NO | wxICON_QUESTION, this) != wxYES) {
+            return;
+        }
+        ClearYouTubeRecent();
+        LoadRecent();
+        Speak("Recent list cleared");
+    }
+
     const int m_window;
     wxNotebook* m_book;
 
@@ -790,6 +918,10 @@ private:
     std::vector<YouTubeResult> m_videoResults;
     std::wstring m_videosUrl;
     std::wstring m_videosToken;
+
+    // Recent tab
+    wxListBox* m_recentList;
+    std::vector<YouTubeRecent> m_recent;  // in the list's order
 };
 
 std::atomic<bool> g_refreshing{false};

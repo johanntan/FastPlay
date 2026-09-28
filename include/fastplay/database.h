@@ -54,6 +54,18 @@ struct YouTubeFavorite {
     int64_t lastUpload;       // Unix time of the newest video, 0 if not known yet
 };
 
+// A search, channel or playlist recently viewed in the YouTube window
+enum class YouTubeRecentKind { Search = 0, Channel = 1, Playlist = 2 };
+
+struct YouTubeRecent {
+    int id;
+    YouTubeRecentKind kind;
+    std::wstring target;      // the search words, or the channel's or playlist's page URL
+    std::wstring youtubeId;   // channel or playlist ID, when known
+    std::wstring name;        // the search words, or the channel's or playlist's name
+    std::wstring channel;     // for a playlist: the channel that made it
+};
+
 // Podcast episode structure (not stored in DB - fetched from RSS)
 struct PodcastEpisode {
     std::wstring title;
@@ -172,6 +184,14 @@ int AddYouTubeFavorite(YouTubeFavoriteKind kind, const std::wstring& youtubeId, 
 bool RemoveYouTubeFavorite(int id);
 bool UpdateYouTubeFavoriteUpload(int id, int64_t lastUpload);
 std::vector<YouTubeFavorite> GetYouTubeFavorites();
+
+// Recently viewed YouTube searches, channels and playlists, newest first. Viewing
+// one again moves it to the top; only the newest ones are kept.
+void AddYouTubeRecent(YouTubeRecentKind kind, const std::wstring& target, const std::wstring& youtubeId,
+                      const std::wstring& name, const std::wstring& channel);
+bool RemoveYouTubeRecent(int id);
+void ClearYouTubeRecent();
+std::vector<YouTubeRecent> GetYouTubeRecent();
 
 // Song history operations (captured from stream metadata)
 void AddSongHistoryEntry(const std::wstring& title);
