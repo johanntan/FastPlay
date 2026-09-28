@@ -45,11 +45,13 @@ set(CMAKE_SKIP_INSTALL_RULES ON)
 # ---------------------------------------------------------------------------
 
 # --- wxWidgets ---
-# 3.2.x is the last branch that still supports Windows 7.
+# The 3.3 line (Windows 7 and later), at a master commit: master carries the
+# screen reader fixes made since 3.3.3, most of them for VoiceOver on macOS
+# (controls titled by their labels, context menus, custom list cells) and some
+# for Windows. Move to the next 3.3 release tag once it has them.
 FetchContent_Declare(wxWidgets
     GIT_REPOSITORY https://github.com/wxWidgets/wxWidgets.git
-    GIT_TAG v3.2.11
-    GIT_SHALLOW TRUE
+    GIT_TAG 776a9a278791fe0d1c79be337e55ab8e53f89587
 )
 set(wxBUILD_SHARED OFF CACHE INTERNAL "")
 # The same C runtime as FastPlay; mixing the static and DLL runtimes fails at link time.
@@ -76,6 +78,7 @@ set(wxUSE_AUI OFF CACHE INTERNAL "")
 set(wxUSE_XRC OFF CACHE INTERNAL "")
 set(wxUSE_LIBJPEG OFF CACHE INTERNAL "")
 set(wxUSE_LIBTIFF OFF CACHE INTERNAL "")
+set(wxUSE_LIBWEBP OFF CACHE INTERNAL "")
 FetchContent_MakeAvailable(wxWidgets)
 
 # --- UniversalSpeech (Windows only) ---
