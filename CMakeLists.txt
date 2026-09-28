@@ -193,6 +193,7 @@ endif()
 if(APPLE)
     list(APPEND FASTPLAY_SOURCES
         src/platform/file_assoc_mac.cpp
+        src/platform/menu_keys_mac.mm
         src/platform/paths_mac.cpp
         src/platform/speech_mac.mm
         src/platform/startup_mac.cpp
@@ -311,7 +312,7 @@ if(APPLE)
         "-framework AppKit" "-framework AVFoundation" "-framework Carbon"
         "-framework CoreServices" "-framework MediaPlayer")
     set_source_files_properties(src/platform/speech_mac.mm src/platform/system_keys_mac.mm
-        PROPERTIES COMPILE_OPTIONS -fobjc-arc)
+        src/platform/menu_keys_mac.mm PROPERTIES COMPILE_OPTIONS -fobjc-arc)
 
     # The app bundle: Info.plist with the version from version.h, the libraries in
     # Contents/Frameworks and the documentation in Contents/Resources/docs.

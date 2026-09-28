@@ -22,6 +22,7 @@
 #include "keycodes.h"
 #ifdef __WXOSX__
 #include "system_keys.h"
+#include "platform.h"
 #endif
 
 #include <wx/filename.h>
@@ -212,6 +213,14 @@ void MainFrame::BuildMenuBar() {
     bar->Append(play, "&Playback");
     bar->Append(help, "&Help");
     SetMenuBar(bar);
+
+#ifdef __WXOSX__
+    // The shortcuts show in the menus but the keys run through the accelerator
+    // table, silently. Quit and Settings sit in the application menu and keep
+    // their menu shortcuts.
+    KeepMenuShortcutsSilent(file);
+    KeepMenuShortcutsSilent(play);
+#endif
 }
 
 #ifndef __WXMSW__
@@ -258,8 +267,9 @@ static int WxKeyFromVirtualKey(unsigned vk) {
 #endif
 
 // The keyboard shortcuts. This table is what the keys do; the shortcut text in the
-// menus is only a label (the frame's own table is consulted before the menu bar's,
-// so "Volume Up\tUp" in the menu does not take Up away from the effect controls).
+// menus is only a label. On Windows the frame's own table is consulted before the
+// menu bar's, so "Volume Up\tUp" in the menu does not take Up away from the effect
+// controls; on macOS the menus decline their keys (KeepMenuShortcutsSilent).
 void MainFrame::BuildAccelerators() {
     const int N = wxACCEL_NORMAL, C = wxACCEL_CTRL, S = wxACCEL_SHIFT;
     std::vector<wxAcceleratorEntry> e = {
