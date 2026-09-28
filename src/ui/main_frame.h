@@ -5,6 +5,7 @@
 #include <wx/wx.h>
 #include <memory>
 #include <string>
+#include <vector>
 
 class TrayIcon;
 
@@ -64,6 +65,11 @@ private:
     // are matched by their key position (VK_OEM_*) on every keyboard layout.
     bool MSWTranslateMessage(WXMSG* msg) override;
     void* m_nativeAccel = nullptr;
+#else
+    // The keyboard shortcuts, for the keys caught before macOS dispatches them
+    // (see menu_keys_mac.mm). True if the key ran a command.
+    bool RunShortcut(unsigned modifiers, unsigned vk);
+    std::vector<wxAcceleratorEntry> m_shortcuts;
 #endif
 
     wxMenu* m_recentMenu = nullptr;

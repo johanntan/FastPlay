@@ -3,45 +3,47 @@
 // wxWidgets offers every key press to the menu bar before the window's accelerator
 // table sees it, and Cocoa does the same for Command keys of its own accord. A
 // shortcut in a menu label is a key equivalent, so the key performs the menu item,
-// and VoiceOver announces the item's title on every press. A menu whose delegate
-// answers that it has no key equivalent for the event keeps its shortcuts on show,
-// and reads them when browsed, but lets the key reach the accelerator table, which
-// runs the command in silence, as on Windows.
+// and VoiceOver announces the item's title on every press. (A menu delegate that
+// denies having a key equivalent does not stop that: macOS matches the items
+// anyway.) So the keys are caught before the system dispatches them at all, with a
+// local event monitor, and handed to the window's own shortcut table. The menus
+// keep showing and reading their shortcuts, and never see the keys.
 
 #include "platform.h"
+#include "keycodes.h"
+#include "system_keys.h"
 
 #import <AppKit/AppKit.h>
-#include <wx/menu.h>
+#include <wx/frame.h>
 
-// Declines every key press and passes everything else on to the delegate wxWidgets
-// gave the menu (which updates the items as the menu opens).
-@interface FPMenuKeyFilter : NSObject <NSMenuDelegate>
-@property (nonatomic, strong) id<NSMenuDelegate> next;
-@end
+namespace {
 
-@implementation FPMenuKeyFilter
+id g_shortcutMonitor = nil;
 
-- (BOOL)menuHasKeyEquivalent:(NSMenu*)menu forEvent:(NSEvent*)event target:(id*)target action:(SEL*)action {
-    return NO;
+}  // namespace
+
+void StartShortcutMonitor(wxFrame* frame, bool (*handler)(unsigned modifiers, unsigned vk)) {
+    StopShortcutMonitor();
+    NSWindow* window = frame->GetWXWindow();
+    g_shortcutMonitor = [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskKeyDown
+                                                              handler:^NSEvent*(NSEvent* event) {
+        // Only keys typed into this window; a dialog's keys are its own.
+        if (event.window != window) return event;
+        NSEventModifierFlags flags = event.modifierFlags;
+        unsigned modifiers = 0;
+        if (flags & NSEventModifierFlagCommand) modifiers |= MOD_CONTROL;
+        if (flags & NSEventModifierFlagShift) modifiers |= MOD_SHIFT;
+        if (flags & NSEventModifierFlagOption) modifiers |= MOD_ALT;
+        if (flags & NSEventModifierFlagControl) modifiers |= MOD_WIN;
+        unsigned vk = MacKeyCodeToVirtualKey(event.keyCode);
+        if (vk && handler(modifiers, vk)) return nil;  // swallowed: the menu never sees it
+        return event;
+    }];
 }
 
-- (BOOL)respondsToSelector:(SEL)selector {
-    return [super respondsToSelector:selector] || [self.next respondsToSelector:selector];
-}
-
-- (id)forwardingTargetForSelector:(SEL)selector {
-    return self.next;
-}
-
-@end
-
-void KeepMenuShortcutsSilent(wxMenu* menu) {
-    // A menu's delegate is a weak reference, so the filters live here.
-    static NSMutableArray<FPMenuKeyFilter*>* filters = [NSMutableArray new];
-    NSMenu* nsMenu = menu->GetHMenu();
-    if (!nsMenu || [nsMenu.delegate isKindOfClass:[FPMenuKeyFilter class]]) return;
-    FPMenuKeyFilter* filter = [FPMenuKeyFilter new];
-    filter.next = nsMenu.delegate;
-    nsMenu.delegate = filter;
-    [filters addObject:filter];
+void StopShortcutMonitor() {
+    if (g_shortcutMonitor) {
+        [NSEvent removeMonitor:g_shortcutMonitor];
+        g_shortcutMonitor = nil;
+    }
 }

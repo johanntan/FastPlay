@@ -15,11 +15,14 @@ void PlatformStartup();
 std::string GetSystemDescription();
 
 #ifdef __APPLE__
-class wxMenu;
-// Keep a menu's shortcuts on show without the menu acting on the keys, so they reach
-// the window's accelerator table instead and VoiceOver does not announce the menu
-// item on every press. Call once the menu is on the menu bar.
-void KeepMenuShortcutsSilent(wxMenu* menu);
+class wxFrame;
+// Catch the keys typed into a window before macOS dispatches them, so a shortcut
+// that is also a menu item's key equivalent does not perform the menu item (which
+// VoiceOver would announce). The handler gets the key as MOD_* flags (MOD_CONTROL
+// is Command, MOD_ALT is Option, MOD_WIN is Control) and a Windows virtual key
+// code, and returns true to swallow it.
+void StartShortcutMonitor(wxFrame* frame, bool (*handler)(unsigned modifiers, unsigned vk));
+void StopShortcutMonitor();
 #endif
 
 #endif // FASTPLAY_PLATFORM_H

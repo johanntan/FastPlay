@@ -80,6 +80,9 @@ MainFrame::MainFrame()
 
 #ifdef __WXOSX__
     (new KeyTarget(this))->SetFocus();
+    StartShortcutMonitor(this, [](unsigned modifiers, unsigned vk) {
+        return g_mainFrame != nullptr && g_mainFrame->RunShortcut(modifiers, vk);
+    });
 #endif
 
     Bind(wxEVT_MENU, &MainFrame::OnMenu, this);
@@ -99,6 +102,9 @@ MainFrame::MainFrame()
 MainFrame::~MainFrame() {
 #ifdef __WXMSW__
     if (m_nativeAccel) ::DestroyAcceleratorTable(static_cast<HACCEL>(m_nativeAccel));
+#endif
+#ifdef __WXOSX__
+    StopShortcutMonitor();
 #endif
     if (g_mainFrame == this) g_mainFrame = nullptr;
 }
@@ -213,14 +219,6 @@ void MainFrame::BuildMenuBar() {
     bar->Append(play, "&Playback");
     bar->Append(help, "&Help");
     SetMenuBar(bar);
-
-#ifdef __WXOSX__
-    // The shortcuts show in the menus but the keys run through the accelerator
-    // table, silently. Quit and Settings sit in the application menu and keep
-    // their menu shortcuts.
-    KeepMenuShortcutsSilent(file);
-    KeepMenuShortcutsSilent(play);
-#endif
 }
 
 #ifndef __WXMSW__
@@ -269,7 +267,7 @@ static int WxKeyFromVirtualKey(unsigned vk) {
 // The keyboard shortcuts. This table is what the keys do; the shortcut text in the
 // menus is only a label. On Windows the frame's own table is consulted before the
 // menu bar's, so "Volume Up\tUp" in the menu does not take Up away from the effect
-// controls; on macOS the menus decline their keys (KeepMenuShortcutsSilent).
+// controls; on macOS the keys are caught before the menu bar sees them (RunShortcut).
 void MainFrame::BuildAccelerators() {
     const int N = wxACCEL_NORMAL, C = wxACCEL_CTRL, S = wxACCEL_SHIFT;
     std::vector<wxAcceleratorEntry> e = {
@@ -422,8 +420,28 @@ void MainFrame::BuildAccelerators() {
     }
     all.insert(all.end(), e.begin(), e.end());
     SetAcceleratorTable(wxAcceleratorTable(static_cast<int>(all.size()), all.data()));
+    m_shortcuts = all;
 #endif
 }
+
+#ifdef __WXOSX__
+bool MainFrame::RunShortcut(unsigned modifiers, unsigned vk) {
+    int key = WxKeyFromVirtualKey(vk);
+    if (key == 0) return false;
+    int flags = wxACCEL_NORMAL;
+    if (modifiers & MOD_CONTROL) flags |= wxACCEL_CTRL;
+    if (modifiers & MOD_SHIFT) flags |= wxACCEL_SHIFT;
+    if (modifiers & MOD_ALT) flags |= wxACCEL_ALT;
+    if (modifiers & MOD_WIN) flags |= wxACCEL_RAW_CTRL;
+    for (const auto& entry : m_shortcuts) {
+        if (entry.GetFlags() == flags && entry.GetKeyCode() == key) {
+            RunCommand(entry.GetCommand(), 0);
+            return true;
+        }
+    }
+    return false;
+}
+#endif
 
 #ifdef __WXMSW__
 bool MainFrame::MSWTranslateMessage(WXMSG* msg) {
