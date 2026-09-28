@@ -300,6 +300,11 @@ bool InitBass(void* windowHandle) {
         }
     }
 
+    // Load BASS_FX now. Echo, EQ and Compressor are its effects, and BASS knows of
+    // them only once it is loaded; on Windows it is delay-loaded, so with a tempo
+    // algorithm other than SoundTouch nothing else would ever load it.
+    BASS_FX_GetVersion();
+
     // Load plugins for additional format support
     LoadBassPlugins();
 
