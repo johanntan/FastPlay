@@ -1217,6 +1217,12 @@ int GetCurrentChapterIndex() {
     return currentChapter;
 }
 
+// Say which chapter this is: its title, or its number if it has none
+static void SpeakChapter(size_t index) {
+    const Chapter& ch = g_chapters[index];
+    Speak(ch.name.empty() ? "Chapter " + std::to_string(index + 1) : WideToUtf8(ch.name));
+}
+
 // Seek to next chapter (returns true if successful)
 bool SeekToNextChapter() {
     if (g_chapters.empty() || !g_fxStream) return false;
@@ -1228,12 +1234,7 @@ bool SeekToNextChapter() {
         if (g_chapters[i].position > pos + 0.5) {  // 0.5s tolerance
             SeekToPosition(g_chapters[i].position);
 
-            // Announce chapter name
-            if (!g_chapters[i].name.empty()) {
-                Speak("Chapter " + std::to_string(i + 1) + ": " + WideToUtf8(g_chapters[i].name));
-            } else {
-                Speak("Chapter " + std::to_string(i + 1));
-            }
+            SpeakChapter(i);
             return true;
         }
     }
@@ -1262,21 +1263,13 @@ bool SeekToPrevChapter() {
     if (pos - chapterStart > 3.0 && currentChapter >= 0) {
         // More than 3 seconds into current chapter - restart it
         SeekToPosition(chapterStart);
-        if (!g_chapters[currentChapter].name.empty()) {
-            Speak("Chapter " + std::to_string(currentChapter + 1) + ": " + WideToUtf8(g_chapters[currentChapter].name));
-        } else {
-            Speak("Chapter " + std::to_string(currentChapter + 1));
-        }
+        SpeakChapter(static_cast<size_t>(currentChapter));
         return true;
     } else if (currentChapter > 0) {
         // Go to previous chapter
         int prevChapter = currentChapter - 1;
         SeekToPosition(g_chapters[prevChapter].position);
-        if (!g_chapters[prevChapter].name.empty()) {
-            Speak("Chapter " + std::to_string(prevChapter + 1) + ": " + WideToUtf8(g_chapters[prevChapter].name));
-        } else {
-            Speak("Chapter " + std::to_string(prevChapter + 1));
-        }
+        SpeakChapter(static_cast<size_t>(prevChapter));
         return true;
     } else {
         // At first chapter, go to start
