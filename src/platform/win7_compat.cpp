@@ -1,5 +1,5 @@
-// Windows 7 support. Newer MSVC runtime libraries call CreateFile2 and
-// GetSystemTimePreciseAsFileTime, which Windows 7 lacks, and an import it cannot
+// Windows 7 support. Newer MSVC runtime libraries call CreateFile2, CopyFile2
+// and GetSystemTimePreciseAsFileTime, which Windows 7 lacks, and an import it cannot
 // resolve stops FastPlay from starting at all. This file defines those import slots
 // itself, so the linker takes them from here instead of from kernel32: the real
 // function where there is one, otherwise the nearest Windows 7 equivalent.
@@ -38,9 +38,21 @@ VOID WINAPI GetSystemTimePreciseAsFileTimeCompat(LPFILETIME time) {
     }
 }
 
+HRESULT WINAPI CopyFile2Compat(PCWSTR from, PCWSTR to, COPYFILE2_EXTENDED_PARAMETERS* params) {
+    using CopyFile2Fn = HRESULT(WINAPI*)(PCWSTR, PCWSTR, COPYFILE2_EXTENDED_PARAMETERS*);
+    static const CopyFile2Fn real = reinterpret_cast<CopyFile2Fn>(
+        ::GetProcAddress(::GetModuleHandleW(L"kernel32.dll"), "CopyFile2"));
+    if (real) return real(from, to, params);
+
+    BOOL failIfExists = params && (params->dwCopyFlags & COPY_FILE_FAIL_IF_EXISTS);
+    if (::CopyFileW(from, to, failIfExists)) return S_OK;
+    return HRESULT_FROM_WIN32(::GetLastError());
+}
+
 }  // namespace
 
 // The import slots the runtime library's calls go through (x64 names are undecorated).
 extern "C" decltype(&CreateFile2Compat) __imp_CreateFile2 = &CreateFile2Compat;
+extern "C" decltype(&CopyFile2Compat) __imp_CopyFile2 = &CopyFile2Compat;
 extern "C" decltype(&GetSystemTimePreciseAsFileTimeCompat) __imp_GetSystemTimePreciseAsFileTime =
     &GetSystemTimePreciseAsFileTimeCompat;
