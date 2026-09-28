@@ -163,7 +163,7 @@ target_compile_options(openmpt PRIVATE ${FASTPLAY_NO_WARNINGS} $<$<CXX_COMPILER_
 
 # --- LAME, libogg and libvorbis ---
 # The encoders for recording to MP3 and OGG Vorbis (FLAC and WAV are FFmpeg's and
-# FastPlay's own). Built here from their release sources, as plain C libraries,
+# FastPlay's own), and the Vorbis decoder SpessaSynth reads SF3 SoundFonts with. Built here from their release sources, as plain C libraries,
 # with the config headers their configure scripts would write in cmake/config.
 FetchContent_Declare(lame
     URL https://downloads.sourceforge.net/project/lame/lame/3.100/lame-3.100.tar.gz
@@ -200,7 +200,7 @@ target_include_directories(ogg PUBLIC ${libogg_SOURCE_DIR}/include ${CMAKE_CURRE
 target_compile_options(ogg PRIVATE ${FASTPLAY_NO_WARNINGS})
 
 set(VORBIS_SOURCES analysis bitrate block codebook envelope floor0 floor1 info lookup lpc lsp mapping0
-    mdct psy registry res0 sharedbook smallft synthesis vorbisenc window)
+    mdct psy registry res0 sharedbook smallft synthesis vorbisenc vorbisfile window)
 list(TRANSFORM VORBIS_SOURCES PREPEND ${libvorbis_SOURCE_DIR}/lib/)
 list(TRANSFORM VORBIS_SOURCES APPEND .c)
 add_library(vorbis STATIC ${VORBIS_SOURCES})
@@ -209,6 +209,11 @@ target_include_directories(vorbis
     PRIVATE ${libvorbis_SOURCE_DIR}/lib)
 target_link_libraries(vorbis PUBLIC ogg)
 target_compile_options(vorbis PRIVATE ${FASTPLAY_NO_WARNINGS})
+
+# SpessaSynth reads SF3 SoundFonts (their samples Vorbis-compressed) through vorbisfile
+target_sources(spessasynth PRIVATE ${spessasynth_SOURCE_DIR}/spessasynth_core/src/soundbank/vorbis_decode.c)
+target_compile_definitions(spessasynth PRIVATE SS_HAVE_LIBVORBISFILE=1)
+target_link_libraries(spessasynth PRIVATE vorbis)
 
 option(FASTPLAY_SPEECH "Screen reader speech through UniversalSpeech" ON)
 
