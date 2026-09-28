@@ -1,5 +1,5 @@
 // Windows speech via UniversalSpeech, which speaks through whichever screen reader
-// is running (NVDA, JAWS, and others) and falls back to SAPI.
+// is running (NVDA, JAWS, and others).
 
 #include "accessibility.h"
 #include "app_ui.h"

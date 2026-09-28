@@ -79,8 +79,8 @@ set(wxUSE_LIBTIFF OFF CACHE INTERNAL "")
 FetchContent_MakeAvailable(wxWidgets)
 
 # --- UniversalSpeech (Windows only) ---
-# Speaks through whatever screen reader is running - NVDA, JAWS, Narrator, or
-# SAPI as a fallback. Distributed as source and compiled straight in.
+# Speaks through whatever screen reader is running - NVDA, JAWS, Narrator and
+# others. Distributed as source and compiled straight in.
 if(WIN32)
     FetchContent_Declare(universalspeech
         GIT_REPOSITORY https://github.com/samtupy/UniversalSpeechMSVCStatic.git
@@ -251,7 +251,6 @@ if(WIN32 AND FASTPLAY_SPEECH)
         ${UNIVERSALSPEECH_DIR}/src/windows/narrator.c
         ${UNIVERSALSPEECH_DIR}/src/windows/nvda.c
         ${UNIVERSALSPEECH_DIR}/src/windows/processlist.c
-        ${UNIVERSALSPEECH_DIR}/src/windows/sapi.c
         ${UNIVERSALSPEECH_DIR}/src/windows/systemaccess.c
         ${UNIVERSALSPEECH_DIR}/src/windows/windows-eyes.c
         ${UNIVERSALSPEECH_DIR}/src/windows/zdsr.c
@@ -259,10 +258,15 @@ if(WIN32 AND FASTPLAY_SPEECH)
         ${UNIVERSALSPEECH_DIR}/src/windows/zoomtext-guid.c
     )
     target_sources(FastPlay PRIVATE ${US_SOURCES})
-    # Old C code whose warnings are upstream's, not ours.
+    # Built the way its own build builds it:
+    # - Without UNICODE. It is ANSI code: FindWindow("JFWUI2", ...) is how it
+    #   notices JAWS is running, and compiled as FindWindowW that narrow string
+    #   names no window, so JAWS was never found and said nothing.
+    # - Without SAPI: with no screen reader running, nothing speaks, as before.
+    # - Old C code whose warnings are upstream's, not ours.
     set_source_files_properties(${US_SOURCES} PROPERTIES
-        COMPILE_DEFINITIONS "UNIVERSAL_SPEECH_STATIC;UNIVERSAL_SPEECH_BUILDING"
-        COMPILE_OPTIONS ${FASTPLAY_NO_WARNINGS})
+        COMPILE_DEFINITIONS "UNIVERSAL_SPEECH_STATIC;UNIVERSAL_SPEECH_BUILDING;UNIVERSAL_SPEECH_NO_SAPI"
+        COMPILE_OPTIONS "${FASTPLAY_NO_WARNINGS};/UUNICODE;/U_UNICODE")
     target_compile_definitions(FastPlay PRIVATE UNIVERSAL_SPEECH_STATIC)
 
     # The screen reader client DLLs are loaded at run time by UniversalSpeech.
