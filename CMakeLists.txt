@@ -126,6 +126,41 @@ file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/spessasynth_exports/spessasynth_exports.h
 target_include_directories(spessasynth PUBLIC ${CMAKE_CURRENT_BINARY_DIR}/spessasynth_exports)
 target_compile_options(spessasynth PRIVATE ${FASTPLAY_NO_WARNINGS})
 
+# --- libopenmpt ---
+# Tracker modules (MOD, XM, IT, S3M, MO3...). The release source has no CMake build,
+# so it is built here, the way its own makefile builds it: with its bundled miniz,
+# minimp3 and stb_vorbis for compressed modules, and no other library.
+FetchContent_Declare(libopenmpt
+    URL https://lib.openmpt.org/files/libopenmpt/src/libopenmpt-0.8.7+release.makefile.tar.gz
+    URL_HASH SHA256=8a6c0a70b034740f6cdd7b53de65181c3bca82183d084a53ed7fd678ba1a38ab
+)
+FetchContent_GetProperties(libopenmpt)
+if(NOT libopenmpt_POPULATED)
+    FetchContent_Populate(libopenmpt)
+endif()
+set(OPENMPT_DIR ${libopenmpt_SOURCE_DIR})
+file(GLOB_RECURSE OPENMPT_SOURCES
+    ${OPENMPT_DIR}/common/*.cpp
+    ${OPENMPT_DIR}/sounddsp/*.cpp
+    ${OPENMPT_DIR}/soundlib/*.cpp)
+list(APPEND OPENMPT_SOURCES
+    ${OPENMPT_DIR}/libopenmpt/libopenmpt_c.cpp
+    ${OPENMPT_DIR}/libopenmpt/libopenmpt_cxx.cpp
+    ${OPENMPT_DIR}/libopenmpt/libopenmpt_impl.cpp
+    ${OPENMPT_DIR}/libopenmpt/libopenmpt_ext_impl.cpp
+    ${OPENMPT_DIR}/include/miniz/miniz.c
+    ${OPENMPT_DIR}/include/minimp3/minimp3.c
+    ${OPENMPT_DIR}/include/stb_vorbis/stb_vorbis.c)
+add_library(openmpt STATIC ${OPENMPT_SOURCES})
+target_include_directories(openmpt
+    PUBLIC ${OPENMPT_DIR}
+    PRIVATE ${OPENMPT_DIR}/src ${OPENMPT_DIR}/common ${OPENMPT_DIR}/include ${OPENMPT_DIR}/build/svn_version)
+target_compile_definitions(openmpt PRIVATE
+    LIBOPENMPT_BUILD
+    MPT_WITH_MINIZ MPT_WITH_MINIMP3
+    MPT_WITH_STBVORBIS STB_VORBIS_NO_PULLDATA_API STB_VORBIS_NO_STDIO)
+target_compile_options(openmpt PRIVATE ${FASTPLAY_NO_WARNINGS} $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+
 option(FASTPLAY_SPEECH "Screen reader speech through UniversalSpeech" ON)
 
 # Configure only the dependencies (used to start the long wxWidgets build early).
@@ -148,6 +183,7 @@ endif()
 set(FASTPLAY_SOURCES
     src/audio/decoder_ffmpeg.cpp
     src/audio/decoder_midi.cpp
+    src/audio/decoder_tracker.cpp
     src/audio/decoders.cpp
     src/audio/engine.cpp
     src/audio/miniaudio.c
@@ -258,7 +294,7 @@ set(FDK_AAC_INSTALL_CMAKE_CONFIG_MODULE OFF CACHE BOOL "" FORCE)
 set(FDK_AAC_INSTALL_PKGCONFIG_MODULE OFF CACHE BOOL "" FORCE)
 add_subdirectory(deps/fdk-aac EXCLUDE_FROM_ALL)
 target_compile_options(fdk-aac PRIVATE ${FASTPLAY_NO_WARNINGS})
-target_link_libraries(FastPlay PRIVATE fdk-aac spessasynth)
+target_link_libraries(FastPlay PRIVATE fdk-aac spessasynth openmpt)
 
 # The upstream C libraries' warnings are not ours to fix.
 set_source_files_properties(src/sqlite3.c deps/speedy/speedy.c deps/speedy/soniclib.c

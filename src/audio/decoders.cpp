@@ -1,5 +1,5 @@
-// Which decoder plays what: SpessaSynth for MIDI, FDK AAC for xHE-AAC MP4 files,
-// FFmpeg for the rest.
+// Which decoder plays what: SpessaSynth for MIDI, libopenmpt for tracker modules,
+// FDK AAC for xHE-AAC MP4 files, FFmpeg for the rest.
 
 #include "audio.h"
 #include "audio_internal.h"
@@ -29,9 +29,8 @@ std::unique_ptr<Decoder> OpenDecoder(const std::wstring& pathOrUrl, std::wstring
                                      L".hmp", L".mids", L".xmf", L".mxmf"})) {
             return OpenMidiDecoder(pathOrUrl, error);
         }
-        if (HasExtension(pathOrUrl, {L".mod", L".xm", L".it", L".s3m", L".mtm", L".umx", L".mo3"})) {
-            error = L"Tracker modules cannot be played by this build yet.";
-            return nullptr;
+        if (IsTrackerPath(pathOrUrl)) {
+            return OpenTrackerDecoder(pathOrUrl, error);
         }
         if (HasExtension(pathOrUrl, {L".m4a", L".m4b", L".mp4"}) && IsXheAacFile(pathOrUrl)) {
             return OpenXheAacDecoder(pathOrUrl, error);
