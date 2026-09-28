@@ -1,4 +1,5 @@
 #pragma once
+#include <algorithm>
 #include <string>
 #include <utility>
 #include <vector>
@@ -121,6 +122,47 @@ private:
     dsp::Cascade m_shellL, m_shellR;
     float m_shellGain = 1.0f;
 
+    // A limiter that holds a ceiling by gain rather than by shaping.
+    //
+    // It looks ahead: the output is a millisecond and a half late, and the
+    // gain for each sample is already down by the time a peak arrives, ramped
+    // over that time rather than snapped. Reacting to a peak as it came meant
+    // the first half cycle of every bass note got past before the gain had
+    // fallen. The caller says how much gain each sample can stand; the gain
+    // applied is the average of the least needed around each of the next few
+    // samples, so it slides down over the whole look-ahead and comes back up
+    // slowly.
+    struct Limiter {
+        void Init(int aheadSamples, float releasePerSample);
+        void Reset();
+        // Stores `l`/`r`, records that the sample can stand a gain of `need`
+        // (1 being none), and returns the sample from the look-ahead ago.
+        inline void Process(float l, float r, float need, float &outL, float &outR) {
+            int p = pos;
+            float delayedL = bufL[(size_t)p], delayedR = bufR[(size_t)p];
+            float target = (float)(sum / ahead);
+            needs[(size_t)p] = need;
+            float least = 1.0f;
+            for (float n : needs) least = std::min(least, n);
+            sum += least - hold[(size_t)p];
+            hold[(size_t)p] = least;
+            bufL[(size_t)p] = l;
+            bufR[(size_t)p] = r;
+            pos = p + 1 == ahead ? 0 : p + 1;
+            gain = target < gain ? target : gain + (target - gain) * release;
+            outL = delayedL * gain;
+            outR = delayedR * gain;
+        }
+        float gain = 1.0f;
+        float release = 0.0f;
+        int ahead = 1;
+        int pos = 0;
+        std::vector<float> bufL, bufR;   // the input, delayed
+        std::vector<float> needs;        // the gain each of those samples needs
+        std::vector<float> hold;         // the least needed near each one
+        double sum = 0.0;                // of hold
+    };
+
     // What an ear would make of a system this loud, put back.
     //
     // Three shelves reproduce the gap between how an ear hears bass when
@@ -136,27 +178,17 @@ private:
     float m_feelTiltDb = 0.0f;    // the whole correction, at the bottom
     float m_bassAuthority = 0.0f; // how much of it this system has earned
     float m_feelBlend = -1.0f;    // what the shelves are currently set to
-    std::vector<float> m_feelScratchL, m_feelScratchR;
-    float m_feelMakeup = 1.0f;    // how much of the lift is currently kept
-    float m_feelRelease = 0.0f, m_feelFall = 0.0f;
     float m_feelDb = 0.0f;        // how much correction is currently asked for
     float m_feelDuckExtra = 0.0f; // extra allowance earned by being driven hard
 
-    // The output stage holds its ceiling by gain rather than by shaping, so
-    // that a loud bass note does not eat the rest of the music with it.
-    //
-    // It looks ahead: the output is a millisecond and a half late, and the gain
-    // for each sample is already down by the time a peak arrives, ramped over
-    // that time rather than snapped. Reacting to a peak as it came meant the
-    // first half cycle of every bass note got past before the gain had fallen.
-    float m_limitGain = 1.0f;
-    float m_limitRelease = 0.0f;
-    int m_ahead = 1;                           // look-ahead, in samples
-    int m_aheadPos = 0;
-    std::vector<float> m_aheadL, m_aheadR;     // the output, delayed
-    std::vector<float> m_aheadNeed;            // the gain each of those samples needs
-    std::vector<float> m_aheadHold;            // the least needed near each one
-    double m_aheadSum = 0.0;                   // of m_aheadHold
+    // The output stage: the bass is held to what fits beside the rest, then
+    // the whole is held to the ceiling. See the notes in engine.cpp.
+    float m_makeup = 1.0f;
+    dsp::Cascade m_splitLowL, m_splitLowR, m_splitHighL, m_splitHighR;
+    std::vector<float> m_highL, m_highR;       // the top band, delayed to match
+    int m_highPos = 0;
+    Limiter m_bassLimit;                       // the bass, to what is left beside the rest
+    Limiter m_limit;                           // everything, to the ceiling
 
     float m_peak = 0.0f;
     std::string m_emptyLabel;

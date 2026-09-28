@@ -50,9 +50,8 @@ constexpr float kBassSenseHz = 90.0f;
 constexpr float kBassSenseFull = 0.16f;
 
 // How high the correction may push the output when there was room going
-// spare, and how quickly the gain it gives back is allowed to return.
+// spare.
 constexpr float kFeelCeiling = 0.89f;
-constexpr float kFeelReleaseSeconds = 0.25f;
 // And the furthest it may pull the rest of the music down to make room. Past
 // this it would be ducking the track every time a note landed, which is worse
 // than not having the bass.
@@ -85,21 +84,42 @@ constexpr float kShellDb = -11.0f;
 // midrange gets eaten, several decibels of it, every time a note lands. That
 // is the sound of a blown speaker, not a loud one.
 //
-// So the ceiling is held by turning the whole thing down instead -- fast
-// enough to catch a note, slow enough not to breathe -- which leaves the
-// balance alone. The shaper stays behind it, doing nothing until something
-// gets past, so a system built to be far too loud still distorts rather than
-// wrapping round into noise.
+// Holding the ceiling by turning the whole thing down instead -- fast enough
+// to catch a note, slow enough not to breathe -- leaves the balance alone but
+// has the same shape: everything the room does to the bottom end (the cabin
+// pressure, the hump, what an ear would make of it) puts the bass on the
+// ceiling, and the music that reads as loud, above a couple of hundred hertz,
+// comes out several decibels quieter than it went in, ducked whenever a note
+// lands. Quiet and pumping at once.
 //
-// "Behind it" means above the ceiling. With the shaper's knee below the
-// ceiling, everything the limiter let through between the two was bent too --
-// and what an ear would make of a loud system (below) lifts the bass right up
-// to the ceiling whenever there is room, so bass-heavy music spent a tenth of
-// its samples in the shaper, audible as a crackle on the loud notes.
+// So the bass is held on its own. The output is split at kSplitHz, and the
+// bottom band is limited to what fits beside the top band under the ceiling:
+// a note that would not fit turns the bass down, never the rest. The whole is
+// then held to the ceiling, which after that only ever has the top band to
+// catch, and rarely. With the bass no longer arriving several decibels over,
+// the whole thing is turned up by kMakeupDb so the top band comes out about
+// as loud as it went in.
+//
+// The shaper stays behind it all, doing nothing until something gets past,
+// so a system built to be far too loud still distorts rather than wrapping
+// round into noise. "Behind it" means above the ceiling: with the shaper's
+// knee below the ceiling, everything the limiter let through between the two
+// was bent too, audible as a crackle on the loud notes.
 constexpr float kLimitCeiling = 0.89f;
 constexpr float kShaperKnee = 0.9f;
 constexpr float kLimitLookAheadSeconds = 0.0015f;
-constexpr float kLimitReleaseSeconds = 0.18f;
+// The bass comes back unhurried, a rebalance rather than a pump; the limiter
+// behind it has only the odd peak of the top band to catch, and lets go
+// quickly so that it is not heard breathing.
+constexpr float kBassReleaseSeconds = 0.25f;
+constexpr float kLimitReleaseSeconds = 0.06f;
+// Where the bass ends: above the cabin's hump, below the body of a voice.
+constexpr float kSplitHz = 300.0f;
+constexpr int kSplitOrder = 4;   // Linkwitz-Riley, so the two bands sum flat
+constexpr float kMakeupDb = 3.0f;
+// And the most the bass may be turned down for it. Past this the top band is
+// over the ceiling on its own, and the limiter behind takes the rest.
+constexpr float kBassLimitFloor = 0.1f;
 
 inline float OutputLimit(float x) {
     float a = std::fabs(x);
@@ -157,19 +177,38 @@ void Engine::Init(float sampleRate, int maxBlockFrames) {
     m_shellGain = dsp::DbToGain(kShellDb);
     m_bassSense.SetLowpass(sampleRate, kBassSenseHz, 0.707f);
     m_bassLevel.SetCutoff(sampleRate, 3.0f);
-    m_feelScratchL.assign((size_t)m_maxBlock, 0.0f);
-    m_feelScratchR.assign((size_t)m_maxBlock, 0.0f);
-    m_feelRelease = 1.0f - std::exp(-1.0f / (kFeelReleaseSeconds * sampleRate));
-    m_feelFall = 1.0f - std::exp(-1.0f / (0.02f * sampleRate));
-    m_limitRelease = 1.0f - std::exp(-1.0f / (kLimitReleaseSeconds * sampleRate));
-    m_ahead = std::max(1, std::min(1024, (int)std::lround(kLimitLookAheadSeconds * sampleRate)));
-    m_aheadL.assign((size_t)m_ahead, 0.0f);
-    m_aheadR.assign((size_t)m_ahead, 0.0f);
-    m_aheadNeed.assign((size_t)m_ahead, 1.0f);
-    m_aheadHold.assign((size_t)m_ahead, 1.0f);
-    m_aheadSum = m_ahead;
-    m_aheadPos = 0;
+    m_makeup = dsp::DbToGain(kMakeupDb);
+    m_splitLowL.SetLinkwitzRileyLowpass(sampleRate, kSplitHz, kSplitOrder);
+    m_splitLowR.SetLinkwitzRileyLowpass(sampleRate, kSplitHz, kSplitOrder);
+    m_splitHighL.SetLinkwitzRileyHighpass(sampleRate, kSplitHz, kSplitOrder);
+    m_splitHighR.SetLinkwitzRileyHighpass(sampleRate, kSplitHz, kSplitOrder);
+    int ahead = std::max(1, std::min(1024, (int)std::lround(kLimitLookAheadSeconds * sampleRate)));
+    m_highL.assign((size_t)ahead, 0.0f);
+    m_highR.assign((size_t)ahead, 0.0f);
+    m_highPos = 0;
+    m_bassLimit.Init(ahead, 1.0f - std::exp(-1.0f / (kBassReleaseSeconds * sampleRate)));
+    m_limit.Init(ahead, 1.0f - std::exp(-1.0f / (kLimitReleaseSeconds * sampleRate)));
     m_room.Derive();
+}
+
+void Engine::Limiter::Init(int aheadSamples, float releasePerSample) {
+    ahead = std::max(1, aheadSamples);
+    release = releasePerSample;
+    bufL.assign((size_t)ahead, 0.0f);
+    bufR.assign((size_t)ahead, 0.0f);
+    needs.assign((size_t)ahead, 1.0f);
+    hold.assign((size_t)ahead, 1.0f);
+    Reset();
+}
+
+void Engine::Limiter::Reset() {
+    gain = 1.0f;
+    pos = 0;
+    std::fill(bufL.begin(), bufL.end(), 0.0f);
+    std::fill(bufR.begin(), bufR.end(), 0.0f);
+    std::fill(needs.begin(), needs.end(), 1.0f);
+    std::fill(hold.begin(), hold.end(), 1.0f);
+    sum = ahead;
 }
 
 void Engine::Prepare(const SpeakerSystem &system) {
@@ -268,15 +307,16 @@ void Engine::Reset() {
     m_roomModes.Reset();
     m_bassSense.Reset();
     m_bassLevel.Reset();
-    m_feelMakeup = 1.0f;
     m_feelDb = 0.0f;
-    m_limitGain = 1.0f;
-    std::fill(m_aheadL.begin(), m_aheadL.end(), 0.0f);
-    std::fill(m_aheadR.begin(), m_aheadR.end(), 0.0f);
-    std::fill(m_aheadNeed.begin(), m_aheadNeed.end(), 1.0f);
-    std::fill(m_aheadHold.begin(), m_aheadHold.end(), 1.0f);
-    m_aheadSum = m_ahead;
-    m_aheadPos = 0;
+    m_splitLowL.Reset();
+    m_splitLowR.Reset();
+    m_splitHighL.Reset();
+    m_splitHighR.Reset();
+    std::fill(m_highL.begin(), m_highL.end(), 0.0f);
+    std::fill(m_highR.begin(), m_highR.end(), 0.0f);
+    m_highPos = 0;
+    m_bassLimit.Reset();
+    m_limit.Reset();
     m_feelBlend = -1.0f;
     for (int i = 0; i < kFeelStages; ++i) {
         m_feelL[i].Reset();
@@ -372,9 +412,10 @@ void Engine::Render(const float *inL, const float *inR, int frames, float *outL,
     // problem to the limiter, which turns the music down every time a note
     // lands -- the bass survives and everything else gets eaten.
     //
-    // So only as much is asked for as there is room for, plus a little taken
-    // out of the rest. A quiet passage gets the whole correction and swells;
-    // a loud one gets a tilt, bass against the rest, and stays clean.
+    // So only as much is asked for as there is room for, plus a little over,
+    // which the bass limiter below holds to what fits. A quiet passage gets
+    // the whole correction and swells; a loud one gets a tilt, bass against
+    // the rest, and stays clean.
     //
     // It runs only while there is bass present and something able to have
     // produced it: doors on their own never lost any bottom end.
@@ -389,7 +430,8 @@ void Engine::Render(const float *inL, const float *inR, int frames, float *outL,
                        m_bassAuthority * dsp::Clampf(m_settings.bassFeel, 0.0f, 2.0f);
 
         // What there is room for: the headroom going spare, and no more than
-        // kFeelMaxDuckDb taken off the rest of the music on top of it.
+        // kFeelMaxDuckDb over that, which the bass limiter takes back off the
+        // bass alone.
         float headroom = dsp::GainToDb(kFeelCeiling / std::max(bare, 1e-6f));
         float duck = kFeelMaxDuckDb + m_feelDuckExtra;
         float allowed = std::min(wanted, std::max(headroom, 0.0f) + duck);
@@ -409,64 +451,52 @@ void Engine::Render(const float *inL, const float *inR, int frames, float *outL,
             }
         }
         if (m_feelBlend > kFeelFloor) {
-            float lifted = 0.0f;
             for (int i = 0; i < frames; ++i) {
                 float l = outL[i], r = outR[i];
                 for (int stage = 0; stage < kFeelStages; ++stage) {
                     l = m_feelL[stage].Process(l);
                     r = m_feelR[stage].Process(r);
                 }
-                m_feelScratchL[(size_t)i] = l;
-                m_feelScratchR[(size_t)i] = r;
-                lifted = std::max(lifted, std::max(std::fabs(l), std::fabs(r)));
-            }
-
-            // Hold the ceiling, but never take more off the music than the
-            // allowance above, because past that the cure is worse.
-            float room = std::max(bare, kFeelCeiling);
-            float want = lifted > room ? room / lifted : 1.0f;
-            want = std::max(want, dsp::DbToGain(-(kFeelMaxDuckDb + m_feelDuckExtra)));
-            for (int i = 0; i < frames; ++i) {
-                m_feelMakeup = want < m_feelMakeup
-                                   ? m_feelMakeup + (want - m_feelMakeup) * m_feelFall
-                                   : m_feelMakeup + (want - m_feelMakeup) * m_feelRelease;
-                outL[i] = m_feelScratchL[(size_t)i] * m_feelMakeup;
-                outR[i] = m_feelScratchR[(size_t)i] * m_feelMakeup;
+                outL[i] = l;
+                outR[i] = r;
             }
         }
     }
 
-    // ---- the limiter -----------------------------------------------------
-    // The master level was applied by the speakers themselves. Only the
-    // ceiling is left to enforce.
-    //
-    // For the sample leaving the delay, the gain is the average of the least
-    // gain needed around each of the next few samples. Every one of those
-    // windows covers this sample, so the average is never more than it needs:
-    // nothing gets past the ceiling, and the gain slides down over the whole
-    // look-ahead instead of jumping. It comes back up slowly.
-    const int ahead = m_ahead;
+    // ---- the output stage ------------------------------------------------
+    // The master level was applied by the speakers themselves. What is left
+    // is the makeup, then holding the bass to what fits beside the rest, then
+    // holding the whole to the ceiling; see the notes at the top.
+    const int ahead = m_limit.ahead;
     for (int i = 0; i < frames; ++i) {
-        float l = outL[i], r = outR[i];
+        float l = outL[i] * m_makeup, r = outR[i] * m_makeup;
+        float lowL = m_splitLowL.Process(l), lowR = m_splitLowR.Process(r);
+        float highL = m_splitHighL.Process(l), highR = m_splitHighR.Process(r);
+
+        // The bass may have what the top band leaves under the ceiling.
+        float low = std::max(std::fabs(lowL), std::fabs(lowR));
+        float high = std::max(std::fabs(highL), std::fabs(highR));
+        float need = 1.0f;
+        if (low + high > kLimitCeiling && low > 1e-6f) {
+            need = std::max((kLimitCeiling - high) / low, kBassLimitFloor);
+        }
+        float heldL, heldR;
+        m_bassLimit.Process(lowL, lowR, need, heldL, heldR);
+
+        // The top band, delayed by as much as the bass was.
+        int p = m_highPos;
+        float lateL = m_highL[(size_t)p], lateR = m_highR[(size_t)p];
+        m_highL[(size_t)p] = highL;
+        m_highR[(size_t)p] = highR;
+        m_highPos = p + 1 == ahead ? 0 : p + 1;
+
+        l = heldL + lateL;
+        r = heldR + lateR;
         float a = std::max(std::fabs(l), std::fabs(r));
         m_peak = std::max(m_peak, a);
-
-        int p = m_aheadPos;
-        float delayedL = m_aheadL[(size_t)p], delayedR = m_aheadR[(size_t)p];
-        float target = (float)(m_aheadSum / ahead);
-
-        m_aheadNeed[(size_t)p] = a > kLimitCeiling ? kLimitCeiling / a : 1.0f;
-        float hold = 1.0f;
-        for (float need : m_aheadNeed) hold = std::min(hold, need);
-        m_aheadSum += hold - m_aheadHold[(size_t)p];
-        m_aheadHold[(size_t)p] = hold;
-        m_aheadL[(size_t)p] = l;
-        m_aheadR[(size_t)p] = r;
-        m_aheadPos = p + 1 == ahead ? 0 : p + 1;
-
-        m_limitGain = target < m_limitGain ? target : m_limitGain + (target - m_limitGain) * m_limitRelease;
-        outL[i] = OutputLimit(delayedL * m_limitGain);
-        outR[i] = OutputLimit(delayedR * m_limitGain);
+        m_limit.Process(l, r, a > kLimitCeiling ? kLimitCeiling / a : 1.0f, l, r);
+        outL[i] = OutputLimit(l);
+        outR[i] = OutputLimit(r);
     }
 }
 
