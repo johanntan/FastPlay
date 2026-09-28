@@ -29,7 +29,7 @@ void ShowMessage(const std::wstring& text, const std::wstring& title, MessageIco
 bool AskYesNo(const std::wstring& text, const std::wstring& title);
 
 // The main window's native handle (an HWND on Windows), for libraries that want
-// one, such as BASS_Init. Null before the main window exists.
+// one. Null before the main window exists.
 void* GetMainWindowHandle();
 
 // Close the main window, which ends the program (saving state as usual).

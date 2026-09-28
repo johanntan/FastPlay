@@ -172,12 +172,10 @@ private:
 
     // Advanced
     wxChoice* m_bufferSize = nullptr;
-    wxChoice* m_updatePeriod = nullptr;
     wxChoice* m_tempoAlgorithm = nullptr;
     wxTextCtrl* m_eqBassFreq = nullptr;
     wxTextCtrl* m_eqMidFreq = nullptr;
     wxTextCtrl* m_eqTrebleFreq = nullptr;
-    wxCheckBox* m_legacyVolume = nullptr;
     wxCheckBox* m_disableBatch = nullptr;
 
     // YouTube
@@ -590,20 +588,7 @@ void OptionsDialog::BuildAdvancedPage(wxNotebook* book) {
         m_bufferSize->SetSelection(bufferIndex);
     }
 
-    // Populate update period combo box
-    {
-        m_updatePeriod = AddChoice(page, AddRow(sizer), "&Update period:", 150);
-        int updateIndex = 4;  // Default to 100ms
-        for (int i = 0; i < g_updatePeriodCount; i++) {
-            m_updatePeriod->Append(wxString::Format("%d ms", g_updatePeriods[i]));
-            if (g_updatePeriods[i] == g_updatePeriod) {
-                updateIndex = i;
-            }
-        }
-        m_updatePeriod->SetSelection(updateIndex);
-    }
-
-    AddText(page, sizer, "Lower values reduce latency but may cause audio glitches.");
+    AddText(page, sizer, "How far ahead audio is prepared: lower answers effect changes sooner, higher is safer on a busy computer.");
 
     // Populate tempo algorithm combo box
     AddText(page, sizer, "Tempo/pitch &algorithm (changes apply on next file load):");
@@ -624,8 +609,7 @@ void OptionsDialog::BuildAdvancedPage(wxNotebook* book) {
     m_eqTrebleFreq = AddEdit(page, row, "Treble (2k-20k):", wxString::Format("%.0f", g_eqTrebleFreq), 60);
     SetDigitsOnly(m_eqTrebleFreq);
 
-    // Initialize legacy volume and disable batch delay checkboxes
-    m_legacyVolume = AddCheck(page, sizer, "&Legacy volume (faster, but affects recordings)", g_legacyVolume);
+    // Disable batch delay checkbox
     m_disableBatch = AddCheck(page, sizer, "Disable &batch delay (only catches one file at a time)", g_disableBatchDelay);
 
     auto* reset = new wxButton(page, wxID_ANY, "Reset station/podcast &order to alphabetical");
@@ -969,11 +953,6 @@ void OptionsDialog::OnOK(wxCommandEvent&) {
             SwitchAudioDevice(g_selectedDevice);
         }
 
-        int updateSel = m_updatePeriod->GetSelection();
-        if (updateSel >= 0 && updateSel < g_updatePeriodCount) {
-            g_updatePeriod = g_updatePeriods[updateSel];
-        }
-
         g_tempoAlgorithm = static_cast<int>(m_tempoAlgorithm->GetSelection() == 0 ? TempoAlgorithm::Speedy
                                                                                   : TempoAlgorithm::Signalsmith);
 
@@ -986,9 +965,6 @@ void OptionsDialog::OnOK(wxCommandEvent&) {
 
         float trebleFreq = static_cast<float>(std::wcstod(WS(m_eqTrebleFreq->GetValue()).c_str(), nullptr));
         if (trebleFreq >= 2000.0f && trebleFreq <= 20000.0f) g_eqTrebleFreq = trebleFreq;
-
-        // Get legacy volume setting
-        g_legacyVolume = m_legacyVolume->GetValue();
 
         // Get disable batch delay setting
         g_disableBatchDelay = m_disableBatch->GetValue();

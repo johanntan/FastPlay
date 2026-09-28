@@ -1,12 +1,13 @@
 # FastPlay
 
-A fast, accessible audio player for Windows with support for tempo/pitch shifting, effects, and screen reader accessibility.
+A fast, accessible audio player for Windows and macOS with support for tempo/pitch shifting, effects, and screen reader accessibility.
 
 ## Features
 
-- Tempo, pitch, and rate adjustment with multiple algorithms (SoundTouch, Speedy, Signalsmith Stretch)
+- Tempo, pitch, and rate adjustment (Speedy for speech, Signalsmith Stretch for music)
 - Audio effects (reverb, echo, EQ, compressor, stereo width, center/vocal cancel, convolution, 3D audio)
-- Recording/encoding to MP3, OGG, FLAC
+- Recording to WAV, MP3, OGG and FLAC
+- MIDI with SoundFonts, and tracker modules
 - Internet radio streaming with favorites
 - YouTube audio playback
 - Screen reader support via Universal Speech
@@ -22,11 +23,14 @@ A fast, accessible audio player for Windows with support for tempo/pitch shiftin
 
 ## Dependencies
 
-Run `download-deps.bat` once. It downloads BASS and its add-ons, SQLite, Speedy,
-Sonic, KissFFT and Signalsmith Stretch into `lib/`, `include/`, `deps/` and `src/`.
+Run `download-deps.bat` once. It downloads SQLite, Speedy, Sonic, KissFFT,
+Signalsmith Stretch and FDK AAC into `deps/` and `src/`, and FastPlay's FFmpeg
+into `ffmpeg/`: the audio-only build CI makes with `ci/ffmpeg/build.sh`, taken
+from CI's latest run with the GitHub CLI (`gh auth login` first).
 
-wxWidgets (the user interface toolkit) and UniversalSpeech (screen reader
-speech) are fetched and built by CMake itself on the first build.
+wxWidgets (the user interface toolkit), UniversalSpeech (screen reader speech),
+miniaudio, SpessaSynth, libopenmpt, LAME, libogg and libvorbis are fetched and
+built by CMake itself on the first build.
 
 ## Building
 
@@ -49,19 +53,21 @@ build_new.bat no-speech
 
 ## Running
 
-After building, run `FastPlay.exe`. DLLs are loaded from the `lib/` subfolder.
+After building, run `FastPlay.exe`. The screen reader client DLLs are loaded from the `lib/` subfolder.
 
 ## Project Structure
 
 ```
 FastPlay/
 ├── src/              # Player, effects, database and other core code
+│   ├── audio/        # The audio engine: decoders, tempo, output, recording
 │   ├── ui/           # The user interface (wxWidgets)
 │   ├── platform/     # Operating system specific code
 │   ├── reverb/       # The reverb engines
 │   └── spatial/      # The HRTF behind 3D Audio (SADIE II data, pffft)
 ├── include/          # Header files
-├── lib/              # BASS libraries and DLLs
+├── lib/              # Screen reader client DLLs
+├── ffmpeg/           # FastPlay's FFmpeg build (ci/ffmpeg)
 ├── deps/             # Third-party dependencies (Speedy, Sonic, Signalsmith Stretch, etc.)
 ├── res/              # Windows resources
 ├── CMakeLists.txt    # Build definition
@@ -72,7 +78,14 @@ FastPlay/
 ## License
 
 This project uses the following third-party libraries:
-- BASS and related libraries (commercial/free for non-commercial use)
+- FFmpeg (LGPL 2.1 or later), built from source by ci/ffmpeg/build.sh
+- miniaudio (public domain / MIT No Attribution)
+- SpessaSynth, C port by kode54 (Apache 2.0)
+- libopenmpt (BSD)
+- LAME (LGPL)
+- libogg and libvorbis (BSD)
+- Fraunhofer FDK AAC (FDK AAC licence)
+- Speedy (Apache 2.0), Sonic (Apache 2.0), Signalsmith Stretch (MIT)
 - SQLite (public domain)
 - wxWidgets (wxWindows Library Licence)
 - Universal Speech (MIT)

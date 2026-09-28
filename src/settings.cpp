@@ -78,9 +78,6 @@ void LoadSettings() {
     if (g_bufferSize < 100) g_bufferSize = 100;
     if (g_bufferSize > 5000) g_bufferSize = 5000;
 
-    g_updatePeriod = IniGetInt(L"Advanced", L"UpdatePeriod", 100, g_configPath.c_str());
-    if (g_updatePeriod < 5) g_updatePeriod = 5;
-    if (g_updatePeriod > 500) g_updatePeriod = 500;
 
     // 1 Speedy, 2 Signalsmith. 0 was SoundTouch, which is gone: Signalsmith instead.
     g_tempoAlgorithm = IniGetInt(L"Advanced", L"TempoAlgorithm", 2, g_configPath.c_str());
@@ -88,28 +85,8 @@ void LoadSettings() {
         g_tempoAlgorithm = static_cast<int>(TempoAlgorithm::Signalsmith);
     }
 
-    g_legacyVolume = IniGetInt(L"Advanced", L"LegacyVolume", 0, g_configPath.c_str()) != 0;
     g_disableBatchDelay = IniGetInt(L"Advanced", L"DisableBatchDelay", 0, g_configPath.c_str()) != 0;
 
-    // Load SoundTouch settings
-    g_stAntiAliasFilter = IniGetInt(L"SoundTouch", L"AntiAliasFilter", 1, g_configPath.c_str()) != 0;
-    g_stAAFilterLength = IniGetInt(L"SoundTouch", L"AAFilterLength", 32, g_configPath.c_str());
-    if (g_stAAFilterLength < 8) g_stAAFilterLength = 8;
-    if (g_stAAFilterLength > 128) g_stAAFilterLength = 128;
-    g_stQuickAlgorithm = IniGetInt(L"SoundTouch", L"QuickAlgorithm", 0, g_configPath.c_str()) != 0;
-    g_stSequenceMs = IniGetInt(L"SoundTouch", L"SequenceMs", 82, g_configPath.c_str());
-    if (g_stSequenceMs < 0) g_stSequenceMs = 0;
-    if (g_stSequenceMs > 200) g_stSequenceMs = 200;
-    g_stSeekWindowMs = IniGetInt(L"SoundTouch", L"SeekWindowMs", 28, g_configPath.c_str());
-    if (g_stSeekWindowMs < 0) g_stSeekWindowMs = 0;
-    if (g_stSeekWindowMs > 100) g_stSeekWindowMs = 100;
-    g_stOverlapMs = IniGetInt(L"SoundTouch", L"OverlapMs", 8, g_configPath.c_str());
-    if (g_stOverlapMs < 0) g_stOverlapMs = 0;
-    if (g_stOverlapMs > 50) g_stOverlapMs = 50;
-    g_stPreventClick = IniGetInt(L"SoundTouch", L"PreventClick", 0, g_configPath.c_str()) != 0;
-    g_stAlgorithm = IniGetInt(L"SoundTouch", L"Algorithm", 1, g_configPath.c_str());
-    if (g_stAlgorithm < 0) g_stAlgorithm = 0;
-    if (g_stAlgorithm > 2) g_stAlgorithm = 2;
 
     // Load Speedy settings
     g_speedyNonlinear = IniGetInt(L"Speedy", L"NonlinearSpeedup", 1, g_configPath.c_str()) != 0;
@@ -453,27 +430,10 @@ void SaveSettings() {
     // Save advanced settings (buffer)
     swprintf(buf, 32, L"%d", g_bufferSize);
     IniWriteString(L"Advanced", L"BufferSize", buf, g_configPath.c_str());
-    swprintf(buf, 32, L"%d", g_updatePeriod);
-    IniWriteString(L"Advanced", L"UpdatePeriod", buf, g_configPath.c_str());
     swprintf(buf, 32, L"%d", g_tempoAlgorithm);
     IniWriteString(L"Advanced", L"TempoAlgorithm", buf, g_configPath.c_str());
-    IniWriteString(L"Advanced", L"LegacyVolume", g_legacyVolume ? L"1" : L"0", g_configPath.c_str());
     IniWriteString(L"Advanced", L"DisableBatchDelay", g_disableBatchDelay ? L"1" : L"0", g_configPath.c_str());
 
-    // Save SoundTouch settings
-    IniWriteString(L"SoundTouch", L"AntiAliasFilter", g_stAntiAliasFilter ? L"1" : L"0", g_configPath.c_str());
-    swprintf(buf, 32, L"%d", g_stAAFilterLength);
-    IniWriteString(L"SoundTouch", L"AAFilterLength", buf, g_configPath.c_str());
-    IniWriteString(L"SoundTouch", L"QuickAlgorithm", g_stQuickAlgorithm ? L"1" : L"0", g_configPath.c_str());
-    swprintf(buf, 32, L"%d", g_stSequenceMs);
-    IniWriteString(L"SoundTouch", L"SequenceMs", buf, g_configPath.c_str());
-    swprintf(buf, 32, L"%d", g_stSeekWindowMs);
-    IniWriteString(L"SoundTouch", L"SeekWindowMs", buf, g_configPath.c_str());
-    swprintf(buf, 32, L"%d", g_stOverlapMs);
-    IniWriteString(L"SoundTouch", L"OverlapMs", buf, g_configPath.c_str());
-    IniWriteString(L"SoundTouch", L"PreventClick", g_stPreventClick ? L"1" : L"0", g_configPath.c_str());
-    swprintf(buf, 32, L"%d", g_stAlgorithm);
-    IniWriteString(L"SoundTouch", L"Algorithm", buf, g_configPath.c_str());
 
     // Save Speedy settings
     IniWriteString(L"Speedy", L"NonlinearSpeedup", g_speedyNonlinear ? L"1" : L"0", g_configPath.c_str());

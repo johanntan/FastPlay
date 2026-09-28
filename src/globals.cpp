@@ -8,7 +8,6 @@ const wchar_t* MUTEX_NAME = L"FastPlaySingleInstance";
 // Playback state (what is loaded is the audio engine's: see audio.h)
 float g_volume = 1.0f;
 bool g_muted = false;      // Muted state (recording still works)
-bool g_legacyVolume = false;  // Use legacy volume (faster, but affects recordings)
 bool g_disableBatchDelay = false; // Skip batch delay when opening files from explorer
 
 // ReplayGain
@@ -96,7 +95,6 @@ const FileAssoc g_fileAssocs[] = {
     {L".dff", L"DSD Audio"},
     {L".dsf", L"DSD Audio"},
     // CD Audio plugin
-    {L".cda", L"CD Audio"},
     // HLS streaming
     // (no file extension - network only)
     // MOD/tracker formats
@@ -207,28 +205,16 @@ int g_rateStepMode = 0;  // 0=0.01x, 1=Semitone
 
 // Advanced settings (audio buffer)
 int g_bufferSize = 500;    // Default 500ms
-int g_updatePeriod = 100;  // Default 100ms
 
 // Buffer size options (in ms)
 const int g_bufferSizes[] = {100, 200, 300, 500, 1000, 2000};
 const int g_bufferSizeCount = sizeof(g_bufferSizes) / sizeof(g_bufferSizes[0]);
 
 // Update period options (in ms)
-const int g_updatePeriods[] = {5, 10, 20, 50, 100, 200};
-const int g_updatePeriodCount = sizeof(g_updatePeriods) / sizeof(g_updatePeriods[0]);
 
-// Tempo/pitch algorithm (0=SoundTouch, 1=Speedy, 2=Signalsmith)
+// Tempo/pitch algorithm (1=Speedy, 2=Signalsmith)
 int g_tempoAlgorithm = 2;  // Signalsmith (TempoAlgorithm)
 
-// SoundTouch settings
-bool g_stAntiAliasFilter = true;   // Enable anti-alias filter
-int g_stAAFilterLength = 32;       // AA filter length (8-128 taps)
-bool g_stQuickAlgorithm = false;   // Quick/simple algorithm
-int g_stSequenceMs = 82;           // Sequence window (0=auto)
-int g_stSeekWindowMs = 28;         // Seek window (0=auto)
-int g_stOverlapMs = 8;             // Overlap window
-bool g_stPreventClick = false;     // Click prevention
-int g_stAlgorithm = 1;             // 0=Linear, 1=Cubic, 2=Shannon
 
 // Speedy settings
 bool g_speedyNonlinear = true;     // Enable nonlinear speedup (recommended)

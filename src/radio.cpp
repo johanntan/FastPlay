@@ -343,7 +343,7 @@ static std::vector<StreamOption> ParsePlaylistContentMultiple(const std::string&
     return urls;
 }
 
-// An HLS playlist is the stream itself (BASSHLS plays it); its entries are
+// An HLS playlist is the stream itself (FFmpeg plays it); its entries are
 // variants or few-second segments, not alternative stream addresses.
 static bool IsHlsPlaylist(const std::wstring& content) {
     return content.find(L"#EXT-X-") != std::wstring::npos;
@@ -427,8 +427,8 @@ static std::vector<StreamOption> ResolveTuneInUrls(const std::wstring& playlistU
 
 // Resolve a remote playlist URL (.m3u/.pls/.m3u8) to a direct stream URL.
 // Used by the playback path so saved favorites or directly-opened URLs that
-// point at a playlist file get resolved to a real stream before reaching BASS
-// (which can't parse a playlist). Returns the url unchanged when it isn't a
+// point at a playlist file get resolved to a real stream before reaching FFmpeg
+// (which reads HLS playlists, but not these). Returns the url unchanged when it isn't a
 // playlist URL, or when the fetch/parse fails (so the caller can still try it).
 std::wstring ResolvePlaylistUrl(const std::wstring& url) {
     if (!IsPlaylistUrl(url)) return url;

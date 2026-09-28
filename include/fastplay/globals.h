@@ -29,7 +29,6 @@ constexpr int SB_PART_COUNT = 3;
 // Playback state (what is loaded is the audio engine's: see audio.h)
 extern float g_volume;
 extern bool g_muted;          // Muted state (recording still works)
-extern bool g_legacyVolume;   // Use legacy volume (faster, but affects recordings)
 extern bool g_disableBatchDelay; // Skip batch delay when opening files from explorer
 
 // ReplayGain (loudness normalization from REPLAYGAIN_* / R128 tags)
@@ -111,28 +110,16 @@ extern int g_rateStepMode;         // 0=0.01x, 1=Semitone
 
 // Advanced settings (audio buffer)
 extern int g_bufferSize;       // Output buffer in ms (default 500): how far effects and tempo changes lag
-extern int g_updatePeriod;     // Kept in the settings; the audio engine has no use for it
 
 // Buffer size options (in ms)
 extern const int g_bufferSizes[];
 extern const int g_bufferSizeCount;
 
 // Update period options (in ms)
-extern const int g_updatePeriods[];
-extern const int g_updatePeriodCount;
 
 // Tempo/pitch algorithm setting
 extern int g_tempoAlgorithm;   // 1=Speedy, 2=Signalsmith (TempoAlgorithm)
 
-// SoundTouch settings
-extern bool g_stAntiAliasFilter;   // Enable anti-alias filter (default true)
-extern int g_stAAFilterLength;     // AA filter length 8-128 (default 32)
-extern bool g_stQuickAlgorithm;    // Quick/simple algorithm (default false)
-extern int g_stSequenceMs;         // Sequence window 0-200ms (default 82, 0=auto)
-extern int g_stSeekWindowMs;       // Seek window 0-100ms (default 28, 0=auto)
-extern int g_stOverlapMs;          // Overlap window 0-50ms (default 8)
-extern bool g_stPreventClick;      // Click prevention (default false)
-extern int g_stAlgorithm;          // 0=Linear, 1=Cubic, 2=Shannon (default 1)
 
 // Speedy settings
 extern bool g_speedyNonlinear;     // Enable nonlinear speedup (default true, recommended for speech)

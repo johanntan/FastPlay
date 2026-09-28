@@ -5,7 +5,7 @@
 #include <string>
 
 void PlatformStartup() {
-    // The BASS DLLs are delay-loaded from the lib folder next to the executable.
+    // The screen reader client DLLs load from the lib folder next to the executable.
     wchar_t exePath[MAX_PATH];
     GetModuleFileNameW(nullptr, exePath, MAX_PATH);
     wchar_t* lastSlash = wcsrchr(exePath, L'\\');

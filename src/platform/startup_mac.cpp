@@ -3,8 +3,7 @@
 #include <sys/sysctl.h>
 
 void PlatformStartup() {
-    // Nothing to do: the BASS libraries are found through the executable's rpath
-    // (Contents/Frameworks in FastPlay.app).
+    // Nothing to do: everything FastPlay uses is linked into the app.
 }
 
 std::string GetSystemDescription() {

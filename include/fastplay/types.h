@@ -73,7 +73,7 @@ enum class SpatialMode {
     COUNT
 };
 
-// DSP effect types (BASS_FX DSP effects + custom)
+// DSP effect types (the effects in the audio engine's chain)
 enum class DSPEffectType {
     Reverb,
     Echo,
