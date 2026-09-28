@@ -5,6 +5,7 @@
 #include "types.h"
 #include "spatial/hrtf.h"
 
+#include <atomic>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -50,6 +51,11 @@ public:
     void SetCrossover(float hz);
     void SetBassFeel(float amount);
     void SetConeNoise(float amount);  // 0 to 10, 1 being as measured
+
+    // The music jumped (a seek): drop what the rooms were still sounding of the
+    // old position -- reverberation, delay lines -- rather than play it over
+    // the new one. Safe from any thread; the audio thread acts on it.
+    void ClearTails() { m_clearTails = true; }
 
     const wchar_t* GetLastError() const { return m_lastError.c_str(); }
 
@@ -111,6 +117,7 @@ private:
     float m_bassFeel = 1.0f;
     float m_coneNoise = 1.0f;
     std::vector<float> m_speakerDry;  // one chunk, for blending
+    std::atomic<bool> m_clearTails{false};
 };
 
 SpatialAudio* GetSpatialAudio();

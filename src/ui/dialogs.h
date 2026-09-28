@@ -28,6 +28,12 @@ void ShowPodcastDialog();       // podcast_dialog.cpp
 void ShowSchedulerDialog();     // scheduler_dialog.cpp
 void ShowYouTubeDialog();       // youtube_dialog.cpp (modeless)
 
+// Refresh the YouTube favorites on the schedule set in Options > YouTube (at
+// startup, then every so often), saying when there are new videos. Call when the
+// main window is up (atStartup) and after the options change; stop at exit.
+void StartYouTubeAutoRefresh(bool atStartup);
+void StopYouTubeAutoRefresh();
+
 // Help > Check for Updates is ShowCheckForUpdatesDialog() in updater.h (update_dialog.cpp).
 
 #endif // FASTPLAY_DIALOGS_H

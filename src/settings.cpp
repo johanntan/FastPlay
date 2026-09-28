@@ -150,6 +150,7 @@ void LoadSettings() {
     IniGetString(L"YouTube", L"ApiKey", L"", ytBuf, 512, g_configPath.c_str());
     g_ytApiKey = ytBuf;
     g_ytFavoritesSort = IniGetInt(L"YouTube", L"FavoritesSort", 0, g_configPath.c_str()) == 1 ? 1 : 0;
+    g_ytAutoRefresh = std::clamp(IniGetInt(L"YouTube", L"AutoRefresh", 0, g_configPath.c_str()), 0, 6);
     // YouTube downloads
     IniGetString(L"YouTube", L"DownloadFolder", L"", ytBuf, 512, g_configPath.c_str());
     g_ytDownload.folder = ytBuf;
@@ -502,6 +503,7 @@ void SaveSettings() {
     IniWriteString(L"YouTube", L"YtdlpPath", g_ytdlpPath.c_str(), g_configPath.c_str());
     IniWriteString(L"YouTube", L"ApiKey", g_ytApiKey.c_str(), g_configPath.c_str());
     IniWriteString(L"YouTube", L"FavoritesSort", g_ytFavoritesSort == 1 ? L"1" : L"0", g_configPath.c_str());
+    IniWriteString(L"YouTube", L"AutoRefresh", std::to_wstring(g_ytAutoRefresh).c_str(), g_configPath.c_str());
     IniWriteString(L"YouTube", L"DownloadFolder", g_ytDownload.folder.c_str(), g_configPath.c_str());
     IniWriteString(L"YouTube", L"DownloadType", std::to_wstring(g_ytDownload.type).c_str(), g_configPath.c_str());
     IniWriteString(L"YouTube", L"DownloadAudioFormat", std::to_wstring(g_ytDownload.audioFormat).c_str(), g_configPath.c_str());

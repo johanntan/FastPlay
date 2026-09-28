@@ -82,6 +82,9 @@ bool SpatialAudio::Initialize(int sampleRate) {
 
     m_engine->Init(static_cast<float>(sampleRate), SPEAKER_CHUNK);
     RebuildSpeakers();
+    // A new track: nothing of the last one may ring on into it.
+    m_engine->Reset();
+    m_clearTails = false;
 
     m_carryCount = 0;
 
@@ -322,6 +325,7 @@ void SpatialAudio::SetRoomPreset(int preset) {
     if (preset == m_preset) return;
     m_preset = preset;
     RebuildSpeakers();
+    m_engine->Reset();  // a different room: the last one's tail does not carry over
 }
 
 void SpatialAudio::SetSubwoofer(bool on) {
@@ -409,6 +413,7 @@ void SpatialAudio::ProcessSpeakers(float* buffer, int frameCount, float blend) {
         ~FlushDenormals() { _mm_setcsr(saved); }
     } flush;
 #endif
+    if (m_clearTails.exchange(false)) m_engine->Reset();
     UpdateListener();
     if (blend >= 1.0f) {
         m_engine->RenderInterleaved(buffer, buffer, frameCount);

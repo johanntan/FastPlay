@@ -18,6 +18,7 @@
 #include "bassenc_ogg.h"
 #include "bassenc_flac.h"
 #include "tempo_processor.h"
+#include "spatial_audio.h"
 #include "bass_text.h"
 #include "paths.h"
 #include <ctime>
@@ -335,6 +336,13 @@ bool IsURL(const wchar_t* path) {
     return (WStrNICmp(path, L"http://", 7) == 0 ||
             WStrNICmp(path, L"https://", 8) == 0 ||
             WStrNICmp(path, L"ftp://", 6) == 0);
+}
+
+// Move playback to `seconds`, and tell 3D Audio so the room it simulates does
+// not go on sounding of where the music was.
+static void JumpTo(TempoProcessor* processor, double seconds) {
+    processor->SetPosition(seconds);
+    if (SpatialAudio* spatial = GetSpatialAudio()) spatial->ClearTails();
 }
 
 // Load and play a URL stream
@@ -909,7 +917,7 @@ bool LoadFile(const wchar_t* path) {
     // Restore saved position for this file (if any)
     double savedPos = LoadFilePosition(path);
     if (savedPos > 0) {
-        processor->SetPosition(savedPos);
+        JumpTo(processor, savedPos);
     }
 
     // Start playback on output stream
@@ -1044,7 +1052,7 @@ void Play() {
         // Already playing - restart from beginning
         TempoProcessor* processor = GetTempoProcessor();
         if (processor && processor->IsActive()) {
-            processor->SetPosition(0);
+            JumpTo(processor, 0);
         }
     }
     BASS_ChannelPlay(g_fxStream, FALSE);
@@ -1082,7 +1090,7 @@ void Stop() {
             BASS_ChannelStop(g_fxStream);
             TempoProcessor* processor = GetTempoProcessor();
             if (processor && processor->IsActive()) {
-                processor->SetPosition(0);
+                JumpTo(processor, 0);
             }
         }
     }
@@ -1114,7 +1122,7 @@ void Seek(double seconds) {
     if (newPos < 0) newPos = 0;
     if (newPos > length) newPos = length;
 
-    processor->SetPosition(newPos);
+    JumpTo(processor, newPos);
 
     UpdateStatusBar();
 }
@@ -1144,7 +1152,7 @@ void SeekToPosition(double seconds) {
     if (seconds < 0) seconds = 0;
     if (seconds > duration) seconds = duration;
 
-    processor->SetPosition(seconds);
+    JumpTo(processor, seconds);
     UpdateStatusBar();
 }
 
@@ -1543,7 +1551,7 @@ void PrevTrack() {
         if (processor && processor->IsActive()) {
             double pos = processor->GetPosition();
             if (pos > 3.0) {
-                processor->SetPosition(0);
+                JumpTo(processor, 0);
                 UpdateStatusBar();
                 return;
             }
@@ -1623,7 +1631,7 @@ bool ReinitBass(int device) {
             // Use tempo processor to set position
             TempoProcessor* processor = GetTempoProcessor();
             if (processor && processor->IsActive()) {
-                processor->SetPosition(position);
+                JumpTo(processor, position);
             }
             // LoadFile() auto-starts playback, so we need to pause/stop if we weren't playing
             if (!wasPlaying) {

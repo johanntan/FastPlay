@@ -75,9 +75,11 @@ bool YouTubeVideoChannel(const std::wstring& videoId, YouTubeListInfo& info, std
 // YouTube's feed for it. False if the feed could not be read.
 bool YouTubeLatestUpload(YouTubeKind kind, const std::wstring& id, int64_t& published);
 
-// A channel's or playlist's feed: its name (and a playlist's channel) and when its
-// newest video was published. False if the feed could not be read.
-bool YouTubeReadFeed(YouTubeKind kind, const std::wstring& id, YouTubeListInfo& info, int64_t& published);
+// A channel's or playlist's feed: its name (and a playlist's channel), when its
+// newest video was published, and that video's title. False if the feed could not
+// be read.
+bool YouTubeReadFeed(YouTubeKind kind, const std::wstring& id, YouTubeListInfo& info, int64_t& published,
+                     std::wstring* newestTitle = nullptr);
 
 // A channel or playlist from a line of text, as in a list of channels to import: a
 // channel or playlist URL, an @handle or a channel ID. Also gives the newest

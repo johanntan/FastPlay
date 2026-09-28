@@ -912,6 +912,7 @@ void MainFrame::OnClose(wxCloseEvent&) {
         m_tray.release()->Destroy();
     }
     UnregisterGlobalHotkeys();
+    StopYouTubeAutoRefresh();
 #ifdef __WXOSX__
     StopMediaKeys();  // and leave Control Center's Now Playing
 #endif

@@ -2,6 +2,7 @@
 
 #include "ui/main_frame.h"
 #include "ui/ui_common.h"
+#include "ui/dialogs.h"
 
 #include "globals.h"
 #include "settings.h"
@@ -150,6 +151,7 @@ bool FastPlayApp::OnInit() {
     }
     SetTopWindow(frame);
     frame->Show();
+    StartYouTubeAutoRefresh(true);
 
     if (g_playlist.empty()) {
         LoadPlaybackState();

@@ -131,6 +131,12 @@ struct ResultsView {
 
 using Worker = std::function<bool(std::vector<YouTubeResult>&, std::wstring&, std::wstring&)>;
 
+// Looking up the favorites' latest uploads: quietly (the window opening, a
+// favorite added), because the Refresh button was pressed (says what it found),
+// or on the automatic schedule (speaks only of new videos).
+enum class RefreshMode { Quiet, Manual, Auto };
+void RefreshFavorites(RefreshMode mode, int onlyId = -1);
+
 class YouTubeDialog : public wxDialog {
 public:
     explicit YouTubeDialog(wxWindow* parent)
@@ -159,7 +165,7 @@ public:
         Bind(wxEVT_CHAR_HOOK, &YouTubeDialog::OnCharHook, this);
 
         LoadFavorites();
-        RefreshUploads();
+        RefreshFavorites(RefreshMode::Quiet);
         m_search->SetFocus();
     }
 
@@ -253,10 +259,7 @@ private:
         m_favoritesList->Bind(wxEVT_LISTBOX_DCLICK, [this](wxCommandEvent&) { OpenFavorite(); });
         m_videos->Bind(wxEVT_LISTBOX_DCLICK, [this](wxCommandEvent&) { PlayVideo(); });
         remove->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { RemoveFavorite(); });
-        refresh->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
-            Speak("Refreshing");
-            RefreshUploads();
-        });
+        refresh->Bind(wxEVT_BUTTON, [](wxCommandEvent&) { RefreshFavorites(RefreshMode::Manual); });
         m_moreVideos->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { LoadMoreVideos(); });
         importButton->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { ImportFavorites(); });
         download->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { DownloadVideo(); });
@@ -522,7 +525,7 @@ private:
         std::wstring what = (kind == YouTubeFavoriteKind::Channel ? L"channel " : L"playlist ") + info.name;
         SpeakW(existed ? what + L" is already in favorites" : L"Added " + what + L" to favorites");
         LoadFavorites(id);
-        if (!existed) RefreshUploads(id);
+        if (!existed) RefreshFavorites(RefreshMode::Quiet, id);
     }
 
     void LoadFavorites(int selectId = -1) {
@@ -568,10 +571,10 @@ private:
         return text;
     }
 
-    // Update one favorite's text in place (the order is left alone while the user
-    // may be reading the list).
+public:
+    // A favorite's latest upload arrived: update its text in place (the order is
+    // left alone while the user may be reading the list).
     void UploadArrived(int id, int64_t published) {
-        UpdateYouTubeFavoriteUpload(id, published);
         for (size_t i = 0; i < m_favorites.size(); i++) {
             if (m_favorites[i].id != id) continue;
             m_favorites[i].lastUpload = published;
@@ -579,47 +582,10 @@ private:
         }
     }
 
-    // Look up every favorite's latest upload (or just one), a few at a time, then
-    // put them in order.
-    void RefreshUploads(int onlyId = -1) {
-        struct Job {
-            int id;
-            YouTubeKind kind;
-            std::wstring youtubeId;
-        };
-        auto jobs = std::make_shared<std::vector<Job>>();
-        for (const auto& f : m_favorites) {
-            if (onlyId >= 0 && f.id != onlyId) continue;
-            jobs->push_back({f.id, f.kind == YouTubeFavoriteKind::Playlist ? YouTubeKind::Playlist : YouTubeKind::Channel,
-                             f.youtubeId});
-        }
-        if (jobs->empty()) return;
-        auto next = std::make_shared<std::atomic<size_t>>(0);
-        auto running = std::make_shared<std::atomic<int>>(0);
-        int window = m_window;
-        const int threads = static_cast<int>(std::min<size_t>(4, jobs->size()));
-        *running = threads;
-        for (int t = 0; t < threads; t++) {
-            RunInBackground([jobs, next, running, window]() {
-                for (size_t i = (*next)++; i < jobs->size(); i = (*next)++) {
-                    const Job& job = (*jobs)[i];
-                    int64_t published = 0;
-                    if (YouTubeLatestUpload(job.kind, job.youtubeId, published) && published > 0) {
-                        int id = job.id;
-                        RunOnUiThread([window, id, published]() {
-                            if (YouTubeDialog* dialog = For(window)) dialog->UploadArrived(id, published);
-                        });
-                    }
-                }
-                if (--*running == 0) {
-                    RunOnUiThread([window]() {
-                        if (YouTubeDialog* dialog = For(window)) dialog->ShowFavorites(dialog->SelectedFavoriteId());
-                    });
-                }
-            });
-        }
-    }
+    // All arrived: put them in order, keeping the selection.
+    void RefreshDone() { ShowFavorites(SelectedFavoriteId()); }
 
+private:
     void OpenFavorite() {
         int sel = m_favoritesList->GetSelection();
         if (sel < 0 || sel >= static_cast<int>(m_favorites.size())) return;
@@ -826,7 +792,129 @@ private:
     std::wstring m_videosToken;
 };
 
+std::atomic<bool> g_refreshing{false};
+
+struct RefreshJob {
+    int id;
+    YouTubeKind kind;
+    std::wstring youtubeId;
+    std::wstring name;
+    int64_t previous;  // latest upload known before this refresh
+    // Filled in by the refresh
+    bool ok = false;
+    int64_t published = 0;
+    std::wstring newestTitle;
+};
+
+// What the refresh found, said as the mode asks.
+void FinishRefresh(RefreshMode mode, const std::vector<RefreshJob>& jobs) {
+    g_refreshing = false;
+    if (g_youTubeDialog) g_youTubeDialog->RefreshDone();
+
+    std::vector<const RefreshJob*> fresh;  // uploaded since the last look
+    int failed = 0;
+    for (const auto& job : jobs) {
+        if (!job.ok) failed++;
+        else if (job.previous > 0 && job.published > job.previous) fresh.push_back(&job);
+    }
+    std::wstring found;
+    for (size_t i = 0; i < fresh.size() && i < 5; i++) {
+        found += L" " + fresh[i]->name + L": " + fresh[i]->newestTitle + L".";
+    }
+    if (fresh.size() > 5) found += L" And " + std::to_wstring(fresh.size() - 5) + L" more.";
+
+    if (mode == RefreshMode::Manual) {
+        std::wstring text = L"Favorites refreshed.";
+        if (fresh.empty()) text += L" No new videos.";
+        else if (fresh.size() == 1) text += L" 1 new video:" + found;
+        else text += L" " + std::to_wstring(fresh.size()) + L" new videos:" + found;
+        if (failed) text += L" " + std::to_wstring(failed) + L" could not be checked.";
+        SpeakW(text);
+    } else if (mode == RefreshMode::Auto && !fresh.empty()) {
+        if (fresh.size() == 1) {
+            SpeakW(L"New video from " + fresh[0]->name + L": " + fresh[0]->newestTitle);
+        } else {
+            SpeakW(std::to_wstring(fresh.size()) + L" new YouTube videos:" + found);
+        }
+    }
+}
+
+void RefreshFavorites(RefreshMode mode, int onlyId) {
+    if (g_refreshing.exchange(true)) {
+        if (mode == RefreshMode::Manual) Speak("Already refreshing");
+        return;
+    }
+    auto jobs = std::make_shared<std::vector<RefreshJob>>();
+    for (const auto& f : GetYouTubeFavorites()) {
+        if (onlyId >= 0 && f.id != onlyId) continue;
+        jobs->push_back({f.id, f.kind == YouTubeFavoriteKind::Playlist ? YouTubeKind::Playlist : YouTubeKind::Channel,
+                         f.youtubeId, f.name, f.lastUpload});
+    }
+    if (jobs->empty()) {
+        g_refreshing = false;
+        if (mode == RefreshMode::Manual) Speak("No favorites to refresh");
+        return;
+    }
+    if (mode == RefreshMode::Manual) {
+        SpeakW(L"Refreshing " + std::to_wstring(jobs->size()) + (jobs->size() == 1 ? L" favorite" : L" favorites"));
+    }
+
+    // A few at a time; each result goes into the database (and the window, if
+    // open) as it arrives.
+    auto next = std::make_shared<std::atomic<size_t>>(0);
+    auto running = std::make_shared<std::atomic<int>>(0);
+    const int threads = static_cast<int>(std::min<size_t>(4, jobs->size()));
+    *running = threads;
+    for (int t = 0; t < threads; t++) {
+        RunInBackground([jobs, next, running, mode]() {
+            for (size_t i = (*next)++; i < jobs->size(); i = (*next)++) {
+                RefreshJob& job = (*jobs)[i];
+                YouTubeListInfo info;
+                job.ok = YouTubeReadFeed(job.kind, job.youtubeId, info, job.published, &job.newestTitle);
+                if (job.ok && job.published > 0) {
+                    int id = job.id;
+                    int64_t published = job.published;
+                    RunOnUiThread([id, published]() {
+                        UpdateYouTubeFavoriteUpload(id, published);
+                        if (g_youTubeDialog) g_youTubeDialog->UploadArrived(id, published);
+                    });
+                }
+            }
+            if (--*running == 0) {
+                RunOnUiThread([jobs, mode]() { FinishRefresh(mode, *jobs); });
+            }
+        });
+    }
+}
+
+// The automatic schedule: minutes between refreshes for each choice in Options
+// (Off, At startup, then every 30 minutes up to 8 hours). All but Off also
+// refresh shortly after startup.
+const int kAutoRefreshMinutes[] = {0, 0, 30, 60, 120, 240, 480};
+wxTimer* g_autoRefreshTimer = nullptr;
+wxTimer* g_startupRefreshTimer = nullptr;
+
 }  // namespace
+
+void StartYouTubeAutoRefresh(bool atStartup) {
+    if (!g_autoRefreshTimer) {
+        g_autoRefreshTimer = new wxTimer();
+        g_autoRefreshTimer->Bind(wxEVT_TIMER, [](wxTimerEvent&) { RefreshFavorites(RefreshMode::Auto); });
+        g_startupRefreshTimer = new wxTimer();
+        g_startupRefreshTimer->Bind(wxEVT_TIMER, [](wxTimerEvent&) { RefreshFavorites(RefreshMode::Auto); });
+    }
+    int choice = std::clamp(g_ytAutoRefresh, 0, 6);
+    g_autoRefreshTimer->Stop();
+    if (kAutoRefreshMinutes[choice] > 0) g_autoRefreshTimer->Start(kAutoRefreshMinutes[choice] * 60 * 1000);
+    // Not at once: startup has enough to do, and the favorites can wait a moment.
+    if (atStartup && choice > 0) g_startupRefreshTimer->StartOnce(15000);
+}
+
+void StopYouTubeAutoRefresh() {
+    delete g_autoRefreshTimer;
+    delete g_startupRefreshTimer;
+    g_autoRefreshTimer = g_startupRefreshTimer = nullptr;
+}
 
 void ShowYouTubeDialog() {
     if (g_youTubeDialog && !g_youTubeDialog->IsBeingDeleted()) {

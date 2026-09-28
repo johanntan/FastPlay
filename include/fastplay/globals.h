@@ -169,6 +169,7 @@ extern std::wstring g_ytdlpPath;    // Path to yt-dlp executable
 extern std::wstring g_ytApiKey;     // YouTube Data API key (optional)
 extern int g_ytFavoritesSort;       // YouTube favorites order: 0 newest upload first, 1 by name
 extern YouTubeDownloadSettings g_ytDownload;  // how YouTube videos are downloaded
+extern int g_ytAutoRefresh;         // refresh favorites: 0 off, 1 at startup, 2-6 every 30 min to 8 hours
 
 // Downloads settings
 extern std::wstring g_downloadPath;      // Output directory for podcast downloads

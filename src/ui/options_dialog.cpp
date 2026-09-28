@@ -18,6 +18,7 @@
 #include "file_assoc.h"
 #include "youtube.h"
 
+#include <algorithm>
 #include <cwchar>
 #include <wx/notebook.h>
 #include <wx/filedlg.h>
@@ -173,6 +174,7 @@ private:
     // YouTube
     wxTextCtrl* m_ytdlpPath = nullptr;
     wxStaticText* m_cookiesStatus = nullptr;
+    wxChoice* m_ytAutoRefresh = nullptr;
     // YouTube downloads
     wxTextCtrl* m_ytFolder = nullptr;
     wxChoice* m_ytType = nullptr;
@@ -660,6 +662,14 @@ void OptionsDialog::BuildYouTubePage(wxNotebook* book) {
     AddText(page, sizer, "Get an API key from: console.cloud.google.com");
     AddText(page, sizer, "Without API key, yt-dlp will be used for search (slower).");
 
+    m_ytAutoRefresh = AddChoice(page, sizer, "Refresh &favorites:", 260);
+    for (const char* item : {"Off", "At startup", "Every 30 minutes", "Every hour", "Every 2 hours", "Every 4 hours",
+                             "Every 8 hours"}) {
+        m_ytAutoRefresh->Append(item);
+    }
+    m_ytAutoRefresh->SetSelection(std::clamp(g_ytAutoRefresh, 0, 6));
+    AddText(page, sizer, "Checks your favorite channels and playlists for new videos, and says when there are some.");
+
     // Cookies, for videos YouTube only shows to a signed-in account
     m_cookiesStatus = new wxStaticText(page, wxID_ANY, "");
     sizer->Add(m_cookiesStatus, 0, wxTOP, 10);
@@ -1054,6 +1064,8 @@ void OptionsDialog::OnOK(wxCommandEvent&) {
     // Get YouTube settings
     g_ytdlpPath = WS(m_ytdlpPath->GetValue());
     g_ytApiKey = WS(m_ytApiKey->GetValue());
+    g_ytAutoRefresh = m_ytAutoRefresh->GetSelection();
+    StartYouTubeAutoRefresh(false);
 
     // Get YouTube download settings. The folder is only stored when it is not
     // the default, so a moved Downloads folder is still followed.

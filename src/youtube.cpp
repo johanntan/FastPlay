@@ -735,7 +735,8 @@ static std::string XmlText(const std::string& xml, const char* tag, size_t from,
     return out;
 }
 
-bool YouTubeReadFeed(YouTubeKind kind, const std::wstring& id, YouTubeListInfo& info, int64_t& published) {
+bool YouTubeReadFeed(YouTubeKind kind, const std::wstring& id, YouTubeListInfo& info, int64_t& published,
+                     std::wstring* newestTitle) {
     published = 0;
     std::wstring url = L"https://www.youtube.com/feeds/videos.xml?" +
                        std::wstring(kind == YouTubeKind::Playlist ? L"playlist_id=" : L"channel_id=") + id;
@@ -752,11 +753,13 @@ bool YouTubeReadFeed(YouTubeKind kind, const std::wstring& id, YouTubeListInfo& 
     info.id = id;
     info.name = Utf8ToWide(XmlText(xml, "title", 0, firstEntry));
     info.channel = kind == YouTubeKind::Playlist ? Utf8ToWide(XmlText(xml, "name", 0, firstEntry)) : L"";
-    size_t pos = firstEntry;
-    while (pos != std::string::npos && (pos = xml.find("<published>", pos)) != std::string::npos) {
-        pos += 11;
-        int64_t when = ParseIsoTime(xml.substr(pos, 32));
-        if (when > published) published = when;
+    for (size_t entry = firstEntry; entry != std::string::npos; entry = xml.find("<entry>", entry + 7)) {
+        size_t end = xml.find("</entry>", entry);
+        int64_t when = ParseIsoTime(XmlText(xml, "published", entry, end));
+        if (when > published) {
+            published = when;
+            if (newestTitle) *newestTitle = Utf8ToWide(XmlText(xml, "title", entry, end));
+        }
     }
     return true;
 }
