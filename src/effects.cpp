@@ -54,7 +54,7 @@ static const ParamDef g_paramDefs[] = {
     {ParamId::AdvReverbReflDelay,   "Reverb Reflections Delay", " ms",  0.0f,   300.0f, 5.0f,  7.0f,   DSPEffectType::Reverb},
     {ParamId::AdvReverbLateDelay,   "Reverb Tail Delay",        " ms",  0.0f,   100.0f, 5.0f,  11.0f,  DSPEffectType::Reverb},
     // Echo parameters
-    {ParamId::EchoDelay,   "Echo Delay",   "ms",         10.0f,  2000.0f, 50.0f, 300.0f, DSPEffectType::Echo},
+    {ParamId::EchoDelay,   "Echo Delay",   "ms",         10.0f,  2000.0f, 10.0f, 300.0f, DSPEffectType::Echo},
     {ParamId::EchoFeedback,"Echo Feedback","%",          0.0f,   90.0f,  5.0f,  40.0f, DSPEffectType::Echo},
     {ParamId::EchoMix,     "Echo Mix",     "%",          0.0f,   100.0f, 5.0f,  30.0f, DSPEffectType::Echo},
     // EQ parameters (in dB)
