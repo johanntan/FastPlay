@@ -145,6 +145,7 @@ enum class ParamId {
     SpatialSubLevel,    // dB
     SpatialCrossover,   // Hz
     SpatialBassFeel,    // %
+    SpatialConeNoise,   // %
     COUNT
 };
 

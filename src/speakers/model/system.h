@@ -87,7 +87,8 @@ struct SystemSettings {
     // The cone itself, heard rather than the air it moves: surround, spider
     // and coil, scraping and flexing in time with the note. Loud enough to
     // hear with your head at the boot of a car and gone from the driver's
-    // seat, which is where it was measured. 0 is off, 1 is what was measured.
+    // seat, which is where it was measured. 0 is off, 1 is what was measured,
+    // and up to 10 turns it up for hearing it from further away.
     float coneNoise = 1.0f;
 
     // How much of the room's own character is applied, 0 to 1.5.

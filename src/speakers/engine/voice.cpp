@@ -237,7 +237,7 @@ void Voice::Configure(const PlacedSpeaker &speaker, const SystemSettings &settin
     // travel makes enough to hear from across a car park.
     m_coneHp.SetHighpass(m_sampleRate, kConeLowHz, 0.707f);
     m_coneLp.SetLowpass(m_sampleRate, std::min(kConeHighHz, m_sampleRate * 0.45f), 0.707f);
-    m_coneLevel = kConeLevel * dsp::Clampf(settings.coneNoise, 0.0f, 2.0f);
+    m_coneLevel = kConeLevel * dsp::Clampf(settings.coneNoise, 0.0f, 10.0f);
 
     // The subwoofer bus gets an amplifier with its own idea of how loud is
     // loud, and a phase knob. Neither belongs on a door speaker.
@@ -283,6 +283,8 @@ void Voice::SetLevels(const PlacedSpeaker &speaker, const SystemSettings &settin
     // real system gives the subs their own clean amplifier.
     float busGain = speaker.IsSub() ? settings.subGainDb : 0.0f;
     m_postGain.target = dsp::DbToGain(settings.masterGainDb + settings.levelTrimDb + busGain);
+    // Only a level, so it can change without rebuilding anything.
+    m_coneLevel = kConeLevel * dsp::Clampf(settings.coneNoise, 0.0f, 10.0f);
 
     m_position = speaker.position;
     m_aim = DirectionFromAngles(speaker.aimYawDeg, speaker.aimPitchDeg);

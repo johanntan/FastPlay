@@ -369,6 +369,8 @@ void LoadDSPSettings() {
     SetParamValue(ParamId::SpatialCrossover, IniGetFloat(L"DSPParams", L"SpatialCrossover", def->defaultValue, g_configPath.c_str()));
     def = GetParamDef(ParamId::SpatialBassFeel);
     SetParamValue(ParamId::SpatialBassFeel, IniGetFloat(L"DSPParams", L"SpatialBassFeel", def->defaultValue, g_configPath.c_str()));
+    def = GetParamDef(ParamId::SpatialConeNoise);
+    SetParamValue(ParamId::SpatialConeNoise, IniGetFloat(L"DSPParams", L"SpatialConeNoise", def->defaultValue, g_configPath.c_str()));
 
     // Load recent files
     g_recentFiles.clear();
@@ -647,6 +649,8 @@ void SaveSettings() {
     IniWriteString(L"DSPParams", L"SpatialCrossover", buf, g_configPath.c_str());
     swprintf(buf, 32, L"%.2f", GetParamValue(ParamId::SpatialBassFeel));
     IniWriteString(L"DSPParams", L"SpatialBassFeel", buf, g_configPath.c_str());
+    swprintf(buf, 32, L"%.2f", GetParamValue(ParamId::SpatialConeNoise));
+    IniWriteString(L"DSPParams", L"SpatialConeNoise", buf, g_configPath.c_str());
 
     // Save recent files
     // First clear the section

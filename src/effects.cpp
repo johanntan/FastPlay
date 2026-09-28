@@ -88,6 +88,7 @@ static const ParamDef g_paramDefs[] = {
     {ParamId::SpatialSubLevel,   "3D Sub Level",   " dB", -15.0f,  15.0f,   1.0f,  0.0f,   DSPEffectType::SpatialAudio},
     {ParamId::SpatialCrossover,  "3D Crossover",   " Hz",  40.0f,  160.0f,  10.0f, 80.0f,  DSPEffectType::SpatialAudio},
     {ParamId::SpatialBassFeel,   "3D Bass Feel",   "%",    0.0f,   200.0f,  10.0f, 100.0f, DSPEffectType::SpatialAudio},
+    {ParamId::SpatialConeNoise,  "3D Cone Noise",  "%",    0.0f,   1000.0f, 25.0f, 100.0f, DSPEffectType::SpatialAudio},
 };
 static const int g_paramDefCount = sizeof(g_paramDefs) / sizeof(g_paramDefs[0]);
 
@@ -409,6 +410,7 @@ static bool IsSpatialParamInUse(ParamId id) {
         case ParamId::SpatialRearCenter:
             return preset < 0;
         case ParamId::SpatialBassFeel:
+        case ParamId::SpatialConeNoise:
             return preset >= 0;
         case ParamId::SpatialSub:
         case ParamId::SpatialSubLevel:
@@ -1168,6 +1170,9 @@ void SetParamValue(ParamId id, float value) {
             break;
         case ParamId::SpatialBassFeel:
             if (SpatialAudio* spatial = GetSpatialAudio()) spatial->SetBassFeel(value / 100.0f);
+            break;
+        case ParamId::SpatialConeNoise:
+            if (SpatialAudio* spatial = GetSpatialAudio()) spatial->SetConeNoise(value / 100.0f);
             break;
         case ParamId::SpatialRearCenter: {
             SpatialAudio* spatial = GetSpatialAudio();
