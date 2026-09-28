@@ -103,6 +103,7 @@ void Spatializer::Reset() {
         t.gainR.Snap(0.0f);
     }
     m_directivityActive = false;
+    m_settle = true;
 }
 
 void Spatializer::UpdateReflection(int index, Vec3 imagePos, const Listener &listener,
@@ -273,6 +274,17 @@ void Spatializer::Update(const RoomSpec &room, const Listener &listener, Vec3 so
             t.gainL.target = 0.0f;
             t.gainR.target = 0.0f;
         }
+    }
+
+    // Straight after a reset there is nothing to glide from. The smoothing is
+    // for moving while the music plays; sliding a delay up from zero at the
+    // start of a track, or after a seek, bends the pitch for a tenth of a
+    // second (a quarter of one for the reflections). The gains still fade in.
+    if (m_settle) {
+        m_settle = false;
+        m_delayL.Snap(m_delayL.target);
+        m_delayR.Snap(m_delayR.target);
+        for (auto &t : m_taps) t.delay.Snap(t.delay.target);
     }
 }
 

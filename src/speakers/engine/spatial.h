@@ -98,6 +98,9 @@ private:
     // does not sound like.
     dsp::OnePole m_reflectionToneL, m_reflectionToneR;
     bool m_reflectionsOn = false;
+    // Set by Reset(): the next Update() starts the delays at their targets
+    // rather than gliding up from nothing, which would be a pitch bend.
+    bool m_settle = false;
     float m_distance = 1.0f;
 };
 
