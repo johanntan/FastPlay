@@ -66,6 +66,8 @@ jobs:
         with:
           path: build
           key: cmake-deps-${{ runner.os }}-${{ hashFiles('CMakeLists.txt') }}
+          # A change to CMakeLists.txt starts from the last build, not from nothing
+          restore-keys: cmake-deps-${{ runner.os }}-
 
       # build_new.bat compiles FastPlay.exe, runs dist.bat to produce FastPlay.zip,
       # and invokes Inno Setup (pre-installed on windows-latest) to produce
@@ -145,6 +147,8 @@ jobs:
         with:
           path: build
           key: cmake-deps-${{ runner.os }}-${{ hashFiles('CMakeLists.txt') }}
+          # A change to CMakeLists.txt starts from the last build, not from nothing
+          restore-keys: cmake-deps-${{ runner.os }}-
 
       - name: Configure
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release

@@ -107,6 +107,25 @@ if(NOT miniaudio_POPULATED)
     FetchContent_Populate(miniaudio)  # the header only; not its own build
 endif()
 
+# --- SpessaSynth ---
+# MIDI playback with SoundFonts (SF2) and DLS: kode54's C port of SpessaSynth.
+FetchContent_Declare(spessasynth
+    GIT_REPOSITORY https://github.com/kode54/spessasynth_core_c.git
+    GIT_TAG 99fc352d8bb38851cb9b13c36eb8eb7a98903c2b
+    SOURCE_SUBDIR spessasynth_core
+)
+set(SS_BUILD_SHARED OFF CACHE BOOL "" FORCE)
+set(SS_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(SS_ENABLE_SF3_VORBIS OFF CACHE BOOL "" FORCE)
+set(SS_ENABLE_SF3_FLAC OFF CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(spessasynth)
+# Its headers include spessasynth_exports.h under MSVC, which only its shared
+# build generates; a static library exports nothing.
+file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/spessasynth_exports/spessasynth_exports.h
+    "#pragma once\n#define SPESSASYNTH_EXPORTS\n")
+target_include_directories(spessasynth PUBLIC ${CMAKE_CURRENT_BINARY_DIR}/spessasynth_exports)
+target_compile_options(spessasynth PRIVATE ${FASTPLAY_NO_WARNINGS})
+
 option(FASTPLAY_SPEECH "Screen reader speech through UniversalSpeech" ON)
 
 # Configure only the dependencies (used to start the long wxWidgets build early).
@@ -128,6 +147,7 @@ endif()
 
 set(FASTPLAY_SOURCES
     src/audio/decoder_ffmpeg.cpp
+    src/audio/decoder_midi.cpp
     src/audio/decoders.cpp
     src/audio/engine.cpp
     src/audio/miniaudio.c
@@ -238,7 +258,7 @@ set(FDK_AAC_INSTALL_CMAKE_CONFIG_MODULE OFF CACHE BOOL "" FORCE)
 set(FDK_AAC_INSTALL_PKGCONFIG_MODULE OFF CACHE BOOL "" FORCE)
 add_subdirectory(deps/fdk-aac EXCLUDE_FROM_ALL)
 target_compile_options(fdk-aac PRIVATE ${FASTPLAY_NO_WARNINGS})
-target_link_libraries(FastPlay PRIVATE fdk-aac)
+target_link_libraries(FastPlay PRIVATE fdk-aac spessasynth)
 
 # The upstream C libraries' warnings are not ours to fix.
 set_source_files_properties(src/sqlite3.c deps/speedy/speedy.c deps/speedy/soniclib.c
