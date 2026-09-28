@@ -50,6 +50,10 @@ std::wstring GetUserMusicDir() {
     return Utf8ToWide(HomeDir() + "/Music");
 }
 
+std::wstring GetUserDownloadsDir() {
+    return Utf8ToWide(HomeDir() + "/Downloads");
+}
+
 std::wstring GetTempDir() {
     const char* tmp = std::getenv("TMPDIR");
     std::string dir = (tmp && *tmp) ? tmp : "/tmp/";

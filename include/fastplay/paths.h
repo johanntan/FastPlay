@@ -24,6 +24,9 @@ std::wstring GetDataDirectory();
 // The user's Music folder (no trailing separator), or empty if unknown.
 std::wstring GetUserMusicDir();
 
+// The user's Downloads folder (no trailing separator), or empty if unknown.
+std::wstring GetUserDownloadsDir();
+
 // The folder for temporary files.
 std::wstring GetTempDir();
 

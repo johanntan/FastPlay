@@ -10,6 +10,7 @@
 #include "paths.h"
 #include "utils.h"
 #include "commands.h"
+#include <algorithm>
 #include <cwchar>
 #include <cstdio>
 
@@ -149,6 +150,25 @@ void LoadSettings() {
     IniGetString(L"YouTube", L"ApiKey", L"", ytBuf, 512, g_configPath.c_str());
     g_ytApiKey = ytBuf;
     g_ytFavoritesSort = IniGetInt(L"YouTube", L"FavoritesSort", 0, g_configPath.c_str()) == 1 ? 1 : 0;
+    // YouTube downloads
+    IniGetString(L"YouTube", L"DownloadFolder", L"", ytBuf, 512, g_configPath.c_str());
+    g_ytDownload.folder = ytBuf;
+    g_ytDownload.type = std::clamp(IniGetInt(L"YouTube", L"DownloadType", 0, g_configPath.c_str()), 0, 1);
+    g_ytDownload.audioFormat = std::clamp(IniGetInt(L"YouTube", L"DownloadAudioFormat", 0, g_configPath.c_str()), 0, 5);
+    g_ytDownload.audioQuality = std::clamp(IniGetInt(L"YouTube", L"DownloadAudioQuality", 0, g_configPath.c_str()), 0, 4);
+    g_ytDownload.videoQuality = std::clamp(IniGetInt(L"YouTube", L"DownloadVideoQuality", 0, g_configPath.c_str()), 0, 6);
+    g_ytDownload.videoContainer = std::clamp(IniGetInt(L"YouTube", L"DownloadVideoContainer", 0, g_configPath.c_str()), 0, 2);
+    g_ytDownload.videoCodec = std::clamp(IniGetInt(L"YouTube", L"DownloadVideoCodec", 0, g_configPath.c_str()), 0, 3);
+    g_ytDownload.naming = std::clamp(IniGetInt(L"YouTube", L"DownloadNaming", 0, g_configPath.c_str()), 0, 3);
+    g_ytDownload.addMetadata = IniGetInt(L"YouTube", L"DownloadAddMetadata", 0, g_configPath.c_str()) != 0;
+    g_ytDownload.embedThumbnail = IniGetInt(L"YouTube", L"DownloadEmbedThumbnail", 0, g_configPath.c_str()) != 0;
+    g_ytDownload.writeThumbnail = IniGetInt(L"YouTube", L"DownloadWriteThumbnail", 0, g_configPath.c_str()) != 0;
+    g_ytDownload.writeDescription = IniGetInt(L"YouTube", L"DownloadWriteDescription", 0, g_configPath.c_str()) != 0;
+    g_ytDownload.writeSubtitles = IniGetInt(L"YouTube", L"DownloadWriteSubtitles", 0, g_configPath.c_str()) != 0;
+    g_ytDownload.embedSubtitles = IniGetInt(L"YouTube", L"DownloadEmbedSubtitles", 0, g_configPath.c_str()) != 0;
+    g_ytDownload.channelFolder = IniGetInt(L"YouTube", L"DownloadChannelFolder", 0, g_configPath.c_str()) != 0;
+    IniGetString(L"YouTube", L"DownloadExtraOptions", L"", ytBuf, 512, g_configPath.c_str());
+    g_ytDownload.extraOptions = ytBuf;
 
     // Load downloads settings
     wchar_t dlBuf[512] = {0};
@@ -482,6 +502,22 @@ void SaveSettings() {
     IniWriteString(L"YouTube", L"YtdlpPath", g_ytdlpPath.c_str(), g_configPath.c_str());
     IniWriteString(L"YouTube", L"ApiKey", g_ytApiKey.c_str(), g_configPath.c_str());
     IniWriteString(L"YouTube", L"FavoritesSort", g_ytFavoritesSort == 1 ? L"1" : L"0", g_configPath.c_str());
+    IniWriteString(L"YouTube", L"DownloadFolder", g_ytDownload.folder.c_str(), g_configPath.c_str());
+    IniWriteString(L"YouTube", L"DownloadType", std::to_wstring(g_ytDownload.type).c_str(), g_configPath.c_str());
+    IniWriteString(L"YouTube", L"DownloadAudioFormat", std::to_wstring(g_ytDownload.audioFormat).c_str(), g_configPath.c_str());
+    IniWriteString(L"YouTube", L"DownloadAudioQuality", std::to_wstring(g_ytDownload.audioQuality).c_str(), g_configPath.c_str());
+    IniWriteString(L"YouTube", L"DownloadVideoQuality", std::to_wstring(g_ytDownload.videoQuality).c_str(), g_configPath.c_str());
+    IniWriteString(L"YouTube", L"DownloadVideoContainer", std::to_wstring(g_ytDownload.videoContainer).c_str(), g_configPath.c_str());
+    IniWriteString(L"YouTube", L"DownloadVideoCodec", std::to_wstring(g_ytDownload.videoCodec).c_str(), g_configPath.c_str());
+    IniWriteString(L"YouTube", L"DownloadNaming", std::to_wstring(g_ytDownload.naming).c_str(), g_configPath.c_str());
+    IniWriteString(L"YouTube", L"DownloadAddMetadata", g_ytDownload.addMetadata ? L"1" : L"0", g_configPath.c_str());
+    IniWriteString(L"YouTube", L"DownloadEmbedThumbnail", g_ytDownload.embedThumbnail ? L"1" : L"0", g_configPath.c_str());
+    IniWriteString(L"YouTube", L"DownloadWriteThumbnail", g_ytDownload.writeThumbnail ? L"1" : L"0", g_configPath.c_str());
+    IniWriteString(L"YouTube", L"DownloadWriteDescription", g_ytDownload.writeDescription ? L"1" : L"0", g_configPath.c_str());
+    IniWriteString(L"YouTube", L"DownloadWriteSubtitles", g_ytDownload.writeSubtitles ? L"1" : L"0", g_configPath.c_str());
+    IniWriteString(L"YouTube", L"DownloadEmbedSubtitles", g_ytDownload.embedSubtitles ? L"1" : L"0", g_configPath.c_str());
+    IniWriteString(L"YouTube", L"DownloadChannelFolder", g_ytDownload.channelFolder ? L"1" : L"0", g_configPath.c_str());
+    IniWriteString(L"YouTube", L"DownloadExtraOptions", g_ytDownload.extraOptions.c_str(), g_configPath.c_str());
 
     // Save downloads settings
     IniWriteString(L"Downloads", L"Path", g_downloadPath.c_str(), g_configPath.c_str());

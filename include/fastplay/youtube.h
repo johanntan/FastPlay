@@ -95,6 +95,16 @@ bool YouTubeImportCookies(const std::wstring& path, std::wstring& error);
 void YouTubeRemoveCookies();
 bool YouTubeHasCookies();
 
+// Download a video (or a whole playlist) to keep, as Options > YouTube Downloads
+// says: audio or video, format, naming and extras. Downloads are queued and run
+// one at a time in the background; FastPlay says when each starts, finishes or
+// fails. Call on the UI thread.
+void YouTubeDownload(const std::wstring& url, const std::wstring& title);
+
+// Where downloads go: the folder chosen in Options, or FastPlay in the
+// Downloads folder.
+std::wstring YouTubeDownloadFolder();
+
 // Remove downloaded videos not played for a week (call on startup and exit)
 void YouTubeCleanup();
 

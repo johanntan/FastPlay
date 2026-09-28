@@ -12,6 +12,8 @@
 // yt-dlp downloads it and DefragmentMp4 turns it into an ordinary M4A.
 
 #include "youtube.h"
+#include "accessibility.h"
+#include "app_ui.h"
 #include "globals.h"
 #include "http.h"
 #include "mp4_remux.h"
@@ -19,14 +21,17 @@
 #include "subprocess.h"
 #include "utils.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <deque>
 #include <cstdlib>
 #include <cwchar>
 #include <filesystem>
 #include <initializer_list>
 #include <mutex>
 #include <sstream>
+#include <thread>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -65,6 +70,27 @@ const wchar_t* const kYtdlpUrl = L"https://github.com/yt-dlp/yt-dlp/releases/lat
 const wchar_t* const kDenoFile = L"deno";
 const wchar_t* const kDenoUrl =
     L"https://github.com/denoland/deno/releases/latest/download/deno-x86_64-unknown-linux-gnu.zip";
+#endif
+
+// ffmpeg, for downloads that convert, combine or tag files: yt-dlp's own
+// Windows build (the "shared" one, 82 MB rather than 186), and a macOS build of
+// ffmpeg and ffprobe for this processor.
+#if defined(_WIN32)
+const wchar_t* const kFfmpegFile = L"ffmpeg.exe";
+const wchar_t* const kFfmpegUrls[] = {
+    L"https://github.com/yt-dlp/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl-shared.zip"};
+#elif defined(__APPLE__)
+const wchar_t* const kFfmpegFile = L"ffmpeg";
+#if defined(__arm64__) || defined(__aarch64__)
+const wchar_t* const kFfmpegUrls[] = {L"https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffmpeg.zip",
+                                      L"https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffprobe.zip"};
+#else
+const wchar_t* const kFfmpegUrls[] = {L"https://ffmpeg.martin-riedl.de/redirect/latest/macos/amd64/release/ffmpeg.zip",
+                                      L"https://ffmpeg.martin-riedl.de/redirect/latest/macos/amd64/release/ffprobe.zip"};
+#endif
+#else
+const wchar_t* const kFfmpegFile = L"ffmpeg";
+const wchar_t* const kFfmpegUrls[] = {L""};  // use the system's
 #endif
 
 // One thread at a time downloads or updates the tools.
@@ -155,6 +181,21 @@ bool EnsureYtdlp(std::wstring& ytdlp, std::wstring& error, const YouTubeStatus& 
     return true;
 }
 
+// tar reads zip files, and comes with Windows 10 and macOS.
+bool Unzip(const std::wstring& zip, std::wstring dir) {
+#ifdef _WIN32
+    wchar_t system[kMaxPathChars] = {};
+    GetSystemDirectoryW(system, kMaxPathChars);
+    std::wstring tar = std::wstring(system) + L"\\tar.exe";
+#else
+    std::wstring tar = L"/usr/bin/tar";
+#endif
+    if (!dir.empty() && (dir.back() == L'\\' || dir.back() == L'/')) dir.pop_back();
+    std::string output;
+    int exitCode = -1;
+    return RunProcessCapture(tar, {L"-xf", zip, L"-C", dir}, output, nullptr, &exitCode) && exitCode == 0;
+}
+
 // FastPlay's deno, or empty if it could not be had (yt-dlp then tries without).
 std::wstring EnsureDeno(const YouTubeStatus& status) {
     std::lock_guard<std::mutex> lock(g_toolsMutex);
@@ -166,23 +207,72 @@ std::wstring EnsureDeno(const YouTubeStatus& status) {
     std::wstring error;
     if (!DownloadFile(kDenoUrl, zip, error)) return L"";
 
-    // tar reads zip files, and comes with Windows 10 and macOS.
-#ifdef _WIN32
-    wchar_t system[kMaxPathChars] = {};
-    GetSystemDirectoryW(system, kMaxPathChars);
-    std::wstring tar = std::wstring(system) + L"\\tar.exe";
-#else
-    std::wstring tar = L"/usr/bin/tar";
-#endif
-    std::wstring dir = ToolsDir();
-    if (!dir.empty() && (dir.back() == L'\\' || dir.back() == L'/')) dir.pop_back();
-    std::string output;
-    RunProcessCapture(tar, {L"-xf", zip, L"-C", dir}, output);
+    Unzip(zip, ToolsDir());
     std::error_code ec;
     fs::remove(fs::path(zip), ec);
     if (!FileExists(deno)) return L"";
     MakeExecutable(deno);
     return deno;
+}
+
+
+// Where ffmpeg is for yt-dlp: FastPlay's own copy (its folder), or empty for one
+// already installed on the PATH. False when there is none and none could be had.
+bool EnsureFfmpeg(std::wstring& location, std::wstring& error, const YouTubeStatus& status) {
+    std::lock_guard<std::mutex> lock(g_toolsMutex);
+    std::wstring dir = ToolsDir() + L"ffmpeg" + kPathSeparator;
+    location = dir;
+    if (FileExists(dir + kFfmpegFile)) return true;
+
+    std::string output;
+    int exitCode = -1;
+    if (RunProcessCapture(L"ffmpeg", {L"-version"}, output, nullptr, &exitCode) && exitCode == 0) {
+        location.clear();
+        return true;
+    }
+    if (!kFfmpegUrls[0][0]) {
+        error = L"This download needs ffmpeg. Install it and try again.";
+        return false;
+    }
+
+    Say(status, L"Downloading ffmpeg, which this kind of download needs. This happens once and takes a few minutes.");
+    std::error_code ec;
+    fs::create_directories(fs::path(dir), ec);
+    std::wstring unpack = ToolsDir() + L"ffmpeg-unpack";
+    for (const wchar_t* url : kFfmpegUrls) {
+        std::wstring zip = ToolsDir() + L"ffmpeg-download.zip";
+        if (!DownloadFile(url, zip, error)) {
+            error = L"Could not download ffmpeg. " + error;
+            return false;
+        }
+        fs::remove_all(fs::path(unpack), ec);
+        fs::create_directories(fs::path(unpack), ec);
+        bool unpacked = Unzip(zip, unpack);
+        fs::remove(fs::path(zip), ec);
+        if (!unpacked) {
+            error = L"Could not unpack ffmpeg.";
+            return false;
+        }
+        // Keep the programs and the libraries beside them, wherever the archive
+        // put them (Windows: a bin folder inside a named folder).
+        for (auto it = fs::recursive_directory_iterator(fs::path(unpack), ec);
+             it != fs::recursive_directory_iterator(); it.increment(ec)) {
+            if (!it->is_regular_file(ec)) continue;
+            std::wstring name = it->path().filename().wstring();
+            std::wstring ext = it->path().extension().wstring();
+            bool wanted = name.rfind(L"ffmpeg", 0) == 0 || name.rfind(L"ffprobe", 0) == 0 ||
+                          WStrICmp(ext.c_str(), L".dll") == 0;
+            if (!wanted || WStrICmp(ext.c_str(), L".html") == 0 || WStrICmp(ext.c_str(), L".1") == 0) continue;
+            fs::copy_file(it->path(), fs::path(dir) / it->path().filename(), fs::copy_options::overwrite_existing, ec);
+            MakeExecutable((fs::path(dir) / it->path().filename()).wstring());
+        }
+        fs::remove_all(fs::path(unpack), ec);
+    }
+    if (!FileExists(dir + kFfmpegFile)) {
+        error = L"The ffmpeg download did not contain ffmpeg.";
+        return false;
+    }
+    return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -195,16 +285,19 @@ struct YtdlpRun {
     int exitCode = -1;
 };
 
-// The last "ERROR:" line yt-dlp wrote, for telling the user what went wrong.
+// The last "ERROR:" line yt-dlp wrote, for telling the user what went wrong, or
+// failing that its last line (a mistyped option is "yt-dlp: error: ...").
 std::wstring YtdlpError(const YtdlpRun& run) {
     std::istringstream lines(run.errors);
-    std::string line, last;
+    std::string line, error, lastLine;
     while (std::getline(lines, line)) {
         if (!line.empty() && line.back() == '\r') line.pop_back();
-        if (line.rfind("ERROR:", 0) == 0) last = line;
+        if (line.rfind("ERROR:", 0) == 0) error = line;
+        if (!line.empty()) lastLine = line;
     }
-    if (last.empty()) return L"yt-dlp failed (exit code " + std::to_wstring(run.exitCode) + L").";
-    return Utf8ToWide(last);
+    if (error.empty()) error = lastLine;
+    if (error.empty()) return L"yt-dlp failed (exit code " + std::to_wstring(run.exitCode) + L").";
+    return Utf8ToWide(error);
 }
 
 bool RunYtdlp(const std::vector<std::wstring>& args, bool needsDeno, YtdlpRun& run, std::wstring& error,
@@ -833,6 +926,204 @@ void YouTubeRemoveCookies() {
 
 bool YouTubeHasCookies() {
     return FileExists(CookiesPath());
+}
+
+// ---------------------------------------------------------------------------
+// Downloads to keep
+// ---------------------------------------------------------------------------
+
+namespace {
+
+struct DownloadJob {
+    std::wstring url;
+    std::wstring title;
+    YouTubeDownloadSettings settings;  // as they were when it was asked for
+};
+
+std::mutex g_downloadMutex;
+std::deque<DownloadJob> g_downloadQueue;
+bool g_downloadRunning = false;
+
+void SpeakLater(const std::wstring& message) {
+    RunOnUiThread([message]() { SpeakW(message); });
+}
+
+// Whether a download with these settings needs ffmpeg: converting, combining
+// video with audio, or writing tags, thumbnails or subtitles into the file.
+bool NeedsFfmpeg(const YouTubeDownloadSettings& s) {
+    return s.type == 1 || s.audioFormat >= 2 || s.addMetadata || s.embedThumbnail;
+}
+
+// Options typed as on a command line: split at spaces, "quoted" parts kept whole.
+std::vector<std::wstring> SplitOptions(const std::wstring& text) {
+    std::vector<std::wstring> words;
+    std::wstring word;
+    bool quoted = false, any = false;
+    for (wchar_t c : text) {
+        if (c == L'"') {
+            quoted = !quoted;
+            any = true;
+        } else if (!quoted && (c == L' ' || c == L'\t')) {
+            if (any) words.push_back(word);
+            word.clear();
+            any = false;
+        } else {
+            word += c;
+            any = true;
+        }
+    }
+    if (any) words.push_back(word);
+    return words;
+}
+
+std::vector<std::wstring> DownloadArgs(const DownloadJob& job, const std::wstring& folder, const std::wstring& ffmpeg,
+                                       bool haveFfmpeg) {
+    const YouTubeDownloadSettings& s = job.settings;
+    bool playlist = job.url.find(L"list=") != std::wstring::npos && job.url.find(L"watch?v=") == std::wstring::npos;
+    std::vector<std::wstring> args = {playlist ? L"--yes-playlist" : L"--no-playlist", L"-P", folder};
+
+    static const wchar_t* const names[] = {L"%(title)s.%(ext)s", L"%(title)s [%(id)s].%(ext)s",
+                                           L"%(channel,uploader)s - %(title)s.%(ext)s",
+                                           L"%(upload_date>%Y-%m-%d)s - %(title)s.%(ext)s"};
+    std::wstring name = names[std::clamp(s.naming, 0, 3)];
+    if (playlist) name = L"%(playlist_title,playlist)s/" + name;
+    if (s.channelFolder) name = L"%(channel,uploader)s/" + name;
+    args.insert(args.end(), {L"-o", name});
+
+    if (s.type == 1) {
+        // Video: the best picture up to the chosen size, with the best sound.
+        static const wchar_t* const heights[] = {L"", L"2160", L"1440", L"1080", L"720", L"480", L"360"};
+        static const wchar_t* const codecs[] = {L"", L"h264", L"vp9", L"av01"};
+        static const wchar_t* const containers[] = {L"mp4", L"mkv", L"webm"};
+        std::wstring sort;
+        auto add = [&sort](const std::wstring& part) { sort += (sort.empty() ? L"" : L",") + part; };
+        if (s.videoQuality > 0) add(std::wstring(L"res:") + heights[std::clamp(s.videoQuality, 0, 6)]);
+        if (s.videoCodec > 0) add(std::wstring(L"vcodec:") + codecs[std::clamp(s.videoCodec, 0, 3)]);
+        if (s.videoContainer == 0) add(L"ext:mp4:m4a");
+        if (s.videoContainer == 2) add(L"ext:webm:webm");
+        args.insert(args.end(), {L"-f", L"bv*+ba/b"});
+        if (!sort.empty()) args.insert(args.end(), {L"-S", sort});
+        args.insert(args.end(), {L"--merge-output-format", containers[std::clamp(s.videoContainer, 0, 2)]});
+        if (s.embedSubtitles) args.push_back(L"--embed-subs");
+    } else if (s.audioFormat == 0) {
+        // M4A: YouTube's own AAC, without converting (and repaired below if need be)
+        args.insert(args.end(), {L"-f", L"bestaudio[ext=m4a]/bestaudio"});
+        if (!haveFfmpeg) args.insert(args.end(), {L"--fixup", L"never"});
+    } else if (s.audioFormat == 1) {
+        args.insert(args.end(), {L"-f", L"bestaudio/best"});
+    } else {
+        static const wchar_t* const formats[] = {L"", L"", L"mp3", L"opus", L"flac", L"wav"};
+        static const wchar_t* const qualities[] = {L"0", L"320K", L"256K", L"192K", L"128K"};
+        args.insert(args.end(), {L"-f", L"bestaudio/best", L"-x", L"--audio-format",
+                                 formats[std::clamp(s.audioFormat, 2, 5)], L"--audio-quality",
+                                 qualities[std::clamp(s.audioQuality, 0, 4)]});
+    }
+
+    if (s.addMetadata) args.push_back(L"--embed-metadata");
+    if (s.embedThumbnail) args.push_back(L"--embed-thumbnail");
+    if (s.writeThumbnail) args.push_back(L"--write-thumbnail");
+    if (s.writeDescription) args.push_back(L"--write-description");
+    if (s.writeSubtitles || (s.type == 1 && s.embedSubtitles)) {
+        args.insert(args.end(), {L"--write-subs", L"--write-auto-subs", L"--sub-langs", L"en.*"});
+    }
+    if (haveFfmpeg && !ffmpeg.empty()) args.insert(args.end(), {L"--ffmpeg-location", ffmpeg});
+    for (const auto& word : SplitOptions(s.extraOptions)) args.push_back(word);
+    // Say where each file ended up, and actually download while doing it
+    args.insert(args.end(), {L"--no-simulate", L"--print", L"after_move:filepath", job.url});
+    return args;
+}
+
+void RunDownload(const DownloadJob& job) {
+    auto fail = [&job](const std::wstring& why) {
+        RunOnUiThread([job, why]() {
+            SpeakW(L"Could not download " + job.title);
+            ShowMessage(L"Could not download " + job.title + L".\n\n" + why, L"YouTube Download", MessageIcon::Error);
+        });
+    };
+
+    std::wstring folder = job.settings.folder.empty() ? YouTubeDownloadFolder() : job.settings.folder;
+    std::error_code ec;
+    fs::create_directories(fs::path(folder), ec);
+
+    std::wstring ffmpeg, error;
+    bool haveFfmpeg = false;
+    if (NeedsFfmpeg(job.settings)) {
+        if (!EnsureFfmpeg(ffmpeg, error, SpeakLater)) return fail(error);
+        haveFfmpeg = true;
+    }
+
+    YtdlpRun run;
+    if (!RunYtdlp(DownloadArgs(job, folder, ffmpeg, haveFfmpeg), true, run, error, SpeakLater)) return fail(error);
+    if (run.exitCode != 0) return fail(YtdlpError(run));
+
+    // M4A straight from YouTube is fragmented, which not every player reads;
+    // without ffmpeg to repair it, rewrite it as an ordinary M4A here.
+    std::istringstream lines(run.output);
+    std::string line;
+    int files = 0;
+    while (std::getline(lines, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (line.empty()) continue;
+        files++;
+        std::wstring path = Utf8ToWide(line);
+        if (path.size() > 4 && WStrICmp(path.c_str() + path.size() - 4, L".m4a") == 0) {
+            std::wstring fixed = path + L".fixed.m4a";
+            if (DefragmentMp4(path, fixed, L"", L"")) {
+                fs::remove(fs::path(path), ec);
+                fs::rename(fs::path(fixed), fs::path(path), ec);
+            } else {
+                fs::remove(fs::path(fixed), ec);
+            }
+        }
+    }
+    std::wstring done = L"Downloaded " + job.title;
+    if (files > 1) done += L", " + std::to_wstring(files) + L" files";
+    SpeakLater(done);
+}
+
+void DownloadWorker() {
+    for (;;) {
+        DownloadJob job;
+        {
+            std::lock_guard<std::mutex> lock(g_downloadMutex);
+            if (g_downloadQueue.empty()) {
+                g_downloadRunning = false;
+                return;
+            }
+            job = g_downloadQueue.front();
+            g_downloadQueue.pop_front();
+        }
+        SpeakLater(L"Downloading " + job.title);
+        RunDownload(job);
+    }
+}
+
+}  // namespace
+
+std::wstring YouTubeDownloadFolder() {
+    if (!g_ytDownload.folder.empty()) return g_ytDownload.folder;
+    std::wstring base = GetUserDownloadsDir();
+    if (base.empty()) base = GetUserMusicDir();
+    return base + kPathSeparator + L"FastPlay";
+}
+
+void YouTubeDownload(const std::wstring& url, const std::wstring& title) {
+    DownloadJob job{url, title, g_ytDownload};
+    if (job.settings.folder.empty()) job.settings.folder = YouTubeDownloadFolder();
+    size_t ahead;
+    bool start;
+    {
+        std::lock_guard<std::mutex> lock(g_downloadMutex);
+        ahead = g_downloadQueue.size() + (g_downloadRunning ? 1 : 0);
+        g_downloadQueue.push_back(job);
+        start = !g_downloadRunning;
+        g_downloadRunning = true;
+    }
+    if (start) {
+        std::thread(DownloadWorker).detach();
+    } else {
+        SpeakW(L"Queued " + title + L", " + std::to_wstring(ahead) + L" ahead");
+    }
 }
 
 void YouTubeCleanup() {

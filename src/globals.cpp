@@ -263,6 +263,7 @@ float g_eqTrebleFreq = 12000.0f;
 std::wstring g_ytdlpPath;   // Path to yt-dlp executable
 std::wstring g_ytApiKey;    // YouTube Data API key (optional)
 int g_ytFavoritesSort = 0;  // YouTube favorites order: 0 newest upload first, 1 by name
+YouTubeDownloadSettings g_ytDownload;  // how YouTube videos are downloaded
 
 // Downloads settings
 std::wstring g_downloadPath;             // Output directory for podcast downloads

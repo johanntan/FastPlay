@@ -5,6 +5,8 @@
 // - Favorites: the favorite channels and playlists, newest upload first or by name.
 //   Enter lists a favorite's videos below it; Delete removes it. Import adds the
 //   channels listed in a text file, one URL, @handle or ID per line.
+// Download, on either tab, saves a video (or a whole playlist) to keep, as
+// Options > YouTube Downloads says.
 // It is modeless, so the main window stays usable while it is open. Searching,
 // listing and loading take seconds, so they run on worker threads; what they find
 // is used only if the window is still open and nothing newer was asked for.
@@ -192,7 +194,9 @@ private:
         m_loadMore->Enable(false);
         buttons->Add(m_loadMore, 0, wxRIGHT, 6);
         m_addFavorite = new wxButton(page, wxID_ANY, "Add to &Favorites");
-        buttons->Add(m_addFavorite);
+        buttons->Add(m_addFavorite, 0, wxRIGHT, 6);
+        auto* download = new wxButton(page, wxID_ANY, "Do&wnload");
+        buttons->Add(download);
         sizer->Add(buttons, 0, wxALL, 10);
         page->SetSizer(sizer);
         m_book->AddPage(page, "Search");
@@ -200,6 +204,7 @@ private:
         m_results->Bind(wxEVT_LISTBOX_DCLICK, [this](wxCommandEvent&) { OpenResult(); });
         m_loadMore->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { LoadMoreResults(); });
         m_addFavorite->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { AddFavoriteFromResults(); });
+        download->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { DownloadResult(); });
     }
 
     void BuildFavoritesPage() {
@@ -234,7 +239,9 @@ private:
         m_moreVideos->Enable(false);
         buttons->Add(m_moreVideos, 0, wxRIGHT, 6);
         auto* importButton = new wxButton(page, wxID_ANY, "&Import...");
-        buttons->Add(importButton);
+        buttons->Add(importButton, 0, wxRIGHT, 6);
+        auto* download = new wxButton(page, wxID_ANY, "Do&wnload");
+        buttons->Add(download);
         sizer->Add(buttons, 0, wxALL, 10);
         page->SetSizer(sizer);
         m_book->AddPage(page, "Favorites");
@@ -252,6 +259,7 @@ private:
         });
         m_moreVideos->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { LoadMoreVideos(); });
         importButton->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { ImportFavorites(); });
+        download->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { DownloadVideo(); });
     }
 
     // Enter acts on the focused control: search from the search box, open or play
@@ -399,6 +407,37 @@ private:
         info.channel = result.kind == YouTubeKind::Playlist ? result.channel : L"";
         OpenList(YouTubeListUrl(result.kind, result.id), info,
                  result.kind == YouTubeKind::Channel ? "Loading channel" : "Loading playlist");
+    }
+
+    // Download: a video, or a whole playlist
+    void DownloadResult() {
+        int sel = m_results->GetSelection();
+        if (sel < 0 || sel >= static_cast<int>(m_view.results.size())) {
+            Speak("Select a video or playlist first");
+            return;
+        }
+        const YouTubeResult& result = m_view.results[sel];
+        switch (result.kind) {
+            case YouTubeKind::Video:
+                YouTubeDownload(L"https://www.youtube.com/watch?v=" + result.id, result.title);
+                break;
+            case YouTubeKind::Playlist:
+                YouTubeDownload(YouTubePlaylistUrl(result.id), L"playlist " + result.title);
+                break;
+            case YouTubeKind::Channel:
+                Speak("Open the channel to download its videos");
+                break;
+        }
+    }
+
+    void DownloadVideo() {
+        int sel = m_videos->GetSelection();
+        if (sel < 0 || sel >= static_cast<int>(m_videoResults.size())) {
+            Speak("Select a video first");
+            return;
+        }
+        const YouTubeResult& result = m_videoResults[sel];
+        YouTubeDownload(L"https://www.youtube.com/watch?v=" + result.id, result.title);
     }
 
     void GoBack() {

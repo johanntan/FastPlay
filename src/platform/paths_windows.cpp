@@ -41,6 +41,16 @@ std::wstring GetUserMusicDir() {
     return std::wstring();
 }
 
+std::wstring GetUserDownloadsDir() {
+    PWSTR path = nullptr;
+    std::wstring result;
+    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Downloads, 0, nullptr, &path)) && path) {
+        result = path;
+    }
+    CoTaskMemFree(path);
+    return result;
+}
+
 std::wstring GetTempDir() {
     wchar_t tempPath[MAX_PATH];
     GetTempPathW(MAX_PATH, tempPath);

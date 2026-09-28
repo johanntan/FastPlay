@@ -149,6 +149,26 @@ enum class ParamId {
     COUNT
 };
 
+// How YouTube videos are downloaded (Options > YouTube Downloads)
+struct YouTubeDownloadSettings {
+    std::wstring folder;        // empty: FastPlay in the Downloads folder
+    int type = 0;               // 0 audio only, 1 video
+    int audioFormat = 0;        // 0 M4A (AAC), 1 as YouTube has it, 2 MP3, 3 Opus, 4 FLAC, 5 WAV
+    int audioQuality = 0;       // 0 best, 1 320, 2 256, 3 192, 4 128 kbps (when converting)
+    int videoQuality = 0;       // 0 best, 1 2160p, 2 1440p, 3 1080p, 4 720p, 5 480p, 6 360p
+    int videoContainer = 0;     // 0 MP4, 1 MKV, 2 WebM
+    int videoCodec = 0;         // 0 any, 1 H.264, 2 VP9, 3 AV1
+    int naming = 0;             // 0 title, 1 title [id], 2 channel - title, 3 date - title
+    bool addMetadata = false;
+    bool embedThumbnail = false;
+    bool writeThumbnail = false;
+    bool writeDescription = false;
+    bool writeSubtitles = false;
+    bool embedSubtitles = false;
+    bool channelFolder = false; // a folder per channel
+    std::wstring extraOptions;  // more yt-dlp options, as typed on a command line
+};
+
 // Parameter definition
 struct ParamDef {
     ParamId id;

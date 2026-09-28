@@ -74,6 +74,7 @@ private:
     void BuildEffectsPage(wxNotebook* book);
     void BuildAdvancedPage(wxNotebook* book);
     void BuildYouTubePage(wxNotebook* book);
+    void BuildYouTubeDownloadsPage(wxNotebook* book);
     void BuildSoundTouchPage(wxNotebook* book);
     void BuildSpeedyPage(wxNotebook* book);
     void BuildSignalsmithPage(wxNotebook* book);
@@ -85,6 +86,8 @@ private:
     void OnRecFormat(wxCommandEvent& event);
     void OnYtdlpBrowse(wxCommandEvent& event);
     void OnImportCookies(wxCommandEvent& event);
+    void OnYtFolderBrowse(wxCommandEvent& event);
+    void UpdateYtDownloadControls();
     void OnRemoveCookies(wxCommandEvent& event);
     void UpdateCookiesStatus();
     void OnMidiBrowse(wxCommandEvent& event);
@@ -170,6 +173,23 @@ private:
     // YouTube
     wxTextCtrl* m_ytdlpPath = nullptr;
     wxStaticText* m_cookiesStatus = nullptr;
+    // YouTube downloads
+    wxTextCtrl* m_ytFolder = nullptr;
+    wxChoice* m_ytType = nullptr;
+    wxChoice* m_ytAudioFormat = nullptr;
+    wxChoice* m_ytAudioQuality = nullptr;
+    wxChoice* m_ytVideoQuality = nullptr;
+    wxChoice* m_ytVideoContainer = nullptr;
+    wxChoice* m_ytVideoCodec = nullptr;
+    wxChoice* m_ytNaming = nullptr;
+    wxCheckBox* m_ytAddMetadata = nullptr;
+    wxCheckBox* m_ytEmbedThumbnail = nullptr;
+    wxCheckBox* m_ytWriteThumbnail = nullptr;
+    wxCheckBox* m_ytWriteDescription = nullptr;
+    wxCheckBox* m_ytWriteSubtitles = nullptr;
+    wxCheckBox* m_ytEmbedSubtitles = nullptr;
+    wxCheckBox* m_ytChannelFolder = nullptr;
+    wxTextCtrl* m_ytExtraOptions = nullptr;
     wxButton* m_removeCookies = nullptr;
     wxTextCtrl* m_ytApiKey = nullptr;
 
@@ -211,6 +231,7 @@ OptionsDialog::OptionsDialog(wxWindow* parent)
     BuildEffectsPage(m_book);
     BuildAdvancedPage(m_book);
     BuildYouTubePage(m_book);
+    BuildYouTubeDownloadsPage(m_book);
     BuildSoundTouchPage(m_book);
     BuildSpeedyPage(m_book);
     BuildSignalsmithPage(m_book);
@@ -657,6 +678,78 @@ void OptionsDialog::BuildYouTubePage(wxNotebook* book) {
     book->AddPage(page, "YouTube");
 }
 
+void OptionsDialog::BuildYouTubeDownloadsPage(wxNotebook* book) {
+    auto* page = new wxPanel(book);
+    auto* sizer = new wxBoxSizer(wxVERTICAL);
+    const YouTubeDownloadSettings& s = g_ytDownload;
+
+    AddText(page, sizer, "How the YouTube window's Download button saves videos.");
+    AddText(page, sizer, "Download &folder:");
+    auto* row = AddRow(sizer);
+    m_ytFolder = new wxTextCtrl(page, wxID_ANY, WX(s.folder.empty() ? YouTubeDownloadFolder() : s.folder),
+                                wxDefaultPosition, wxSize(380, -1));
+    row->Add(m_ytFolder, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, 6);
+    auto* browse = new wxButton(page, wxID_ANY, "&Browse...");
+    row->Add(browse, 0, wxALIGN_CENTER_VERTICAL);
+    browse->Bind(wxEVT_BUTTON, &OptionsDialog::OnYtFolderBrowse, this);
+
+    auto choice = [&](const char* label, std::initializer_list<const char*> items, int selection) {
+        wxChoice* c = AddChoice(page, sizer, label, 260);
+        for (const char* item : items) c->Append(item);
+        c->SetSelection(selection);
+        return c;
+    };
+    m_ytType = choice("Download &type:", {"Audio only", "Video"}, s.type);
+    m_ytAudioFormat = choice("&Audio format:",
+                             {"M4A (AAC)", "Best available, as YouTube has it", "MP3", "Opus", "FLAC", "WAV"},
+                             s.audioFormat);
+    m_ytAudioQuality = choice("Audio &quality (when converting):",
+                              {"Best", "320 kbps", "256 kbps", "192 kbps", "128 kbps"}, s.audioQuality);
+    m_ytVideoQuality = choice("&Video quality:", {"Best", "2160p (4K)", "1440p", "1080p", "720p", "480p", "360p"},
+                              s.videoQuality);
+    m_ytVideoContainer = choice("Video &container:", {"MP4", "MKV", "WebM"}, s.videoContainer);
+    m_ytVideoCodec = choice("Video co&dec:", {"Any", "H.264", "VP9", "AV1"}, s.videoCodec);
+    m_ytNaming = choice("File &naming:", {"Title", "Title [video ID]", "Channel - Title", "Upload date - Title"},
+                        s.naming);
+
+    m_ytAddMetadata = AddCheck(page, sizer, "Add &metadata (title, artist, date)", s.addMetadata);
+    m_ytEmbedThumbnail = AddCheck(page, sizer, "&Embed thumbnail", s.embedThumbnail);
+    m_ytWriteThumbnail = AddCheck(page, sizer, "Save t&humbnail as a file", s.writeThumbnail);
+    m_ytWriteDescription = AddCheck(page, sizer, "Save descr&iption as a file", s.writeDescription);
+    m_ytWriteSubtitles = AddCheck(page, sizer, "Download &subtitles", s.writeSubtitles);
+    m_ytEmbedSubtitles = AddCheck(page, sizer, "Embed subtit&les in videos", s.embedSubtitles);
+    m_ytChannelFolder = AddCheck(page, sizer, "Put each channel in its own f&older", s.channelFolder);
+
+    m_ytExtraOptions = AddEdit(page, sizer, "E&xtra yt-dlp options:", WX(s.extraOptions), 380);
+    AddText(page, sizer, "Converting, video, metadata and thumbnails need ffmpeg, which FastPlay downloads once if it is not installed.");
+
+    m_ytType->Bind(wxEVT_CHOICE, [this](wxCommandEvent&) { UpdateYtDownloadControls(); });
+    m_ytAudioFormat->Bind(wxEVT_CHOICE, [this](wxCommandEvent&) { UpdateYtDownloadControls(); });
+    UpdateYtDownloadControls();
+
+    page->SetSizer(new wxBoxSizer(wxVERTICAL));
+    page->GetSizer()->Add(sizer, 1, wxEXPAND | wxALL, 10);
+    book->AddPage(page, "YouTube Downloads");
+}
+
+// Only the settings for what is being downloaded can be changed.
+void OptionsDialog::UpdateYtDownloadControls() {
+    bool video = m_ytType->GetSelection() == 1;
+    m_ytAudioFormat->Enable(!video);
+    m_ytAudioQuality->Enable(!video && m_ytAudioFormat->GetSelection() >= 2 && m_ytAudioFormat->GetSelection() <= 3);
+    m_ytVideoQuality->Enable(video);
+    m_ytVideoContainer->Enable(video);
+    m_ytVideoCodec->Enable(video);
+    m_ytEmbedSubtitles->Enable(video);
+}
+
+void OptionsDialog::OnYtFolderBrowse(wxCommandEvent&) {
+    wxDirDialog dlg(this, "Select YouTube download folder", m_ytFolder->GetValue(), wxDD_DEFAULT_STYLE);
+    if (dlg.ShowModal() == wxID_OK) {
+        m_ytFolder->SetValue(dlg.GetPath());
+    }
+}
+
 void OptionsDialog::BuildSoundTouchPage(wxNotebook* book) {
     auto* page = new wxPanel(book);
     auto* sizer = new wxBoxSizer(wxVERTICAL);
@@ -961,6 +1054,30 @@ void OptionsDialog::OnOK(wxCommandEvent&) {
     // Get YouTube settings
     g_ytdlpPath = WS(m_ytdlpPath->GetValue());
     g_ytApiKey = WS(m_ytApiKey->GetValue());
+
+    // Get YouTube download settings. The folder is only stored when it is not
+    // the default, so a moved Downloads folder is still followed.
+    {
+        YouTubeDownloadSettings& s = g_ytDownload;
+        std::wstring folder = WS(m_ytFolder->GetValue());
+        s.folder.clear();  // so YouTubeDownloadFolder() gives the default to compare with
+        s.folder = folder == YouTubeDownloadFolder() ? L"" : folder;
+        s.type = m_ytType->GetSelection();
+        s.audioFormat = m_ytAudioFormat->GetSelection();
+        s.audioQuality = m_ytAudioQuality->GetSelection();
+        s.videoQuality = m_ytVideoQuality->GetSelection();
+        s.videoContainer = m_ytVideoContainer->GetSelection();
+        s.videoCodec = m_ytVideoCodec->GetSelection();
+        s.naming = m_ytNaming->GetSelection();
+        s.addMetadata = m_ytAddMetadata->GetValue();
+        s.embedThumbnail = m_ytEmbedThumbnail->GetValue();
+        s.writeThumbnail = m_ytWriteThumbnail->GetValue();
+        s.writeDescription = m_ytWriteDescription->GetValue();
+        s.writeSubtitles = m_ytWriteSubtitles->GetValue();
+        s.embedSubtitles = m_ytEmbedSubtitles->GetValue();
+        s.channelFolder = m_ytChannelFolder->GetValue();
+        s.extraOptions = WS(m_ytExtraOptions->GetValue());
+    }
 
     // Get Recording settings
     {
