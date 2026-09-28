@@ -21,6 +21,7 @@
 #include "spatial_audio.h"
 #include "bass_text.h"
 #include "mp4_chapters.h"
+#include "xheaac.h"
 #include "paths.h"
 #include <ctime>
 #include <filesystem>
@@ -848,6 +849,9 @@ bool LoadFile(const wchar_t* path) {
             font.bank = 0;
             BASS_MIDI_StreamSetFonts(g_stream, &font, 1);
         }
+    } else if (IsMp4Path(path) && IsXheAacFile(path)) {
+        // xHE-AAC, which no BASS decoder handles
+        g_stream = CreateXheAacStream(path, BASS_STREAM_DECODE | BASS_SAMPLE_FLOAT);
     } else {
         g_stream = BASS_StreamCreateFile(FALSE, file.get(), 0, 0, file.flags() | BASS_STREAM_DECODE | BASS_SAMPLE_FLOAT);
     }
@@ -883,10 +887,11 @@ bool LoadFile(const wchar_t* path) {
     // Store source stream for VBR bitrate queries (not freed separately - owned by tempo processor)
     g_sourceStream = g_stream;
 
-    // Capture initial bitrate
+    // Capture initial bitrate (an xHE-AAC stream reads as PCM to BASS)
     float bitrate = 0;
     BASS_ChannelGetAttribute(g_stream, BASS_ATTRIB_BITRATE, &bitrate);
     g_currentBitrate = static_cast<int>(bitrate);
+    if (int xhe = XheAacBitrate(g_stream)) g_currentBitrate = xhe;
 
     // Set up tempo processor based on selected algorithm
     TempoAlgorithm algo = static_cast<TempoAlgorithm>(g_tempoAlgorithm);
@@ -2083,8 +2088,9 @@ static std::string GetMetadataTag(HSTREAM stream, const char* tagName) {
         if (!result.empty()) return result;
     }
 
-    // Try MP4/iTunes tags
+    // Try MP4/iTunes tags (an xHE-AAC file's come from FastPlay's own reader)
     const char* mp4Tags = BASS_ChannelGetTags(stream, BASS_TAG_MP4);
+    if (!mp4Tags) mp4Tags = XheAacTags(stream);
     if (mp4Tags) {
         result = GetTagFromList(mp4Tags, tagName);
         if (!result.empty()) return result;

@@ -119,6 +119,7 @@ set(FASTPLAY_SOURCES
     src/hotkeys.cpp
     src/http_common.cpp
     src/mp4_chapters.cpp
+    src/mp4_index.cpp
     src/mp4_remux.cpp
     src/player.cpp
     src/playlist_io.cpp
@@ -130,6 +131,7 @@ set(FASTPLAY_SOURCES
     src/tempo_processor.cpp
     src/updater.cpp
     src/utils.cpp
+    src/xheaac.cpp
     src/youtube.cpp
     src/sqlite3.c
     src/reverb/reverb.cpp
@@ -206,6 +208,16 @@ elseif(NOT WIN32)
 endif()
 
 add_executable(FastPlay WIN32 MACOSX_BUNDLE ${FASTPLAY_SOURCES})
+
+# Fraunhofer FDK AAC, for xHE-AAC, which no BASS decoder handles. Its decoder only;
+# nothing of it is installed.
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+set(BUILD_PROGRAMS OFF CACHE BOOL "" FORCE)
+set(FDK_AAC_INSTALL_CMAKE_CONFIG_MODULE OFF CACHE BOOL "" FORCE)
+set(FDK_AAC_INSTALL_PKGCONFIG_MODULE OFF CACHE BOOL "" FORCE)
+add_subdirectory(deps/fdk-aac EXCLUDE_FROM_ALL)
+target_compile_options(fdk-aac PRIVATE ${FASTPLAY_NO_WARNINGS})
+target_link_libraries(FastPlay PRIVATE fdk-aac)
 
 # The upstream C libraries' warnings are not ours to fix.
 set_source_files_properties(src/sqlite3.c deps/speedy/speedy.c deps/speedy/soniclib.c

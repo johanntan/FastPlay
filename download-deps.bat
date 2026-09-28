@@ -173,6 +173,11 @@ if exist "deps\kissfft" rmdir /s /q "deps\kissfft"
 git clone --depth 1 https://github.com/mborgerding/kissfft.git "deps\kissfft"
 
 echo.
+echo Cloning FDK AAC (for xHE-AAC)...
+if exist "deps\fdk-aac" rmdir /s /q "deps\fdk-aac"
+git clone --depth 1 https://github.com/mstorsjo/fdk-aac.git "deps\fdk-aac"
+
+echo.
 echo Cleaning up...
 rmdir /s /q temp_dl 2>nul
 

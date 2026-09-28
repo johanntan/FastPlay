@@ -82,6 +82,10 @@ clone https://github.com/Signalsmith-Audio/linear.git deps/signalsmith-stretch/s
 clone https://github.com/waywardgeek/sonic.git deps/sonic
 clone https://github.com/mborgerding/kissfft.git deps/kissfft
 
+echo
+echo "Downloading FDK AAC (for xHE-AAC)..."
+clone https://github.com/mstorsjo/fdk-aac.git deps/fdk-aac
+
 rm -rf temp_dl
 
 echo
