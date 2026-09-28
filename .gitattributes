@@ -1,0 +1,2 @@
+# Shell scripts run in bash, on Windows too (MSYS2): keep them LF everywhere.
+*.sh text eol=lf
