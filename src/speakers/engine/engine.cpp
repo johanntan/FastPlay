@@ -1,0 +1,482 @@
+#include "engine.h"
+
+#include "../core/loudness.h"
+
+#include <algorithm>
+#include <cmath>
+
+namespace speakers {
+
+namespace {
+
+// How often the geometry is recomputed. Short enough that walking and turning
+// track smoothly, long enough that the trigonometry costs nothing.
+constexpr int kGeometryBlock = 128;
+
+// What an ear does with a system this loud, put back.
+//
+// The normal equal-loudness-level contours are not parallel: the bass end of
+// a quiet one sits far above the bass end of a loud one. A car at full tilt
+// and the same recording at headphone level are therefore not the same
+// balance, and the difference is worth about sixteen decibels at the bottom.
+//
+// Three low shelves reproduce that difference to within a tenth of a decibel
+// across the whole band, fitted to ISO 226:2003 rather than drawn by eye. The
+// shape of the difference turns out not to depend on how big the difference
+// is -- within one percent from a fifteen phon gap to a forty phon one -- so
+// one set of shelves scaled by a single number covers every case.
+struct FeelShelf {
+    float hz;
+    float q;
+    float share; // of the whole tilt
+};
+const FeelShelf kFeel[3] = {{64.3f, 0.383f, 0.8267f},
+                            {179.0f, 0.581f, 0.1592f},
+                            {467.1f, 0.797f, 0.1555f}};
+
+// Full scale out of the engine stands for this much sound pressure from the
+// system being simulated, and for this much from the headphones it is
+// actually coming out of. The gap between them is what the ear is missing.
+constexpr float kSystemFullScaleSpl = 124.0f;
+constexpr float kHeadphoneFullScaleSpl = 94.0f;
+
+// Below this the correction is not worth applying; above it the shelves cost
+// nothing to leave running.
+constexpr float kFeelFloor = 0.02f;
+
+// Bass has to actually be present before there is anything to put back. This
+// is where "present" is measured, and how much of the band counts as full.
+constexpr float kBassSenseHz = 90.0f;
+constexpr float kBassSenseFull = 0.16f;
+
+// How high the correction may push the output when there was room going
+// spare, and how quickly the gain it gives back is allowed to return.
+constexpr float kFeelCeiling = 0.89f;
+constexpr float kFeelReleaseSeconds = 0.25f;
+// And the furthest it may pull the rest of the music down to make room. Past
+// this it would be ducking the track every time a note landed, which is worse
+// than not having the bass.
+constexpr float kFeelMaxDuckDb = 5.0f;
+// And how much further it may go when the system is being driven hard. A car
+// played that loud really does swamp the midrange -- bass masks upwards, and
+// the louder the bass the further up it reaches -- so past a certain point
+// letting it take more is the honest answer rather than a trick.
+constexpr float kFeelDuckPerDb = 0.35f;
+constexpr float kFeelDuckExtraMax = 5.0f;
+constexpr float kFeelDriveReference = -4.0f;
+// How fast the amount of correction follows the music, per block: quick to
+// back off when a passage gets loud, unhurried coming back.
+constexpr float kFeelRisePerBlock = 0.10f;
+constexpr float kFeelFallPerBlock = 0.45f; // RMS of the low band, as a fraction of full scale
+
+// What a closed car does to the sound getting out of it.
+//
+// Glass and steel are heavy and the seats are soft, so the bottom end walks
+// straight through and nothing else does. A quarter of a kilohertz is about
+// where it gives up, and the whole thing arrives a good deal quieter.
+constexpr float kShellHz = 260.0f;
+constexpr int kShellOrder = 4;
+constexpr float kShellDb = -11.0f;
+
+// The output stage.
+//
+// A soft clipper shapes every sample on its own, which on bass heavy material
+// means the woofer modulates everything else: the bass survives and the
+// midrange gets eaten, several decibels of it, every time a note lands. That
+// is the sound of a blown speaker, not a loud one.
+//
+// So the ceiling is held by turning the whole thing down instead -- fast
+// enough to catch a note, slow enough not to breathe -- which leaves the
+// balance alone. The shaper stays behind it, doing nothing until something
+// gets past, so a system built to be far too loud still distorts rather than
+// wrapping round into noise.
+constexpr float kLimitCeiling = 0.92f;
+constexpr float kLimitAttackSeconds = 0.003f;
+constexpr float kLimitReleaseSeconds = 0.18f;
+
+inline float OutputLimit(float x) {
+    float a = std::fabs(x);
+    if (a <= 0.7f) return x;
+    float sign = x < 0.0f ? -1.0f : 1.0f;
+    return sign * (0.7f + 0.3f * std::tanh((a - 0.7f) / 0.3f));
+}
+
+// How far past its nominal level the system is being asked to run, turned
+// into how much of the midrange the bass is allowed to take with it.
+float FeelDuckExtra(const SystemSettings &settings) {
+    float over = settings.masterGainDb + settings.driveDb - kFeelDriveReference;
+    return dsp::Clampf(over * kFeelDuckPerDb, 0.0f, kFeelDuckExtraMax);
+}
+
+float BassAuthority(const SpeakerSystem &system) {
+    float best = 0.0f;
+    for (const auto &s : system.Speakers()) {
+        if (!system.IsAudible(s)) continue;
+        if (s.IsSub()) return 1.0f;
+        float corner = s.spec.lowCornerHz > 0.0f ? s.spec.lowCornerHz : 200.0f;
+        best = std::max(best, dsp::Clampf((100.0f - corner) / 55.0f, 0.0f, 1.0f) * 0.6f);
+    }
+    return best;
+}
+
+} // namespace
+
+bool Engine::Outside() const {
+    // Outside the walls, with a little slack so that standing against one is
+    // still inside. Only enclosed spaces have an outside worth modelling.
+    if (m_room.kind == RoomKind::Outdoor) return false;
+    const Vec3 &p = m_listener.position;
+    float margin = 0.05f;
+    return std::fabs(p.x) > m_room.width * 0.5f + margin ||
+           std::fabs(p.y) > m_room.depth * 0.5f + margin || p.z < -margin ||
+           p.z > m_room.height + margin;
+}
+
+void Engine::Init(float sampleRate, int maxBlockFrames) {
+    m_sampleRate = sampleRate;
+    m_maxBlock = std::max(64, maxBlockFrames);
+    m_reverbSend.assign((size_t)m_maxBlock, 0.0f);
+    m_voiceMono.assign((size_t)m_maxBlock, 0.0f);
+    m_inL.assign((size_t)m_maxBlock, 0.0f);
+    m_inR.assign((size_t)m_maxBlock, 0.0f);
+    m_outL.assign((size_t)m_maxBlock, 0.0f);
+    m_outR.assign((size_t)m_maxBlock, 0.0f);
+    m_reverb.Init(sampleRate);
+    m_roomModes.Init(sampleRate);
+    // Slow: this follows how hard the system is running, not the music.
+    m_shellL.SetButterworthLowpass(sampleRate, kShellHz, kShellOrder);
+    m_shellR.SetButterworthLowpass(sampleRate, kShellHz, kShellOrder);
+    m_shellGain = dsp::DbToGain(kShellDb);
+    m_bassSense.SetLowpass(sampleRate, kBassSenseHz, 0.707f);
+    m_bassLevel.SetCutoff(sampleRate, 3.0f);
+    m_feelScratchL.assign((size_t)m_maxBlock, 0.0f);
+    m_feelScratchR.assign((size_t)m_maxBlock, 0.0f);
+    m_feelRelease = 1.0f - std::exp(-1.0f / (kFeelReleaseSeconds * sampleRate));
+    m_feelFall = 1.0f - std::exp(-1.0f / (0.02f * sampleRate));
+    m_limitAttack = 1.0f - std::exp(-1.0f / (kLimitAttackSeconds * sampleRate));
+    m_limitRelease = 1.0f - std::exp(-1.0f / (kLimitReleaseSeconds * sampleRate));
+    m_room.Derive();
+}
+
+void Engine::Prepare(const SpeakerSystem &system) {
+    m_room = system.Room();
+    m_settings = system.Settings();
+    m_listener = system.GetListener();
+
+    bool hasSub = false;
+    for (const auto &s : system.Speakers())
+        if (s.IsSub() && system.IsAudible(s)) hasSub = true;
+
+    m_bassAuthority = BassAuthority(system);
+    m_feelDuckExtra = FeelDuckExtra(m_settings);
+    // The whole correction, measured at the bottom of the band: what the ear
+    // is missing when a system this loud arrives through headphones.
+    m_feelTiltDb = loudness::TiltDb(20.0f, kHeadphoneFullScaleSpl, kSystemFullScaleSpl);
+
+    // ---- voices ----------------------------------------------------------
+    const auto &speakers = system.Speakers();
+    if (m_voices.size() != speakers.size()) {
+        m_voices.resize(speakers.size());
+        for (auto &v : m_voices) v.Init(m_sampleRate);
+    }
+    m_voiceLabels.resize(speakers.size());
+    for (size_t i = 0; i < speakers.size(); ++i) {
+        m_voices[i].Configure(speakers[i], m_settings, hasSub);
+        m_voices[i].SetActive(system.IsAudible(speakers[i]));
+        m_voiceLabels[i] = speakers[i].Label(m_room);
+    }
+
+    // ---- the room --------------------------------------------------------
+    m_reverb.Configure(m_room);
+    m_roomModes.Configure(m_room);
+
+    // Standing waves are driven by whatever is making the bass, which is the
+    // subwoofers if there are any and everything otherwise.
+    Vec3 sum{};
+    int counted = 0;
+    for (const auto &s : system.Speakers()) {
+        if (!system.IsAudible(s)) continue;
+        if (hasSub && !s.IsSub()) continue;
+        sum = sum + s.position;
+        ++counted;
+    }
+    m_modeSource = counted > 0 ? sum * (1.0f / (float)counted) : Vec3{0.0f, 0.0f, 0.0f};
+
+    m_cabinActive = m_settings.cabinGainEnabled && m_room.cabinGainDb > 0.1f &&
+                    m_room.cabinGainHz > 1.0f;
+    if (m_cabinActive) {
+        // A shelf rather than a boost at a frequency: below the corner the
+        // whole band lifts together, which is what pressurising a sealed space
+        // actually does.
+        float hz = m_room.cabinGainHz;
+        float db = m_room.cabinGainDb;
+        m_cabinL.SetLowShelf(m_sampleRate, hz, 0.6f, db);
+        m_cabinR.SetLowShelf(m_sampleRate, hz, 0.6f, db);
+    }
+
+    // What the space does to the rest of the bottom end on the way to your
+    // ears, where a room has been measured and has a shape to apply.
+    m_shape.clear();
+    float character = dsp::Clampf(m_settings.cabinCharacter, 0.0f, 1.5f);
+    for (const auto &band : m_room.cabinShape) {
+        if (band.db * character == 0.0f || band.hz <= 1.0f) continue;
+        ShapeStage stage;
+        float db = band.db * character;
+        if (band.peak) {
+            stage.l.SetPeaking(m_sampleRate, band.hz, band.q, db);
+            stage.r.SetPeaking(m_sampleRate, band.hz, band.q, db);
+        } else {
+            stage.l.SetLowShelf(m_sampleRate, band.hz, band.q, db);
+            stage.r.SetLowShelf(m_sampleRate, band.hz, band.q, db);
+        }
+        m_shape.push_back(stage);
+    }
+}
+
+void Engine::UpdateLevels(const SpeakerSystem &system) {
+    const auto &speakers = system.Speakers();
+    // A speaker added or removed since the last Prepare() means the voices no
+    // longer line up with the system, and only a rebuild can fix that.
+    if (speakers.size() != m_voices.size()) return;
+
+    m_settings = system.Settings();
+    m_bassAuthority = BassAuthority(system);
+    m_feelDuckExtra = FeelDuckExtra(m_settings);
+    for (size_t i = 0; i < speakers.size(); ++i) {
+        m_voices[i].SetLevels(speakers[i], m_settings);
+        m_voices[i].SetActive(system.IsAudible(speakers[i]));
+    }
+}
+
+void Engine::Reset() {
+    for (auto &v : m_voices) v.Reset();
+    m_reverb.Reset();
+    m_roomModes.Reset();
+    m_bassSense.Reset();
+    m_bassLevel.Reset();
+    m_feelMakeup = 1.0f;
+    m_feelDb = 0.0f;
+    m_limitGain = 1.0f;
+    m_feelBlend = -1.0f;
+    for (int i = 0; i < kFeelStages; ++i) {
+        m_feelL[i].Reset();
+        m_feelR[i].Reset();
+    }
+    m_cabinL.Reset();
+    m_cabinR.Reset();
+    for (auto &stage : m_shape) {
+        stage.l.Reset();
+        stage.r.Reset();
+    }
+    m_peak = 0.0f;
+}
+
+void Engine::ApplyCabinGain(float *buffer, dsp::Biquad &filter, int frames) {
+    if (!m_cabinActive) return;
+    for (int i = 0; i < frames; ++i) buffer[i] = filter.Process(buffer[i]);
+}
+
+void Engine::Render(const float *inL, const float *inR, int frames, float *outL, float *outR) {
+    std::fill(outL, outL + frames, 0.0f);
+    std::fill(outR, outR + frames, 0.0f);
+    m_peak = 0.0f;
+
+    bool roomOn = m_settings.roomEnabled;
+    const bool outside = Outside();
+
+    int done = 0;
+    while (done < frames) {
+        int n = std::min(frames - done, std::min(kGeometryBlock, m_maxBlock));
+
+        std::fill(m_reverbSend.begin(), m_reverbSend.begin() + n, 0.0f);
+
+        // ---- speakers ----------------------------------------------------
+        for (size_t vi = 0; vi < m_voices.size(); ++vi) {
+            Voice &v = m_voices[vi];
+            v.Update(m_room, m_listener, roomOn);
+            v.Process(inL + done, inR + done, n, outL + done, outR + done, m_voiceMono.data());
+
+            float send = roomOn ? m_reverb.SendFor(v.Distance()) : 0.0f;
+            for (int i = 0; i < n; ++i) m_reverbSend[(size_t)i] += m_voiceMono[(size_t)i] * send;
+        }
+
+        // ---- the room's own tail ------------------------------------------
+        if (roomOn && !outside) m_reverb.Process(m_reverbSend.data(), n, outL + done, outR + done);
+
+        // ---- what the space does on the way to your ears -------------------
+        // The response measured from a speaker to a seat: the door loading it,
+        // the cabin it crosses.
+        if (m_settings.cabinGainEnabled && !outside) {
+            for (auto &stage : m_shape) {
+                for (int i = 0; i < n; ++i) {
+                    outL[done + i] = stage.l.Process(outL[done + i]);
+                    outR[done + i] = stage.r.Process(outR[done + i]);
+                }
+            }
+        }
+
+        // ---- and out through the shell ---------------------------------
+        // Everything the speakers do has to get past the doors to reach you,
+        // which is why a car going past is bass and not much else.
+        if (outside) {
+            for (int i = 0; i < n; ++i) {
+                outL[done + i] = m_shellL.Process(outL[done + i]) * m_shellGain;
+                outR[done + i] = m_shellR.Process(outR[done + i]) * m_shellGain;
+            }
+        }
+
+        // ---- and the room as a pressure vessel ----------------------------
+        // Both of these are the room acting on everything at once rather than
+        // on any one speaker, so they go here, on the sum. They are applied
+        // per chunk so that they stay in step with the geometry above.
+        // A room with a measured shape has its whole response in that shape
+        // already, pressure gain included, so the shelf would be counted
+        // twice.
+        if (m_shape.empty() && !outside) {
+            ApplyCabinGain(outL + done, m_cabinL, n);
+            ApplyCabinGain(outR + done, m_cabinR, n);
+        }
+        if (roomOn && !outside) {
+            m_roomModes.Update(m_room, m_listener.position, m_modeSource);
+            m_roomModes.Process(outL + done, outR + done, n);
+        }
+
+        done += n;
+    }
+
+    // ---- what an ear would make of a system this loud ---------------------
+    //
+    // The contours say an ear hearing a car through headphones is short of
+    // about sixteen decibels at the bottom. There is rarely sixteen decibels
+    // of room left to give it, and asking for it anyway only hands the whole
+    // problem to the limiter, which turns the music down every time a note
+    // lands -- the bass survives and everything else gets eaten.
+    //
+    // So only as much is asked for as there is room for, plus a little taken
+    // out of the rest. A quiet passage gets the whole correction and swells;
+    // a loud one gets a tilt, bass against the rest, and stays clean.
+    //
+    // It runs only while there is bass present and something able to have
+    // produced it: doors on their own never lost any bottom end.
+    if (m_settings.bassFeel > 0.0f && m_bassAuthority > 0.0f) {
+        float present = 0.0f, bare = 0.0f;
+        for (int i = 0; i < frames; ++i) {
+            float low = m_bassSense.Process(0.5f * (outL[i] + outR[i]));
+            present = m_bassLevel.Process(std::fabs(low));
+            bare = std::max(bare, std::max(std::fabs(outL[i]), std::fabs(outR[i])));
+        }
+        float wanted = m_feelTiltDb * dsp::Clampf(present / kBassSenseFull, 0.0f, 1.0f) *
+                       m_bassAuthority * dsp::Clampf(m_settings.bassFeel, 0.0f, 2.0f);
+
+        // What there is room for: the headroom going spare, and no more than
+        // kFeelMaxDuckDb taken off the rest of the music on top of it.
+        float headroom = dsp::GainToDb(kFeelCeiling / std::max(bare, 1e-6f));
+        float duck = kFeelMaxDuckDb + m_feelDuckExtra;
+        float allowed = std::min(wanted, std::max(headroom, 0.0f) + duck);
+
+        // Eased rather than jumped, so the shelves do not zip as the music
+        // moves. Backing off is quicker than coming on.
+        float rate = allowed < m_feelDb ? kFeelFallPerBlock : kFeelRisePerBlock;
+        m_feelDb += (allowed - m_feelDb) * rate;
+
+        float blend = m_feelDb / std::max(m_feelTiltDb, 0.01f);
+        if (std::fabs(blend - m_feelBlend) > 0.005f) {
+            m_feelBlend = blend;
+            for (int i = 0; i < kFeelStages; ++i) {
+                float db = m_feelTiltDb * kFeel[i].share * blend;
+                m_feelL[i].SetLowShelf(m_sampleRate, kFeel[i].hz, kFeel[i].q, db);
+                m_feelR[i].SetLowShelf(m_sampleRate, kFeel[i].hz, kFeel[i].q, db);
+            }
+        }
+        if (m_feelBlend > kFeelFloor) {
+            float lifted = 0.0f;
+            for (int i = 0; i < frames; ++i) {
+                float l = outL[i], r = outR[i];
+                for (int stage = 0; stage < kFeelStages; ++stage) {
+                    l = m_feelL[stage].Process(l);
+                    r = m_feelR[stage].Process(r);
+                }
+                m_feelScratchL[(size_t)i] = l;
+                m_feelScratchR[(size_t)i] = r;
+                lifted = std::max(lifted, std::max(std::fabs(l), std::fabs(r)));
+            }
+
+            // Hold the ceiling, but never take more off the music than the
+            // allowance above, because past that the cure is worse.
+            float room = std::max(bare, kFeelCeiling);
+            float want = lifted > room ? room / lifted : 1.0f;
+            want = std::max(want, dsp::DbToGain(-(kFeelMaxDuckDb + m_feelDuckExtra)));
+            for (int i = 0; i < frames; ++i) {
+                m_feelMakeup = want < m_feelMakeup
+                                   ? m_feelMakeup + (want - m_feelMakeup) * m_feelFall
+                                   : m_feelMakeup + (want - m_feelMakeup) * m_feelRelease;
+                outL[i] = m_feelScratchL[(size_t)i] * m_feelMakeup;
+                outR[i] = m_feelScratchR[(size_t)i] * m_feelMakeup;
+            }
+        }
+    }
+
+    // ---- the limiter -----------------------------------------------------
+    // The master level was applied by the speakers themselves. Only the
+    // ceiling is left to enforce.
+    for (int i = 0; i < frames; ++i) {
+        float a = std::max(std::fabs(outL[i]), std::fabs(outR[i]));
+        m_peak = std::max(m_peak, a);
+
+        // How much gain this sample can be allowed, and a follower that
+        // reaches for it quickly on the way down and slowly on the way back.
+        float want = a > kLimitCeiling ? kLimitCeiling / a : 1.0f;
+        float rate = want < m_limitGain ? m_limitAttack : m_limitRelease;
+        m_limitGain += (want - m_limitGain) * rate;
+
+        outL[i] = OutputLimit(outL[i] * m_limitGain);
+        outR[i] = OutputLimit(outR[i] * m_limitGain);
+    }
+}
+
+void Engine::RenderInterleaved(const float *in, float *out, int frames) {
+    // In pieces through the scratch set up in Init(), so nothing is allocated
+    // and any length can be rendered. `in` and `out` may be the same buffer.
+    int done = 0;
+    while (done < frames) {
+        int n = std::min(frames - done, m_maxBlock);
+        for (int i = 0; i < n; ++i) {
+            m_inL[(size_t)i] = in[(size_t)(done + i) * 2];
+            m_inR[(size_t)i] = in[(size_t)(done + i) * 2 + 1];
+        }
+        Render(m_inL.data(), m_inR.data(), n, m_outL.data(), m_outR.data());
+        for (int i = 0; i < n; ++i) {
+            out[(size_t)(done + i) * 2] = m_outL[(size_t)i];
+            out[(size_t)(done + i) * 2 + 1] = m_outR[(size_t)i];
+        }
+        done += n;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Diagnostics
+// ---------------------------------------------------------------------------
+
+float Engine::OutputPeakDb() const { return dsp::GainToDb(m_peak); }
+
+float Engine::VoiceOverdrive(int index) const {
+    if (index < 0 || index >= (int)m_voices.size()) return 0.0f;
+    return m_voices[(size_t)index].Overdrive();
+}
+
+float Engine::VoiceExcursion(int index) const {
+    if (index < 0 || index >= (int)m_voices.size()) return 0.0f;
+    return m_voices[(size_t)index].Excursion();
+}
+
+float Engine::VoiceCompressionDb(int index) const {
+    if (index < 0 || index >= (int)m_voices.size()) return 0.0f;
+    return m_voices[(size_t)index].CompressionDb();
+}
+
+const std::string &Engine::VoiceLabel(int index) const {
+    if (index < 0 || index >= (int)m_voiceLabels.size()) return m_emptyLabel;
+    return m_voiceLabels[(size_t)index];
+}
+
+}  // namespace speakers

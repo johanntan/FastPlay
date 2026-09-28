@@ -5,13 +5,23 @@
 #include "types.h"
 #include "spatial/hrtf.h"
 
+#include <memory>
 #include <mutex>
 #include <string>
 #include <vector>
 
-// 3D Audio: the stereo signal played through virtual speakers around the listener
-// and rendered binaurally with an HRTF, for headphones. Binaural mode uses two
-// speakers; 5.1 mode upmixes to five (or six, with the rear center speaker).
+namespace speakers {
+class Engine;
+class SpeakerSystem;
+}
+
+// 3D Audio, for headphones, in two kinds of mode:
+// - Binaural and 5.1: the stereo signal played through virtual speakers around
+//   the listener and rendered with an HRTF. Binaural uses two speakers; 5.1
+//   upmixes to five (or six, with the rear center speaker).
+// - Room presets (SpatialMode::Speakers): real speakers simulated in a room --
+//   a car, a living room, a PA in a hall -- each with its drivers, crossover,
+//   amplifier and placement, heard from a seat in it (src/speakers).
 class SpatialAudio {
 public:
     static constexpr int FRAME_SIZE = fastplay::audio::kHrtfBlock;
@@ -32,6 +42,14 @@ public:
     void SetRearCenter(bool enabled) { m_rearCenter = enabled; }
     bool GetRearCenter() const { return m_rearCenter; }
 
+    // Room presets: which one (an index into speakers/presets.h), and its
+    // subwoofers, crossover and bass feel (0 to 2, 1 being the ear's due).
+    void SetRoomPreset(int preset);
+    void SetSubwoofer(bool on);
+    void SetSubLevel(float db);
+    void SetCrossover(float hz);
+    void SetBassFeel(float amount);
+
     const wchar_t* GetLastError() const { return m_lastError.c_str(); }
 
     // Scratch space for converting 16 bit audio to float before Process().
@@ -46,6 +64,12 @@ private:
     void RenderSpeaker(int speaker, const float* signal, float gain, float angleDeg,
                        float lx, float ly, float lz);
     void ResetVoices();
+
+    // Room presets. The first two need m_mutex held.
+    void RebuildSpeakers();      // after the preset or anything structural changed
+    void ApplySpeakerLevels();   // after a level changed; never rebuilds a filter
+    void ProcessSpeakers(float* buffer, int frameCount, float blend);
+    void UpdateListener();
 
     fastplay::audio::HrtfDatabase m_hrtf;
     fastplay::audio::HrtfRenderer m_renderer;
@@ -74,6 +98,17 @@ private:
     bool m_rearCenter = true;
     std::wstring m_lastError;
     std::mutex m_mutex;
+
+    // Room presets
+    static constexpr int SPEAKER_CHUNK = 2048;
+    std::unique_ptr<speakers::Engine> m_engine;
+    std::unique_ptr<speakers::SpeakerSystem> m_system;
+    int m_preset = 0;
+    bool m_subOn = true;
+    float m_subDb = 0.0f;
+    float m_crossoverHz = 80.0f;
+    float m_bassFeel = 1.0f;
+    std::vector<float> m_speakerDry;  // one chunk, for blending
 };
 
 SpatialAudio* GetSpatialAudio();

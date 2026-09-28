@@ -53,6 +53,7 @@ enum class StreamEffect {
 enum class SpatialMode {
     Binaural,     // Stereo HRTF for headphones (2 virtual speakers)
     Surround51,   // 5.1 virtual surround (5 virtual speakers rendered binaurally)
+    Speakers,     // a room of simulated speakers (src/speakers/presets.h), heard from a seat in it
     COUNT
 };
 
@@ -117,7 +118,7 @@ enum class ParamId {
     SpatialBlend,
     SpatialWidth,
     SpatialRotation,
-    SpatialMode,        // 0=Binaural, 1=5.1 Surround
+    SpatialMode,        // 0=Binaural, 1=5.1 Surround, 2 and up = the room presets
     SpatialRearCenter,  // 0=Off, 1=On (5.1 only)
     SpatialX,           // Listener X position
     SpatialY,           // Listener Y position
@@ -139,6 +140,11 @@ enum class ParamId {
     AdvReverbLate,          // dB
     AdvReverbReflDelay,     // ms
     AdvReverbLateDelay,     // ms
+    // 3D audio room presets (listed with the other 3D parameters)
+    SpatialSub,         // 0=Off, 1=On (presets with subwoofers)
+    SpatialSubLevel,    // dB
+    SpatialCrossover,   // Hz
+    SpatialBassFeel,    // %
     COUNT
 };
 

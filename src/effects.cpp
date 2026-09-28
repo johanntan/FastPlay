@@ -10,6 +10,7 @@
 #include "reverb/reverb.h"
 #include "reverb/efx_reverb.h"
 #include "spatial_audio.h"
+#include "speakers/presets.h"
 #include <cwchar>
 #include <cstdio>
 #include <vector>
@@ -78,11 +79,15 @@ static const ParamDef g_paramDefs[] = {
     {ParamId::SpatialBlend,      "3D Blend",       "%",    0.0f,   100.0f,  5.0f,  100.0f, DSPEffectType::SpatialAudio},
     {ParamId::SpatialWidth,      "3D Width",       " deg", 15.0f,  90.0f,   5.0f,  45.0f,  DSPEffectType::SpatialAudio},
     {ParamId::SpatialRotation,   "3D Rotation",    " deg",-180.0f, 180.0f,  5.0f,  0.0f,   DSPEffectType::SpatialAudio},
-    {ParamId::SpatialMode,       "3D Mode",        "",     0.0f,   1.0f,    1.0f,  0.0f,   DSPEffectType::SpatialAudio},
+    {ParamId::SpatialMode,       "3D Mode",        "",     0.0f,   1.0f + speakers::kRoomPresetCount, 1.0f, 0.0f, DSPEffectType::SpatialAudio},
     {ParamId::SpatialRearCenter, "3D Rear Speaker","",     0.0f,   1.0f,    1.0f,  1.0f,   DSPEffectType::SpatialAudio},
     {ParamId::SpatialX,          "3D Listener X",  "",    -50.0f,  50.0f,   1.0f,  0.0f,   DSPEffectType::SpatialAudio},
     {ParamId::SpatialY,          "3D Listener Y",  "",    -50.0f,  50.0f,   1.0f,  0.0f,   DSPEffectType::SpatialAudio},
     {ParamId::SpatialZ,          "3D Listener Z",  "",    -50.0f,  50.0f,   1.0f,  0.0f,   DSPEffectType::SpatialAudio},
+    {ParamId::SpatialSub,        "3D Subwoofer",   "",     0.0f,   1.0f,    1.0f,  1.0f,   DSPEffectType::SpatialAudio},
+    {ParamId::SpatialSubLevel,   "3D Sub Level",   " dB", -15.0f,  15.0f,   1.0f,  0.0f,   DSPEffectType::SpatialAudio},
+    {ParamId::SpatialCrossover,  "3D Crossover",   " Hz",  40.0f,  160.0f,  10.0f, 80.0f,  DSPEffectType::SpatialAudio},
+    {ParamId::SpatialBassFeel,   "3D Bass Feel",   "%",    0.0f,   200.0f,  10.0f, 100.0f, DSPEffectType::SpatialAudio},
 };
 static const int g_paramDefCount = sizeof(g_paramDefs) / sizeof(g_paramDefs[0]);
 
@@ -388,6 +393,32 @@ static bool IsReverbParamForCurrentAlgorithm(ParamId id) {
 }
 
 // Build list of available parameters based on enabled stream effects and DSP effects
+// The room preset 3D Mode is on (0 and up), or -1 for Binaural and 5.1.
+static int CurrentRoomPreset() {
+    int mode = static_cast<int>(g_paramValues[(int)ParamId::SpatialMode] + 0.5f);
+    return mode >= 2 ? mode - 2 : -1;
+}
+
+// Whether a 3D Audio parameter means anything in the current 3D mode: width and
+// the rear speaker belong to the virtual speakers of Binaural and 5.1, the
+// subwoofer controls to room presets that have subs.
+static bool IsSpatialParamInUse(ParamId id) {
+    int preset = CurrentRoomPreset();
+    switch (id) {
+        case ParamId::SpatialWidth:
+        case ParamId::SpatialRearCenter:
+            return preset < 0;
+        case ParamId::SpatialBassFeel:
+            return preset >= 0;
+        case ParamId::SpatialSub:
+        case ParamId::SpatialSubLevel:
+        case ParamId::SpatialCrossover:
+            return preset >= 0 && speakers::RoomPresetHasSub(preset);
+        default:
+            return true;
+    }
+}
+
 static std::vector<ParamId> GetAvailableParams() {
     std::vector<ParamId> params;
 
@@ -408,7 +439,8 @@ static std::vector<ParamId> GetAvailableParams() {
             }
         } else {
             // Other DSP effect parameter - check if the DSP effect is enabled
-            if (g_dspEnabled[(int)def.dspEffect]) {
+            if (g_dspEnabled[(int)def.dspEffect] &&
+                (def.dspEffect != DSPEffectType::SpatialAudio || IsSpatialParamInUse(def.id))) {
                 params.push_back(def.id);
             }
         }
@@ -1116,9 +1148,27 @@ void SetParamValue(ParamId id, float value) {
             break;
         case ParamId::SpatialMode: {
             SpatialAudio* spatial = GetSpatialAudio();
-            if (spatial) spatial->SetMode(value >= 0.5f ? SpatialMode::Surround51 : SpatialMode::Binaural);
+            int mode = static_cast<int>(value + 0.5f);
+            if (spatial && mode >= 2) {
+                spatial->SetRoomPreset(mode - 2);
+                spatial->SetMode(SpatialMode::Speakers);
+            } else if (spatial) {
+                spatial->SetMode(mode == 1 ? SpatialMode::Surround51 : SpatialMode::Binaural);
+            }
             break;
         }
+        case ParamId::SpatialSub:
+            if (SpatialAudio* spatial = GetSpatialAudio()) spatial->SetSubwoofer(value >= 0.5f);
+            break;
+        case ParamId::SpatialSubLevel:
+            if (SpatialAudio* spatial = GetSpatialAudio()) spatial->SetSubLevel(value);
+            break;
+        case ParamId::SpatialCrossover:
+            if (SpatialAudio* spatial = GetSpatialAudio()) spatial->SetCrossover(value);
+            break;
+        case ParamId::SpatialBassFeel:
+            if (SpatialAudio* spatial = GetSpatialAudio()) spatial->SetBassFeel(value / 100.0f);
+            break;
         case ParamId::SpatialRearCenter: {
             SpatialAudio* spatial = GetSpatialAudio();
             if (spatial) spatial->SetRearCenter(value >= 0.5f);
@@ -1218,7 +1268,7 @@ void AdjustCurrentParam(int direction) {
         float range = def->maxValue - def->minValue;
         while (newVal > def->maxValue) newVal -= range;
         while (newVal < def->minValue) newVal += range;
-    } else if (id == ParamId::SpatialMode || id == ParamId::SpatialRearCenter ||
+    } else if (id == ParamId::SpatialMode || id == ParamId::SpatialRearCenter || id == ParamId::SpatialSub ||
                id == ParamId::ReverbPreset || id == ParamId::AdvReverbPreset) {
         // Discrete choice: add step so past-max wraps to min
         float range = def->maxValue - def->minValue + def->step;
@@ -1343,9 +1393,19 @@ void AnnounceCurrentParam() {
 
     // Format based on parameter type
     if (id == ParamId::SpatialMode) {
-        snprintf(buf, sizeof(buf), "3D Mode: %s", val >= 0.5f ? "5.1 Surround" : "Binaural");
+        int preset = CurrentRoomPreset();
+        snprintf(buf, sizeof(buf), "3D Mode: %s",
+                 preset >= 0 ? speakers::RoomPresetName(preset) : val >= 0.5f ? "5.1 Surround" : "Binaural");
     } else if (id == ParamId::SpatialRearCenter) {
         snprintf(buf, sizeof(buf), "3D Rear Speaker: %s", val >= 0.5f ? "On" : "Off");
+    } else if (id == ParamId::SpatialSub) {
+        snprintf(buf, sizeof(buf), "3D Subwoofer: %s", val >= 0.5f ? "On" : "Off");
+    } else if (id == ParamId::SpatialSubLevel) {
+        snprintf(buf, sizeof(buf), "%s %+.0f%s", def->name, val, def->unit);
+    } else if ((id == ParamId::SpatialX || id == ParamId::SpatialY || id == ParamId::SpatialZ) &&
+               CurrentRoomPreset() >= 0) {
+        // In a room the listener moves in tenths of a metre from the seat
+        snprintf(buf, sizeof(buf), "%s %.1f metres", def->name, val * 0.1f);
     } else if (id == ParamId::ReverbPreset) {
         snprintf(buf, sizeof(buf), "%s: %s", def->name,
                  g_simpleReverbPresets[ReverbPresetIndex(id, g_simpleReverbPresetCount)].name);

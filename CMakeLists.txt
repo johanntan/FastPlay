@@ -133,6 +133,17 @@ set(FASTPLAY_SOURCES
     src/spatial/hrtf.cpp
     src/spatial/hrtf_data.cpp
     src/spatial/pffft/pffft.c
+    # Simulated speakers in rooms: the 3D Audio room presets
+    src/speakers/presets.cpp
+    src/speakers/core/dsp.cpp
+    src/speakers/model/room.cpp
+    src/speakers/model/speaker.cpp
+    src/speakers/model/system.cpp
+    src/speakers/engine/engine.cpp
+    src/speakers/engine/modes.cpp
+    src/speakers/engine/reverb.cpp
+    src/speakers/engine/spatial.cpp
+    src/speakers/engine/voice.cpp
     src/ui/app.cpp
     src/ui/bookmarks_dialog.cpp
     src/ui/file_dialogs.cpp

@@ -1,5 +1,8 @@
 #include "spatial_audio.h"
 #include "effects.h"
+#include "speakers/engine/engine.h"
+#include "speakers/model/system.h"
+#include "speakers/presets.h"
 
 #include <algorithm>
 #include <cmath>
@@ -28,7 +31,10 @@ void FreeSpatialAudio() {
 SpatialAudio::SpatialAudio()
     : m_upmix(static_cast<size_t>(MAX_SPEAKERS) * FRAME_SIZE),
       m_outL(FRAME_SIZE), m_outR(FRAME_SIZE),
-      m_queueL(MAX_QUEUE), m_queueR(MAX_QUEUE) {
+      m_queueL(MAX_QUEUE), m_queueR(MAX_QUEUE),
+      m_engine(std::make_unique<speakers::Engine>()),
+      m_system(std::make_unique<speakers::SpeakerSystem>()),
+      m_speakerDry(static_cast<size_t>(SPEAKER_CHUNK) * 2) {
     m_renderer.init();
     for (auto& voice : m_voices) voice.init();
     m_voiceInput.allocate(FRAME_SIZE);
@@ -49,6 +55,7 @@ void SpatialAudio::SetMode(SpatialMode mode) {
         ResetVoices();
         m_carryCount = 0;
         m_queueCount = 0;
+        if (mode == SpatialMode::Speakers) m_engine->Reset();
         m_mode = mode;
     }
 }
@@ -67,6 +74,9 @@ bool SpatialAudio::Initialize(int sampleRate) {
     }
     m_sampleRate = sampleRate;
     ResetVoices();
+
+    m_engine->Init(static_cast<float>(sampleRate), SPEAKER_CHUNK);
+    RebuildSpeakers();
 
     m_carryCount = 0;
 
@@ -211,6 +221,11 @@ void SpatialAudio::Process(float* buffer, int frameCount, float blend) {
     std::unique_lock<std::mutex> lock(m_mutex, std::try_to_lock);
     if (!lock.owns_lock() || !m_initialized) return;
 
+    if (m_mode == SpatialMode::Speakers) {
+        ProcessSpeakers(buffer, frameCount, blend);
+        return;
+    }
+
     int newPos = 0;
 
     while (true) {
@@ -291,4 +306,97 @@ void SpatialAudio::Process(float* buffer, int frameCount, float blend) {
         std::memmove(m_queueR.data(), m_queueR.data() + toWrite, (m_queueCount - toWrite) * sizeof(float));
     }
     m_queueCount -= toWrite;
+}
+
+// ---------------------------------------------------------------------------
+// Room presets
+// ---------------------------------------------------------------------------
+
+void SpatialAudio::SetRoomPreset(int preset) {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    if (preset == m_preset) return;
+    m_preset = preset;
+    RebuildSpeakers();
+}
+
+void SpatialAudio::SetSubwoofer(bool on) {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    if (on == m_subOn) return;
+    m_subOn = on;
+    // Structural: with no sub playing, the other speakers keep their bottom end.
+    RebuildSpeakers();
+}
+
+void SpatialAudio::SetSubLevel(float db) {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    m_subDb = db;
+    ApplySpeakerLevels();
+}
+
+void SpatialAudio::SetCrossover(float hz) {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    if (hz == m_crossoverHz) return;
+    m_crossoverHz = hz;
+    RebuildSpeakers();  // new crossover filters
+}
+
+void SpatialAudio::SetBassFeel(float amount) {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    m_bassFeel = amount;
+    ApplySpeakerLevels();
+}
+
+void SpatialAudio::RebuildSpeakers() {
+    speakers::BuildRoomPreset(m_preset, *m_system);
+    speakers::SystemSettings& settings = m_system->Settings();
+    settings.crossoverHz = m_crossoverHz;
+    settings.subGainDb = m_subDb;
+    settings.bassFeel = m_bassFeel;
+    for (auto& speaker : m_system->Speakers()) {
+        if (speaker.IsSub()) speaker.muted = !m_subOn;
+    }
+    if (m_sampleRate > 0) {
+        m_engine->Prepare(*m_system);
+        UpdateListener();
+    }
+}
+
+void SpatialAudio::ApplySpeakerLevels() {
+    speakers::SystemSettings& settings = m_system->Settings();
+    settings.subGainDb = m_subDb;
+    settings.bassFeel = m_bassFeel;
+    if (m_sampleRate > 0) m_engine->UpdateLevels(*m_system);
+}
+
+// Where you are in the room: the preset's seat, moved by the 3D Listener
+// settings (tenths of a metre across, forward and up), and turned by 3D Rotation.
+void SpatialAudio::UpdateListener() {
+    const speakers::RoomSpec& room = m_system->Room();
+    speakers::Listener listener;
+    float halfWidth = std::max(0.0f, room.width * 0.5f - room.wallMargin);
+    float halfDepth = std::max(0.0f, room.depth * 0.5f - room.wallMargin);
+    listener.position.x = std::clamp(room.defaultListener.x + GetParamValue(ParamId::SpatialX) * 0.1f,
+                                     -halfWidth, halfWidth);
+    listener.position.y = std::clamp(room.defaultListener.y + GetParamValue(ParamId::SpatialY) * 0.1f,
+                                     -halfDepth, halfDepth);
+    listener.position.z = std::clamp(room.listenerHeight + GetParamValue(ParamId::SpatialZ) * 0.1f, 0.3f,
+                                     std::max(0.3f, room.height - 0.1f));
+    listener.yawDeg = room.defaultYawDeg + GetParamValue(ParamId::SpatialRotation);
+    m_engine->SetListener(listener);
+}
+
+void SpatialAudio::ProcessSpeakers(float* buffer, int frameCount, float blend) {
+    UpdateListener();
+    if (blend >= 1.0f) {
+        m_engine->RenderInterleaved(buffer, buffer, frameCount);
+        return;
+    }
+    float wet = blend, dry = 1.0f - blend;
+    for (int done = 0; done < frameCount; done += SPEAKER_CHUNK) {
+        int n = std::min(SPEAKER_CHUNK, frameCount - done);
+        float* chunk = buffer + static_cast<size_t>(done) * 2;
+        std::memcpy(m_speakerDry.data(), chunk, static_cast<size_t>(n) * 2 * sizeof(float));
+        m_engine->RenderInterleaved(chunk, chunk, n);
+        for (int i = 0; i < n * 2; i++) chunk[i] = m_speakerDry[i] * dry + chunk[i] * wet;
+    }
 }

@@ -361,6 +361,14 @@ void LoadDSPSettings() {
     SetParamValue(ParamId::SpatialY, IniGetFloat(L"DSPParams", L"SpatialY", def->defaultValue, g_configPath.c_str()));
     def = GetParamDef(ParamId::SpatialZ);
     SetParamValue(ParamId::SpatialZ, IniGetFloat(L"DSPParams", L"SpatialZ", def->defaultValue, g_configPath.c_str()));
+    def = GetParamDef(ParamId::SpatialSub);
+    SetParamValue(ParamId::SpatialSub, IniGetFloat(L"DSPParams", L"SpatialSub", def->defaultValue, g_configPath.c_str()));
+    def = GetParamDef(ParamId::SpatialSubLevel);
+    SetParamValue(ParamId::SpatialSubLevel, IniGetFloat(L"DSPParams", L"SpatialSubLevel", def->defaultValue, g_configPath.c_str()));
+    def = GetParamDef(ParamId::SpatialCrossover);
+    SetParamValue(ParamId::SpatialCrossover, IniGetFloat(L"DSPParams", L"SpatialCrossover", def->defaultValue, g_configPath.c_str()));
+    def = GetParamDef(ParamId::SpatialBassFeel);
+    SetParamValue(ParamId::SpatialBassFeel, IniGetFloat(L"DSPParams", L"SpatialBassFeel", def->defaultValue, g_configPath.c_str()));
 
     // Load recent files
     g_recentFiles.clear();
@@ -631,6 +639,14 @@ void SaveSettings() {
     IniWriteString(L"DSPParams", L"SpatialY", buf, g_configPath.c_str());
     swprintf(buf, 32, L"%.2f", GetParamValue(ParamId::SpatialZ));
     IniWriteString(L"DSPParams", L"SpatialZ", buf, g_configPath.c_str());
+    swprintf(buf, 32, L"%.2f", GetParamValue(ParamId::SpatialSub));
+    IniWriteString(L"DSPParams", L"SpatialSub", buf, g_configPath.c_str());
+    swprintf(buf, 32, L"%.2f", GetParamValue(ParamId::SpatialSubLevel));
+    IniWriteString(L"DSPParams", L"SpatialSubLevel", buf, g_configPath.c_str());
+    swprintf(buf, 32, L"%.2f", GetParamValue(ParamId::SpatialCrossover));
+    IniWriteString(L"DSPParams", L"SpatialCrossover", buf, g_configPath.c_str());
+    swprintf(buf, 32, L"%.2f", GetParamValue(ParamId::SpatialBassFeel));
+    IniWriteString(L"DSPParams", L"SpatialBassFeel", buf, g_configPath.c_str());
 
     // Save recent files
     // First clear the section
