@@ -59,7 +59,7 @@ fetch() {
             # The files it changes with LF line endings, as the patch has them,
             # whichever git checked them out
             for t in $(sed -n 's|^+++ b/\([^[:space:]]*\).*|\1|p' "$p"); do
-                sed -i 's/\r$//' "$work/src/$t"
+                tr -d '\r' < "$work/src/$t" > "$work/src/$t.lf" && mv "$work/src/$t.lf" "$work/src/$t"
             done
             git -C "$work/src" apply "$p"
         done
