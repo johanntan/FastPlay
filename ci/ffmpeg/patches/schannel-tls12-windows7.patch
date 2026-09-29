@@ -1,0 +1,24 @@
+--- a/libavformat/tls_schannel.c	2026-09-28 23:58:11.086901000 -0500
++++ b/libavformat/tls_schannel.c	2026-09-28 23:58:23.309507100 -0500
+@@ -36,6 +36,7 @@
+ #include <security.h>
+ #include <schnlsp.h>
+ #include <sddl.h>
++#include <versionhelpers.h>
+ 
+ #define SCHANNEL_INITIAL_BUFFER_SIZE   4096
+ #define SCHANNEL_FREE_BUFFER_SIZE      1024
+@@ -1163,7 +1164,13 @@
+ #if CONFIG_DTLS_PROTOCOL
+         if (s->is_dtls)
+             schannel_cred.grbitEnabledProtocols = SP_PROT_DTLS1_X_CLIENT;
++        else
+ #endif
++        /* Windows 7 offers only TLS 1.0 unless TLS 1.1 and 1.2 are asked for by
++         * name; later Windows offers them (and 1.3) by default. */
++        if (!IsWindows8OrGreater())
++            schannel_cred.grbitEnabledProtocols = SP_PROT_TLS1_0_CLIENT | SP_PROT_TLS1_1_CLIENT |
++                                                  SP_PROT_TLS1_2_CLIENT;
+     }
+ 
+     /* Get credential handle */

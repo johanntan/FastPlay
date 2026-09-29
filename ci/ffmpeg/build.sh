@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Build FastPlay's FFmpeg: audio only (the demuxers, decoders and parsers of the
 # formats FastPlay plays, the network protocols for streams, and the FLAC encoder
-# for recording), as static libraries, with no outside libraries. LGPL.
+# for recording), as static libraries, with no outside libraries. LGPL. Our
+# few changes to FFmpeg are in ci/ffmpeg/patches.
 #
 #   ci/ffmpeg/build.sh windows <out-dir>   (in MSYS2, with the MSVC tools on PATH)
 #   ci/ffmpeg/build.sh macos <out-dir>     (a universal arm64 + x86_64 build)
@@ -50,6 +51,19 @@ fetch() {
     mkdir -p "$work"
     if [ ! -d "$work/src" ]; then
         git clone --depth 1 --branch "$version" https://github.com/FFmpeg/FFmpeg.git "$work/src"
+    fi
+    # FastPlay's changes to FFmpeg (ci/ffmpeg/patches), applied once
+    if [ ! -f "$work/src/.fastplay-patched" ]; then
+        for p in "$here"/patches/*.patch; do
+            [ -e "$p" ] || continue
+            # The files it changes with LF line endings, as the patch has them,
+            # whichever git checked them out
+            for t in $(sed -n 's|^+++ b/\([^[:space:]]*\).*|\1|p' "$p"); do
+                sed -i 's/\r$//' "$work/src/$t"
+            done
+            git -C "$work/src" apply "$p"
+        done
+        touch "$work/src/.fastplay-patched"
     fi
 }
 

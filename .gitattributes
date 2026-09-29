@@ -1,2 +1,4 @@
 # Shell scripts run in bash, on Windows too (MSYS2): keep them LF everywhere.
 *.sh text eol=lf
+# Patches to FFmpeg are applied to LF sources (ci/ffmpeg/build.sh)
+*.patch text eol=lf
