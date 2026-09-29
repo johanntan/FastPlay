@@ -136,6 +136,7 @@ private:
     wxTextCtrl* m_recTemplate = nullptr;
     wxChoice* m_recFormat = nullptr;
     wxChoice* m_recBitrate = nullptr;
+    wxCheckBox* m_recEffects = nullptr;
 
     // Downloads
     wxTextCtrl* m_downloadPath = nullptr;
@@ -425,6 +426,10 @@ void OptionsDialog::BuildRecordingPage(wxNotebook* book) {
     m_recBitrate->Enable(g_recordFormat == 1 || g_recordFormat == 2);
 
     AddText(page, sizer, "(Bitrate only applies to MP3 and OGG formats)");
+
+    m_recEffects = AddCheck(page, sizer, "Record with &effects", g_recordEffects);
+    AddText(page, sizer, "Off: recordings have the sound before the effects (tempo, pitch and rate still apply). "
+                         "Volume never applies to recordings.");
 
     page->SetSizer(new wxBoxSizer(wxVERTICAL));
     page->GetSizer()->Add(sizer, 1, wxEXPAND | wxALL, 10);
@@ -1015,6 +1020,9 @@ void OptionsDialog::OnOK(wxCommandEvent&) {
 
         int bitrateSel = m_recBitrate->GetSelection();
         if (bitrateSel >= 0 && bitrateSel < 6) g_recordBitrate = kBitrates[bitrateSel];
+
+        g_recordEffects = m_recEffects->GetValue();
+        audio::SetTapBeforeEffects(!g_recordEffects);
     }
 
     // Get Speech settings

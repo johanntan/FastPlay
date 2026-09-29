@@ -219,6 +219,7 @@ struct Engine {
     int nextDspId = 1;
     TapProc tap = nullptr;
     void* tapUser = nullptr;
+    bool tapBeforeEffects = false;
     std::vector<float> mixBlock;
 
     // Stats
@@ -485,8 +486,9 @@ void DecodeLoop() {
 
 void RunDsps(float* samples, int frames) {
     std::lock_guard<std::mutex> lock(g.dspMutex);
+    if (g.tap && g.tapBeforeEffects) g.tap(samples, frames, kChannels, g.outputRate, g.tapUser);
     for (const Dsp& dsp : g.dsps) dsp.proc(samples, frames, kChannels, g.outputRate, dsp.user);
-    if (g.tap) g.tap(samples, frames, kChannels, g.outputRate, g.tapUser);
+    if (g.tap && !g.tapBeforeEffects) g.tap(samples, frames, kChannels, g.outputRate, g.tapUser);
 }
 
 void MixLoop() {
@@ -904,6 +906,11 @@ void SetTap(TapProc proc, void* user) {
     std::lock_guard<std::mutex> lock(g.dspMutex);
     g.tap = proc;
     g.tapUser = user;
+}
+
+void SetTapBeforeEffects(bool before) {
+    std::lock_guard<std::mutex> lock(g.dspMutex);
+    g.tapBeforeEffects = before;
 }
 
 Stats GetStats() {

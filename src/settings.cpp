@@ -167,6 +167,7 @@ void LoadSettings() {
     if (g_recordFormat < 0) g_recordFormat = 0;
     if (g_recordFormat > 3) g_recordFormat = 3;
     g_recordBitrate = IniGetInt(L"Recording", L"Bitrate", 192, g_configPath.c_str());
+    g_recordEffects = IniGetInt(L"Recording", L"Effects", 1, g_configPath.c_str()) != 0;
 
     // Load speech settings
     g_speechTrackChange = IniGetInt(L"Speech", L"TrackChange", 0, g_configPath.c_str()) != 0;
@@ -502,6 +503,7 @@ void SaveSettings() {
     IniWriteString(L"Recording", L"Format", buf, g_configPath.c_str());
     swprintf(buf, 32, L"%d", g_recordBitrate);
     IniWriteString(L"Recording", L"Bitrate", buf, g_configPath.c_str());
+    IniWriteString(L"Recording", L"Effects", g_recordEffects ? L"1" : L"0", g_configPath.c_str());
 
     // Save speech settings
     IniWriteString(L"Speech", L"TrackChange", g_speechTrackChange ? L"1" : L"0", g_configPath.c_str());

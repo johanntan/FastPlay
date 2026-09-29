@@ -159,6 +159,7 @@ bool InitAudio() {
     g_selectedDevice = audio::UsingDefaultDevice() ? -1 : FindDeviceByName(audio::CurrentDeviceName());
     if (g_selectedDevice == -1) g_selectedDeviceName.clear();
     audio::SetSmoothTransitions(g_smoothSeek);
+    audio::SetTapBeforeEffects(!g_recordEffects);
     UpdateOutputGain();
     ApplyMidiSettings();
     return true;

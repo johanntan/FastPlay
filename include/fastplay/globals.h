@@ -172,6 +172,7 @@ extern std::wstring g_recordPath;       // Output directory for recordings
 extern std::wstring g_recordTemplate;   // Filename template (default: "%Y-%m-%d_%H-%M-%S")
 extern int g_recordFormat;              // 0=WAV, 1=MP3, 2=OGG, 3=FLAC
 extern int g_recordBitrate;             // MP3/OGG bitrate in kbps (128, 192, 256, 320)
+extern bool g_recordEffects;            // Recordings have the effects (else tapped before them)
 extern bool g_isRecording;              // Currently recording?
 
 // Speech settings

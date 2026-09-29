@@ -159,6 +159,10 @@ void RemoveDsp(int id);
 // The recording tap: every block after the effects, before the volume. Null stops.
 using TapProc = void (*)(const float* samples, int frames, int channels, int sampleRate, void* user);
 void SetTap(TapProc proc, void* user);
+// Where the tap is: after the effects (the default), or before them, so a
+// recording has the sound without the effects (tempo, pitch and rate, which come
+// before the effects chain, are still in it).
+void SetTapBeforeEffects(bool before);
 // The rate the effects and the tap see (the device's).
 int MixSampleRate();
 
