@@ -146,6 +146,19 @@ void SetTap(TapProc proc, void* user);
 // The rate the effects and the tap see (the device's).
 int MixSampleRate();
 
+// How playback has been going since Init(), for Help > Audio Engine: underruns (the
+// device found the output buffer empty while playing), the lowest the buffer got,
+// the slowest block the mix thread took, and the device's period.
+struct Stats {
+    uint64_t underruns = 0;
+    double minBufferedMs = 0;
+    double maxBlockMs = 0;
+    int periodFrames = 0;
+    int bufferFrames = 0;
+};
+Stats GetStats();
+void ResetStats();
+
 // Called on the UI thread: when the loaded track has played to its end, and when
 // a stream's title changes.
 void SetEndHandler(std::function<void()> handler);

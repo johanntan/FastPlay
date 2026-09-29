@@ -166,6 +166,15 @@ std::wstring GetAudioEngineInfo() {
     std::wstring info = L"Audio engine: miniaudio, with " + Utf8ToWide(audio::DecoderVersion());
     info += L"\nOutput: " + audio::CurrentDeviceName();
     info += L", " + std::to_wstring(audio::MixSampleRate()) + L" Hz";
+    audio::Stats stats = audio::GetStats();
+    const int rate = audio::MixSampleRate() > 0 ? audio::MixSampleRate() : 48000;
+    wchar_t line[256];
+    swprintf(line, 256, L"\nDevice period: %.0f ms. Output buffer: %.0f ms, lowest it got: %.0f ms.",
+             stats.periodFrames * 1000.0 / rate, stats.bufferFrames * 1000.0 / rate, stats.minBufferedMs);
+    info += line;
+    swprintf(line, 256, L"\nDropouts: %llu. Slowest block of processing: %.1f ms.",
+             static_cast<unsigned long long>(stats.underruns), stats.maxBlockMs);
+    info += line;
     return info;
 }
 

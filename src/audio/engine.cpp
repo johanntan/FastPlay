@@ -32,6 +32,7 @@ namespace {
 
 const int kChannels = 2;
 const int kMixBlockFrames = 512;
+const int kDevicePeriodMs = 10;
 // Decoded audio read ahead: a little for files, several seconds for streams
 const double kFileReadAhead = 2.0;
 const double kStreamReadAhead = 10.0;
@@ -164,6 +165,8 @@ struct Engine {
     bool seekOk = false;
     std::condition_variable seekFinished;
     std::mutex mixMutex;           // held by the mix thread while it works
+    std::mutex mixWakeMutex;
+    std::condition_variable mixWake;  // the device took audio: there is room again
     std::atomic<bool> mixWaiting{true};  // a stream waiting for its prebuffer
     std::atomic<bool> producerEnded{false};
 
@@ -186,6 +189,12 @@ struct Engine {
     void* tapUser = nullptr;
     std::vector<float> mixBlock;
 
+    // Stats
+    std::atomic<uint64_t> underruns{0};
+    std::atomic<uint32_t> minBuffered{0xFFFFFFFF};
+    std::atomic<double> maxBlockMs{0};
+    std::atomic<uint32_t> lastPeriod{0};
+
     // UI handlers
     std::function<void()> endHandler;
     std::function<void()> titleHandler;
@@ -200,9 +209,14 @@ Engine g;
 void DataCallback(ma_device*, void* output, const void*, ma_uint32 frameCount) {
     float* out = static_cast<float*>(output);
     std::memset(out, 0, static_cast<size_t>(frameCount) * kChannels * sizeof(float));
+    g.lastPeriod = frameCount;
     if (g.state.load() != State::Playing) return;
     std::unique_lock<std::mutex> lock(g.ringMutex, std::try_to_lock);
     if (!lock.owns_lock() || !g.ringReady) return;  // being emptied for a seek
+
+    ma_uint32 buffered = ma_pcm_rb_available_read(&g.ring);
+    if (buffered < g.minBuffered.load()) g.minBuffered = buffered;
+    if (buffered < frameCount && !g.producerEnded.load() && !g.mixWaiting.load()) g.underruns++;
 
     ma_uint32 done = 0;
     while (done < frameCount) {
@@ -215,6 +229,7 @@ void DataCallback(ma_device*, void* output, const void*, ma_uint32 frameCount) {
         done += frames;
     }
     g.played += done;
+    if (done > 0) g.mixWake.notify_one();  // room in the ring: make more
 
     // The gain, ramped across the block so a change never clicks
     float target = g.gain.load();
@@ -315,9 +330,12 @@ void MixLoop() {
                 ma_uint32 space = ma_pcm_rb_available_write(&g.ring);
                 if (!g.mixWaiting && space >= static_cast<ma_uint32>(kMixBlockFrames)) {
                     bool ended = false;
+                    auto t0 = std::chrono::steady_clock::now();
                     int frames = g.processor->Fill(g.pcm, g.mixBlock.data(), kMixBlockFrames, ended);
                     if (frames > 0) {
                         RunDsps(g.mixBlock.data(), frames);
+                        double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+                        if (ms > g.maxBlockMs.load()) g.maxBlockMs = ms;
                         ma_uint32 left = static_cast<ma_uint32>(frames);
                         const float* src = g.mixBlock.data();
                         while (left > 0) {
@@ -341,7 +359,12 @@ void MixLoop() {
             }
         }
         g.decodeWake.notify_one();
-        if (idle) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        if (idle) {
+            // Until the device takes audio (or a little while, for a stream
+            // waiting on the network)
+            std::unique_lock<std::mutex> wait(g.mixWakeMutex);
+            g.mixWake.wait_for(wait, std::chrono::milliseconds(5));
+        }
     }
 }
 
@@ -384,7 +407,12 @@ bool OpenDevice(const std::wstring& name, int bufferMs) {
     config.playback.channels = kChannels;
     config.sampleRate = 0;  // the device's own
     config.dataCallback = DataCallback;
-    config.performanceProfile = ma_performance_profile_conservative;
+    // The device takes small periods (as BASS's device buffer was small); the
+    // output buffer (bufferMs, the setting) is what holds audio in hand. A
+    // device period as long as that buffer would find it short every time.
+    config.performanceProfile = ma_performance_profile_low_latency;
+    config.periodSizeInMilliseconds = kDevicePeriodMs;
+    config.periods = 3;
     if (ma_device_init(&g.context, &config, &g.device) != MA_SUCCESS) {
         if (!found) return false;
         config.playback.pDeviceID = nullptr;  // fall back to the default
@@ -396,7 +424,10 @@ bool OpenDevice(const std::wstring& name, int bufferMs) {
     g.deviceName = Utf8ToWide(g.device.playback.name);
     g.outputRate = static_cast<int>(g.device.sampleRate);
 
+    // At least a few of the device's periods, whatever the setting
+    size_t period = g.device.playback.internalPeriodSizeInFrames;
     g.ringFrames = static_cast<size_t>(g.outputRate) * static_cast<size_t>(std::clamp(bufferMs, 50, 5000)) / 1000;
+    g.ringFrames = std::max(g.ringFrames, period * 4);
     {
         std::lock_guard<std::mutex> lock(g.ringMutex);
         if (ma_pcm_rb_init(ma_format_f32, kChannels, static_cast<ma_uint32>(g.ringFrames), nullptr, nullptr, &g.ring) !=
@@ -460,6 +491,7 @@ void Shutdown() {
     if (g.running) {
         g.running = false;
         g.decodeWake.notify_all();
+        g.mixWake.notify_all();
         if (g.decodeThread.joinable()) g.decodeThread.join();
         if (g.mixThread.joinable()) g.mixThread.join();
     }
@@ -619,6 +651,23 @@ void SetTap(TapProc proc, void* user) {
     std::lock_guard<std::mutex> lock(g.dspMutex);
     g.tap = proc;
     g.tapUser = user;
+}
+
+Stats GetStats() {
+    Stats s;
+    s.underruns = g.underruns.load();
+    uint32_t minBuffered = g.minBuffered.load();
+    s.minBufferedMs = minBuffered == 0xFFFFFFFF ? 0 : minBuffered * 1000.0 / g.outputRate;
+    s.maxBlockMs = g.maxBlockMs.load();
+    s.periodFrames = static_cast<int>(g.lastPeriod.load());
+    s.bufferFrames = static_cast<int>(g.ringFrames);
+    return s;
+}
+
+void ResetStats() {
+    g.underruns = 0;
+    g.minBuffered = 0xFFFFFFFF;
+    g.maxBlockMs = 0;
 }
 
 void SetEndHandler(std::function<void()> handler) { g.endHandler = std::move(handler); }
