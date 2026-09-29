@@ -91,12 +91,28 @@ OSStatus OnHotkeyPressed(EventHandlerCallRef, EventRef event, void*) {
 }
 
 void (*g_mediaHandler)(int) = nullptr;
+void (*g_seekHandler)(int, bool) = nullptr;
 NSMutableArray* g_mediaTargets = nil;  // (command, target) pairs to remove on stop
 
 void AddMediaTarget(MPRemoteCommand* command, int commandId) {
     id target = [command addTargetWithHandler:^MPRemoteCommandHandlerStatus(MPRemoteCommandEvent*) {
         dispatch_async(dispatch_get_main_queue(), ^{
             if (g_mediaHandler) g_mediaHandler(commandId);
+        });
+        return MPRemoteCommandHandlerStatusSuccess;
+    }];
+    command.enabled = YES;
+    [g_mediaTargets addObject:@[command, target]];
+}
+
+// Seeking held down: the rewind and fast forward keys, and next or previous held.
+// macOS says when it starts and when it ends.
+void AddSeekTarget(MPRemoteCommand* command, int direction) {
+    id target = [command addTargetWithHandler:^MPRemoteCommandHandlerStatus(MPRemoteCommandEvent* event) {
+        if (![event isKindOfClass:[MPSeekCommandEvent class]]) return MPRemoteCommandHandlerStatusCommandFailed;
+        const bool pressed = static_cast<MPSeekCommandEvent*>(event).type == MPSeekCommandEventTypeBeginSeeking;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (g_seekHandler) g_seekHandler(direction, pressed);
         });
         return MPRemoteCommandHandlerStatusSuccess;
     }];
@@ -162,8 +178,9 @@ void UnregisterSystemHotkey(int id) {
     g_hotkeys.erase(it);
 }
 
-void StartMediaKeys(void (*handler)(int commandId)) {
+void StartMediaKeys(void (*handler)(int commandId), void (*seekHandler)(int direction, bool pressed)) {
     g_mediaHandler = handler;
+    g_seekHandler = seekHandler;
     if (g_mediaTargets) return;
     g_mediaTargets = [NSMutableArray array];
     MPRemoteCommandCenter* center = [MPRemoteCommandCenter sharedCommandCenter];
@@ -173,10 +190,13 @@ void StartMediaKeys(void (*handler)(int commandId)) {
     AddMediaTarget(center.stopCommand, IDM_PLAY_STOP);
     AddMediaTarget(center.nextTrackCommand, IDM_PLAY_NEXT);
     AddMediaTarget(center.previousTrackCommand, IDM_PLAY_PREV);
+    AddSeekTarget(center.seekBackwardCommand, -1);
+    AddSeekTarget(center.seekForwardCommand, 1);
 }
 
 void StopMediaKeys() {
     g_mediaHandler = nullptr;
+    g_seekHandler = nullptr;
     for (NSArray* pair in g_mediaTargets) {
         MPRemoteCommand* command = pair[0];
         [command removeTarget:pair[1]];

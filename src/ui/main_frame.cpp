@@ -41,6 +41,11 @@ MainFrame* GetMainFrame() {
 static const int kTitleIntervalMs = UPDATE_INTERVAL;
 static const int kSchedulerIntervalMs = 60000;
 
+// Rewind or fast forward held in jump seeking: the first jump, then one every so
+// often, as a key held repeats.
+static const int kMediaSeekDelayMs = 400;
+static const int kMediaSeekRepeatMs = 200;
+
 // Media keys are registered with ids of their own, clear of the user's hotkeys.
 static const int kHotkeyMediaPlayPause = 0x7F00;
 static const int kHotkeyMediaStop = 0x7F01;
@@ -109,6 +114,11 @@ MainFrame::MainFrame()
     m_schedulerTimer.Bind(wxEVT_TIMER, [](wxTimerEvent&) { CheckScheduledEvents(); });
     m_batchTimer.Bind(wxEVT_TIMER, &MainFrame::OnBatchTimer, this);
     m_durationTimer.Bind(wxEVT_TIMER, [](wxTimerEvent&) { HandleScheduledDurationEnd(); });
+    m_mediaSeekRepeat.Bind(wxEVT_TIMER, [this](wxTimerEvent&) {
+        if (m_mediaSeekDirection == 0 || IsScrubSeekMode()) return;
+        SeekBackOrForward(m_mediaSeekDirection);
+        if (m_mediaSeekRepeat.IsOneShot()) m_mediaSeekRepeat.Start(kMediaSeekRepeatMs);
+    });
 #ifdef __WXMSW__
     m_scrubHotkeyPoll.Bind(wxEVT_TIMER, [this](wxTimerEvent&) {
         if (!(::GetAsyncKeyState(static_cast<int>(m_scrubHotkeyVk)) & 0x8000)) StopHotkeyScrub();
@@ -489,7 +499,46 @@ bool MainFrame::MSWTranslateMessage(WXMSG* msg) {
     }
     return wxFrame::MSWTranslateMessage(msg);
 }
+
+WXLRESULT MainFrame::MSWWindowProc(WXUINT message, WXWPARAM wParam, WXLPARAM lParam) {
+    // An app command from a key pressed in FastPlay's window. Used here, it goes
+    // no further, so the shell does not pass it back below as well.
+    if (message == WM_APPCOMMAND && RunAppCommand(GET_APPCOMMAND_LPARAM(lParam))) return TRUE;
+    // One pressed elsewhere that the window it went to did not use
+    if (m_shellHookMessage && message == m_shellHookMessage && wParam == HSHELL_APPCOMMAND) {
+        RunAppCommand(GET_APPCOMMAND_LPARAM(lParam));
+        return 0;
+    }
+    return wxFrame::MSWWindowProc(message, wParam, lParam);
+}
+
+bool MainFrame::RunAppCommand(int command) {
+    // The rewind and fast forward keys have no key codes of their own, so they come
+    // as app commands rather than hotkeys, and without word of the key coming up.
+    switch (command) {
+        case APPCOMMAND_MEDIA_REWIND: PostCommand(IDM_PLAY_SEEKBACK); return true;
+        case APPCOMMAND_MEDIA_FAST_FORWARD: PostCommand(IDM_PLAY_SEEKFWD); return true;
+    }
+    return false;
+}
 #endif
+
+void MainFrame::MediaSeek(int direction, bool pressed) {
+    if (!pressed) {
+        if (m_mediaSeekDirection == 0) return;
+        m_mediaSeekDirection = 0;
+        m_mediaSeekRepeat.Stop();
+        StopScrubbing();
+        return;
+    }
+    m_mediaSeekDirection = direction;
+    if (IsScrubSeekMode()) {
+        StartScrubbing(direction);
+    } else {
+        SeekBackOrForward(direction);
+        m_mediaSeekRepeat.StartOnce(kMediaSeekDelayMs);
+    }
+}
 
 void MainFrame::RebuildRecentFilesMenu() {
     while (m_recentMenu->GetMenuItemCount() > 0) {
@@ -935,10 +984,16 @@ void MainFrame::RegisterGlobalHotkeys() {
             RegisterHotKey(hk.id, mods, static_cast<int>(hk.vk));
         }
     }
+    // Rewind and fast forward, from the shell when another window has no use for them
+    m_shellHookMessage = ::RegisterWindowMessageW(L"SHELLHOOK");
+    ::RegisterShellHookWindow(static_cast<HWND>(GetHWND()));
     m_hotkeysRegistered = true;
 #elif defined(__WXOSX__)
     // The media keys arrive through the system's Now Playing controls.
-    StartMediaKeys([](int commandId) { PostCommand(commandId); });
+    StartMediaKeys([](int commandId) { PostCommand(commandId); },
+                   [](int direction, bool pressed) {
+                       if (MainFrame* frame = GetMainFrame()) frame->MediaSeek(direction, pressed);
+                   });
     SetSystemHotkeyHandler([](int id, bool pressed) {
         if (MainFrame* frame = GetMainFrame()) frame->RunHotkey(id, pressed);
     });
@@ -961,6 +1016,7 @@ void MainFrame::UnregisterGlobalHotkeys() {
     for (const auto& hk : g_hotkeys) {
         UnregisterHotKey(hk.id);
     }
+    ::DeregisterShellHookWindow(static_cast<HWND>(GetHWND()));
     m_hotkeysRegistered = false;
 #elif defined(__WXOSX__)
     if (!m_hotkeysRegistered) return;

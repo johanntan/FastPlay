@@ -21,8 +21,10 @@ bool RegisterSystemHotkey(int id, unsigned modifiers, unsigned vk);
 void UnregisterSystemHotkey(int id);
 
 // The media keys, headphone buttons and Control Center's Now Playing controls. The
-// handler runs on the UI thread with the IDM_* command to run.
-void StartMediaKeys(void (*handler)(int commandId));
+// handler runs on the UI thread with the IDM_* command to run. `seekHandler` gets
+// the rewind and fast forward keys (and next or previous held down): direction -1
+// or 1, pressed when the key goes down and not when it comes up.
+void StartMediaKeys(void (*handler)(int commandId), void (*seekHandler)(int direction, bool pressed));
 void StopMediaKeys();
 
 // What Control Center shows under Now Playing. macOS sends the media keys to the app

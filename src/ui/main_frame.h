@@ -68,6 +68,20 @@ private:
     unsigned m_scrubHotkeyVk = 0;
     wxTimer m_scrubHotkeyPoll;
 #endif
+    // The rewind and fast forward media keys. Held, they seek as a seek key held
+    // does: scrubbing in spring and tape seeking, jumps repeating in jump seeking.
+    // Windows only says such a key was pressed, so there each press is one seek.
+    void MediaSeek(int direction, bool pressed);
+    int m_mediaSeekDirection = 0;  // the media seek key held, if any
+    wxTimer m_mediaSeekRepeat;     // repeats the jumps while it is held
+#ifdef __WXMSW__
+    WXLRESULT MSWWindowProc(WXUINT message, WXWPARAM wParam, WXLPARAM lParam) override;
+    // An APPCOMMAND_* from the keyboard; true if FastPlay used it
+    bool RunAppCommand(int command);
+    // The shell's message for app commands no other window used, so the keys
+    // work with FastPlay in the background
+    unsigned m_shellHookMessage = 0;
+#endif
     void OnBatchTimer(wxTimerEvent& event);
     void SeekBackOrForward(int direction);
     // Spring and tape seeking: Left or Right held scrubs, from the key going down to
