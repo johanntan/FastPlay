@@ -74,7 +74,7 @@ bool VirtualKeyToMac(unsigned vk, unsigned& mac) {
 // Hotkeys registered by FastPlay carry this signature.
 const OSType kHotkeySignature = 'FPHK';
 
-void (*g_hotkeyHandler)(int) = nullptr;
+void (*g_hotkeyHandler)(int, bool) = nullptr;
 std::map<int, EventHotKeyRef> g_hotkeys;
 bool g_handlerInstalled = false;
 
@@ -86,7 +86,7 @@ OSStatus OnHotkeyPressed(EventHandlerCallRef, EventRef event, void*) {
         return eventNotHandledErr;
     }
     // Carbon delivers hotkeys on the main thread.
-    if (g_hotkeyHandler) g_hotkeyHandler(static_cast<int>(hotkeyId.id));
+    if (g_hotkeyHandler) g_hotkeyHandler(static_cast<int>(hotkeyId.id), GetEventKind(event) == kEventHotKeyPressed);
     return noErr;
 }
 
@@ -124,7 +124,7 @@ unsigned MacKeyCodeToVirtualKey(unsigned macKeyCode) {
     return 0;
 }
 
-void SetSystemHotkeyHandler(void (*handler)(int id)) {
+void SetSystemHotkeyHandler(void (*handler)(int id, bool pressed)) {
     g_hotkeyHandler = handler;
 }
 
@@ -133,8 +133,9 @@ bool RegisterSystemHotkey(int id, unsigned modifiers, unsigned vk) {
     if (!VirtualKeyToMac(vk, macKey)) return false;
 
     if (!g_handlerInstalled) {
-        EventTypeSpec eventType = {kEventClassKeyboard, kEventHotKeyPressed};
-        InstallApplicationEventHandler(&OnHotkeyPressed, 1, &eventType, nullptr, nullptr);
+        EventTypeSpec eventTypes[] = {{kEventClassKeyboard, kEventHotKeyPressed},
+                                      {kEventClassKeyboard, kEventHotKeyReleased}};
+        InstallApplicationEventHandler(&OnHotkeyPressed, 2, eventTypes, nullptr, nullptr);
         g_handlerInstalled = true;
     }
 

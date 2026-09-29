@@ -143,62 +143,72 @@ int g_tapeSpeed = 4;
 const int g_scrubSpeeds[] = {2, 3, 4, 6, 8, 12, 16, 24, 32};
 const int g_scrubSpeedCount = sizeof(g_scrubSpeeds) / sizeof(g_scrubSpeeds[0]);
 
-// Hotkey actions
+// Hotkey actions. Saved hotkeys name their action by its key, so this list can be
+// reordered and added to freely; a key must never change once released.
 const HotkeyAction g_hotkeyActions[] = {
     // Playback
-    {IDM_PLAY_PLAYPAUSE, L"Play/Pause"},
-    {IDM_PLAY_PLAY, L"Play"},
-    {IDM_PLAY_PAUSE, L"Pause"},
-    {IDM_PLAY_STOP, L"Stop"},
-    {IDM_PLAY_PREV, L"Previous Track"},
-    {IDM_PLAY_NEXT, L"Next Track"},
+    {IDM_PLAY_PLAYPAUSE, L"Play/Pause", L"PlayPause"},
+    {IDM_PLAY_PLAY, L"Play", L"Play"},
+    {IDM_PLAY_PAUSE, L"Pause", L"Pause"},
+    {IDM_PLAY_STOP, L"Stop", L"Stop"},
+    {IDM_PLAY_PREV, L"Previous Track", L"PreviousTrack"},
+    {IDM_PLAY_NEXT, L"Next Track", L"NextTrack"},
     // Seeking
-    {IDM_PLAY_SEEKBACK, L"Seek Backward"},
-    {IDM_PLAY_SEEKFWD, L"Seek Forward"},
-    {IDM_SEEK_DECREASE, L"Previous Seek Unit"},
-    {IDM_SEEK_INCREASE, L"Next Seek Unit"},
-    {IDM_SPEAK_SEEK, L"Speak Seek Unit"},
+    {IDM_PLAY_SEEKBACK, L"Seek Backward", L"SeekBackward"},
+    {IDM_PLAY_SEEKFWD, L"Seek Forward", L"SeekForward"},
+    {IDM_SEEK_DECREASE, L"Previous Seek Unit (or Slower Scrubbing)", L"PreviousSeekUnit"},
+    {IDM_SEEK_INCREASE, L"Next Seek Unit (or Faster Scrubbing)", L"NextSeekUnit"},
+    {IDM_SEEK_MODE, L"Next Seek Mode", L"NextSeekMode"},
+    {IDM_SPEAK_SEEK, L"Speak Seek Unit", L"SpeakSeekUnit"},
     // Volume
-    {IDM_PLAY_VOLUP, L"Volume Up"},
-    {IDM_PLAY_VOLDOWN, L"Volume Down"},
+    {IDM_PLAY_VOLUP, L"Volume Up", L"VolumeUp"},
+    {IDM_PLAY_VOLDOWN, L"Volume Down", L"VolumeDown"},
+    {IDM_PLAY_MUTE, L"Toggle Mute", L"ToggleMute"},
     // Speech feedback
-    {IDM_PLAY_ELAPSED, L"Speak Elapsed"},
-    {IDM_PLAY_REMAINING, L"Speak Remaining"},
-    {IDM_PLAY_TOTAL, L"Speak Total"},
-    {IDM_PLAY_NOWPLAYING, L"Speak Now Playing"},
+    {IDM_PLAY_ELAPSED, L"Speak Elapsed", L"SpeakElapsed"},
+    {IDM_PLAY_REMAINING, L"Speak Remaining", L"SpeakRemaining"},
+    {IDM_PLAY_TOTAL, L"Speak Total", L"SpeakTotal"},
+    {IDM_PLAY_NOWPLAYING, L"Speak Now Playing", L"SpeakNowPlaying"},
     // Effects navigation
-    {IDM_EFFECT_PREV, L"Previous Effect"},
-    {IDM_EFFECT_NEXT, L"Next Effect"},
-    {IDM_EFFECT_UP, L"Increase Effect"},
-    {IDM_EFFECT_DOWN, L"Decrease Effect"},
+    {IDM_EFFECT_PREV, L"Previous Effect", L"PreviousEffect"},
+    {IDM_EFFECT_NEXT, L"Next Effect", L"NextEffect"},
+    {IDM_EFFECT_UP, L"Increase Effect", L"IncreaseEffect"},
+    {IDM_EFFECT_DOWN, L"Decrease Effect", L"DecreaseEffect"},
     // Effect toggles
-    {IDM_TOGGLE_VOLUME, L"Toggle Volume"},
-    {IDM_TOGGLE_PITCH, L"Toggle Pitch"},
-    {IDM_TOGGLE_TEMPO, L"Toggle Tempo"},
-    {IDM_TOGGLE_RATE, L"Toggle Rate"},
-    {IDM_TOGGLE_REVERB, L"Toggle Reverb"},
-    {IDM_TOGGLE_ECHO, L"Toggle Echo"},
-    {IDM_TOGGLE_EQ, L"Toggle EQ"},
-    {IDM_TOGGLE_COMPRESSOR, L"Toggle Compressor"},
-    {IDM_TOGGLE_STEREOWIDTH, L"Toggle Stereo Width"},
-    {IDM_TOGGLE_CENTERCANCEL, L"Toggle Center Cancel"},
-    {IDM_TOGGLE_CONVOLUTION, L"Toggle Convolution Reverb"},
-    {IDM_TOGGLE_SPATIAL, L"Toggle 3D Audio"},
+    {IDM_TOGGLE_VOLUME, L"Toggle Volume", L"ToggleVolume"},
+    {IDM_TOGGLE_PITCH, L"Toggle Pitch", L"TogglePitch"},
+    {IDM_TOGGLE_TEMPO, L"Toggle Tempo", L"ToggleTempo"},
+    {IDM_TOGGLE_RATE, L"Toggle Rate", L"ToggleRate"},
+    {IDM_TOGGLE_REVERB, L"Toggle Reverb", L"ToggleReverb"},
+    {IDM_TOGGLE_ECHO, L"Toggle Echo", L"ToggleEcho"},
+    {IDM_TOGGLE_EQ, L"Toggle EQ", L"ToggleEQ"},
+    {IDM_TOGGLE_COMPRESSOR, L"Toggle Compressor", L"ToggleCompressor"},
+    {IDM_TOGGLE_STEREOWIDTH, L"Toggle Stereo Width", L"ToggleStereoWidth"},
+    {IDM_TOGGLE_CENTERCANCEL, L"Toggle Center Cancel", L"ToggleCenterCancel"},
+    {IDM_TOGGLE_CONVOLUTION, L"Toggle Convolution Reverb", L"ToggleConvolution"},
+    {IDM_TOGGLE_SPATIAL, L"Toggle 3D Audio", L"Toggle3DAudio"},
     // Window/UI
-    {IDM_TOGGLE_WINDOW, L"Toggle Window"},
-    {IDM_FILE_YOUTUBE, L"YouTube Search"},
+    {IDM_TOGGLE_WINDOW, L"Toggle Window", L"ToggleWindow"},
+    {IDM_FILE_YOUTUBE, L"YouTube Search", L"YouTube"},
+    {IDM_SHOW_AUDIO_DEVICES, L"Audio Device Menu", L"AudioDeviceMenu"},
     // Recording
-    {IDM_RECORD_TOGGLE, L"Toggle Recording"},
+    {IDM_RECORD_TOGGLE, L"Toggle Recording", L"ToggleRecording"},
     // Shuffle
-    {IDM_PLAY_SHUFFLE, L"Toggle Shuffle"},
-    // Audio device
-    {IDM_SHOW_AUDIO_DEVICES, L"Audio Device Menu"},
-    // Mute
-    {IDM_PLAY_MUTE, L"Toggle Mute"},
-    // Seek modes (saved hotkeys keep their place in this list: new ones go last)
-    {IDM_SEEK_MODE, L"Next Seek Mode"}
+    {IDM_PLAY_SHUFFLE, L"Toggle Shuffle", L"ToggleShuffle"},
 };
 const int g_hotkeyActionCount = sizeof(g_hotkeyActions) / sizeof(g_hotkeyActions[0]);
+
+// Hotkeys saved before they were saved by key named their action by its place in
+// this list as it was then: those places, in order.
+const wchar_t* const g_legacyHotkeyActions[] = {
+    L"PlayPause", L"Play", L"Pause", L"Stop", L"PreviousTrack", L"NextTrack", L"SeekBackward", L"SeekForward",
+    L"PreviousSeekUnit", L"NextSeekUnit", L"SpeakSeekUnit", L"VolumeUp", L"VolumeDown", L"SpeakElapsed",
+    L"SpeakRemaining", L"SpeakTotal", L"SpeakNowPlaying", L"PreviousEffect", L"NextEffect", L"IncreaseEffect",
+    L"DecreaseEffect", L"ToggleVolume", L"TogglePitch", L"ToggleTempo", L"ToggleRate", L"ToggleReverb",
+    L"ToggleEcho", L"ToggleEQ", L"ToggleCompressor", L"ToggleStereoWidth", L"ToggleCenterCancel",
+    L"ToggleConvolution", L"Toggle3DAudio", L"ToggleWindow", L"YouTube", L"ToggleRecording", L"ToggleShuffle",
+    L"AudioDeviceMenu", L"ToggleMute", L"NextSeekMode"};
+const int g_legacyHotkeyActionCount = sizeof(g_legacyHotkeyActions) / sizeof(g_legacyHotkeyActions[0]);
 
 // Hotkeys
 std::vector<GlobalHotkey> g_hotkeys;

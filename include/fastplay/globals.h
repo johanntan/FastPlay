@@ -95,6 +95,8 @@ extern const int g_scrubSpeedCount;
 // Hotkey actions
 extern const HotkeyAction g_hotkeyActions[];
 extern const int g_hotkeyActionCount;
+extern const wchar_t* const g_legacyHotkeyActions[];
+extern const int g_legacyHotkeyActionCount;
 
 // Hotkeys
 extern std::vector<GlobalHotkey> g_hotkeys;

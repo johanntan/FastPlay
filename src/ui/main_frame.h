@@ -57,7 +57,17 @@ private:
     void OnIconize(wxIconizeEvent& event);
     void OnClose(wxCloseEvent& event);
     void OnHotkey(wxKeyEvent& event);
-    void RunHotkey(int id);
+    // A global hotkey pressed, or on macOS, let go of (`pressed` false)
+    void RunHotkey(int id, bool pressed = true);
+    // The global seek hotkeys scrub while held too (in spring and tape seeking)
+    void StopHotkeyScrub();
+    int m_scrubHotkey = 0;  // the hotkey held for scrubbing, if any
+#ifdef __WXMSW__
+    // Windows only says when a hotkey goes down (and repeats): its key is watched
+    // to see it come up
+    unsigned m_scrubHotkeyVk = 0;
+    wxTimer m_scrubHotkeyPoll;
+#endif
     void OnBatchTimer(wxTimerEvent& event);
     void SeekBackOrForward(int direction);
     // Spring and tape seeking: Left or Right held scrubs, from the key going down to

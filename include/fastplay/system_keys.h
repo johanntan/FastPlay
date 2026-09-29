@@ -15,8 +15,8 @@ unsigned MacKeyCodeToVirtualKey(unsigned macKeyCode);
 
 // Global hotkeys, given as MOD_* flags and a virtual key code. MOD_CONTROL is
 // Command, MOD_ALT is Option and MOD_WIN is Control. The handler runs on the UI
-// thread with the hotkey's id.
-void SetSystemHotkeyHandler(void (*handler)(int id));
+// thread with the hotkey's id, when it is pressed and when it is let go.
+void SetSystemHotkeyHandler(void (*handler)(int id, bool pressed));
 bool RegisterSystemHotkey(int id, unsigned modifiers, unsigned vk);
 void UnregisterSystemHotkey(int id);
 

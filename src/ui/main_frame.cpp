@@ -108,6 +108,11 @@ MainFrame::MainFrame()
     m_schedulerTimer.Bind(wxEVT_TIMER, [](wxTimerEvent&) { CheckScheduledEvents(); });
     m_batchTimer.Bind(wxEVT_TIMER, &MainFrame::OnBatchTimer, this);
     m_durationTimer.Bind(wxEVT_TIMER, [](wxTimerEvent&) { HandleScheduledDurationEnd(); });
+#ifdef __WXMSW__
+    m_scrubHotkeyPoll.Bind(wxEVT_TIMER, [this](wxTimerEvent&) {
+        if (!(::GetAsyncKeyState(static_cast<int>(m_scrubHotkeyVk)) & 0x8000)) StopHotkeyScrub();
+    });
+#endif
 }
 
 MainFrame::~MainFrame() {
@@ -926,8 +931,8 @@ void MainFrame::RegisterGlobalHotkeys() {
 #elif defined(__WXOSX__)
     // The media keys arrive through the system's Now Playing controls.
     StartMediaKeys([](int commandId) { PostCommand(commandId); });
-    SetSystemHotkeyHandler([](int id) {
-        if (MainFrame* frame = GetMainFrame()) frame->RunHotkey(id);
+    SetSystemHotkeyHandler([](int id, bool pressed) {
+        if (MainFrame* frame = GetMainFrame()) frame->RunHotkey(id, pressed);
     });
     if (g_hotkeysEnabled) {
         for (const auto& hk : g_hotkeys) {
@@ -962,7 +967,11 @@ void MainFrame::OnHotkey(wxKeyEvent& event) {
     RunHotkey(event.GetId());
 }
 
-void MainFrame::RunHotkey(int id) {
+void MainFrame::RunHotkey(int id, bool pressed) {
+    if (!pressed) {
+        if (id == m_scrubHotkey) StopHotkeyScrub();
+        return;
+    }
     switch (id) {
         case kHotkeyMediaPlayPause: PostCommand(IDM_PLAY_PLAYPAUSE); return;
         case kHotkeyMediaStop: PostCommand(IDM_PLAY_STOP); return;
@@ -970,11 +979,30 @@ void MainFrame::RunHotkey(int id) {
         case kHotkeyMediaNext: PostCommand(IDM_PLAY_NEXT); return;
     }
     for (const auto& hk : g_hotkeys) {
-        if (hk.id == id) {
-            PostCommand(g_hotkeyActions[hk.actionIdx].commandId);
-            break;
+        if (hk.id != id) continue;
+        const int command = g_hotkeyActions[hk.actionIdx].commandId;
+        if ((command == IDM_PLAY_SEEKBACK || command == IDM_PLAY_SEEKFWD) && IsScrubSeekMode()) {
+            if (id == m_scrubHotkey) return;  // held: the key repeating
+            m_scrubHotkey = id;
+            StartScrubbing(command == IDM_PLAY_SEEKBACK ? -1 : 1);
+#ifdef __WXMSW__
+            m_scrubHotkeyVk = hk.vk;
+            m_scrubHotkeyPoll.Start(15);
+#endif
+            return;
         }
+        PostCommand(command);
+        break;
     }
+}
+
+void MainFrame::StopHotkeyScrub() {
+    if (!m_scrubHotkey) return;
+    m_scrubHotkey = 0;
+#ifdef __WXMSW__
+    m_scrubHotkeyPoll.Stop();
+#endif
+    StopScrubbing();
 }
 
 // ---------------------------------------------------------------------------

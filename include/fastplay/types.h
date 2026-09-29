@@ -22,6 +22,7 @@ struct SeekAmount {
 struct HotkeyAction {
     int commandId;
     const wchar_t* name;
+    const wchar_t* key;  // what saved hotkeys call it: never changes
 };
 
 // A hotkey of the user's: global (works whichever program has the focus) or local

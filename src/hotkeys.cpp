@@ -97,6 +97,21 @@ std::wstring FormatHotkey(unsigned modifiers, unsigned vk) {
     return result;
 }
 
+// The action a saved hotkey names: by its key, or in hotkeys saved before keys, by
+// its place in the list as it was then. -1 if there is no such action.
+static int FindAction(const wchar_t* name) {
+    std::wstring key = name;
+    if (!key.empty() && key.find_first_not_of(L"0123456789") == std::wstring::npos) {
+        int legacy = std::stoi(key);
+        if (legacy < 0 || legacy >= g_legacyHotkeyActionCount) return -1;
+        key = g_legacyHotkeyActions[legacy];
+    }
+    for (int i = 0; i < g_hotkeyActionCount; i++) {
+        if (key == g_hotkeyActions[i].key) return i;
+    }
+    return -1;
+}
+
 // Load hotkeys from INI file
 void LoadHotkeys() {
     g_hotkeysEnabled = IniGetInt(L"Hotkeys", L"Enabled", 1, g_configPath.c_str()) != 0;
@@ -110,12 +125,14 @@ void LoadHotkeys() {
         swprintf(key, 32, L"Hotkey%d", i);
         IniGetString(L"Hotkeys", key, L"", value, 64, g_configPath.c_str());
 
-        // Parse "modifiers,vk,actionIdx[,global]" (hotkeys saved before local
-        // ones existed are all global)
+        // Parse "modifiers,vk,action[,global]" (hotkeys saved before local ones
+        // existed are all global)
         unsigned mods = 0, vk = 0;
-        int actionIdx = 0, global = 1;
-        if (swscanf(value, L"%u,%u,%d,%d", &mods, &vk, &actionIdx, &global) >= 3) {
-            if (actionIdx >= 0 && actionIdx < g_hotkeyActionCount) {
+        wchar_t action[64] = {0};
+        int global = 1;
+        if (swscanf(value, L"%u,%u,%63[^,],%d", &mods, &vk, action, &global) >= 3) {
+            int actionIdx = FindAction(action);
+            if (actionIdx >= 0) {
                 GlobalHotkey hk;
                 hk.id = g_nextHotkeyId++;
                 hk.modifiers = mods;
@@ -140,8 +157,8 @@ void SaveHotkeys() {
     for (size_t i = 0; i < g_hotkeys.size(); i++) {
         wchar_t key[32];
         swprintf(key, 32, L"Hotkey%zu", i);
-        swprintf(buf, 64, L"%u,%u,%d,%d", g_hotkeys[i].modifiers, g_hotkeys[i].vk, g_hotkeys[i].actionIdx,
-                 g_hotkeys[i].global ? 1 : 0);
+        swprintf(buf, 64, L"%u,%u,%ls,%d", g_hotkeys[i].modifiers, g_hotkeys[i].vk,
+                 g_hotkeyActions[g_hotkeys[i].actionIdx].key, g_hotkeys[i].global ? 1 : 0);
         IniWriteString(L"Hotkeys", key, buf, g_configPath.c_str());
     }
 }
