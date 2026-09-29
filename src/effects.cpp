@@ -195,7 +195,7 @@ static const int g_advancedReverbPresetCount = sizeof(g_advancedReverbPresets) /
 static const float kReverbHighCutOff = 20000.0f;
 
 struct ReverbEngine {
-    std::mutex mutex;  // params are set from the UI thread, processing runs on the mix thread
+    std::mutex mutex;  // params are set from the UI thread, processing runs on the audio thread
     fastplay::audio::Reverb simple;
     fastplay::audio::EfxReverb advanced;
     fastplay::audio::ReverbParams simpleParams;

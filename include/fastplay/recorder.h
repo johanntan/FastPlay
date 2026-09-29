@@ -23,7 +23,7 @@ public:
     // Encodes what is still queued and finishes the file.
     virtual ~Recorder() = default;
 
-    // Queues a block (from the mix thread, through the engine's tap).
+    // Queues a block (from the audio thread, through the engine's tap).
     virtual void Write(const float* samples, int frames) = 0;
 };
 

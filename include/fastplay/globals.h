@@ -30,6 +30,7 @@ constexpr int SB_PART_COUNT = 3;
 extern float g_volume;
 extern bool g_muted;          // Muted state (recording still works)
 extern bool g_disableBatchDelay; // Skip batch delay when opening files from explorer
+extern bool g_smoothSeek;        // Short fades when seeking, pausing and changing tracks
 
 // ReplayGain (loudness normalization from REPLAYGAIN_* / R128 tags)
 extern int g_replayGainMode;        // 0 = Off, 1 = Track, 2 = Album (album falls back to track)

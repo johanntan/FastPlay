@@ -25,6 +25,11 @@ bool IsTrackerPath(const std::wstring& path);
 // Whether a stream's title changed since the last call (FFmpeg streams only).
 bool TakeStreamTitleChange(Decoder* decoder);
 
+// For tests: what the device callback hands the device, block by block. With the
+// environment variable FASTPLAY_NULL_AUDIO set, Init() opens miniaudio's null
+// device, which takes audio in real time and plays none.
+void SetOutputMonitor(TapProc proc, void* user);
+
 }  // namespace audio
 
 #endif  // FASTPLAY_AUDIO_INTERNAL_H

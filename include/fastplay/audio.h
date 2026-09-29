@@ -9,10 +9,11 @@
 // decoder at a time through a pipeline of three threads:
 //   - the decode thread reads the decoder ahead into a buffer, so a slow network
 //     never stalls playback;
-//   - the mix thread runs the tempo processor (tempo, pitch and rate), the effects
-//     chain and the recording tap, and fills the output buffer;
-//   - miniaudio's device callback plays the output buffer, applying the volume last
-//     so it answers at once and recordings are made at full volume.
+//   - the mix thread runs the tempo processor (tempo, pitch and rate) and fills
+//     the output buffer;
+//   - miniaudio's device callback takes from the output buffer and runs the
+//     effects chain and the recording tap on exactly what is heard, then applies
+//     the volume last, so it answers at once and recordings are made at full volume.
 // Control functions are called from the UI thread. The end of a track and a new
 // stream title are reported back on the UI thread.
 
@@ -134,7 +135,11 @@ void SetRate(float rate);
 // The output gain (volume, ReplayGain and mute together), applied last.
 void SetGain(float linear);
 
-// The effects chain: `proc` is called on the mix thread with each block of stereo
+// Smooth seeking: an 8 ms fade out before a seek, pause, stop or track change,
+// and in when sound starts again, so none of them click. Off: instant, as cut.
+void SetSmoothTransitions(bool smooth);
+
+// The effects chain: `proc` is called on the device callback with each block of stereo
 // audio, in priority order (higher first). Returns an id for RemoveDsp().
 using DspProc = void (*)(float* samples, int frames, int channels, int sampleRate, void* user);
 int AddDsp(DspProc proc, void* user, int priority);
@@ -148,7 +153,7 @@ int MixSampleRate();
 
 // How playback has been going since Init(), for Help > Audio Engine: underruns (the
 // device found the output buffer empty while playing), the lowest the buffer got,
-// the slowest block the mix thread took, and the device's period.
+// the slowest the effects took on a block, and the device's period.
 struct Stats {
     uint64_t underruns = 0;
     double minBufferedMs = 0;

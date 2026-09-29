@@ -9,6 +9,7 @@ const wchar_t* MUTEX_NAME = L"FastPlaySingleInstance";
 float g_volume = 1.0f;
 bool g_muted = false;      // Muted state (recording still works)
 bool g_disableBatchDelay = false; // Skip batch delay when opening files from explorer
+bool g_smoothSeek = true;         // Short fades when seeking, pausing and changing tracks
 
 // ReplayGain
 int g_replayGainMode = 0;          // Off by default (opt-in)

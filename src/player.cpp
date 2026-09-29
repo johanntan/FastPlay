@@ -151,6 +151,7 @@ bool InitAudio() {
     }
     g_selectedDevice = audio::UsingDefaultDevice() ? -1 : FindDeviceByName(audio::CurrentDeviceName());
     if (g_selectedDevice == -1) g_selectedDeviceName.clear();
+    audio::SetSmoothTransitions(g_smoothSeek);
     UpdateOutputGain();
     ApplyMidiSettings();
     return true;
@@ -186,11 +187,15 @@ bool IsURL(const wchar_t* path) {
             WStrNICmp(path, L"ftp://", 6) == 0);
 }
 
-// Move playback to `seconds`, and tell 3D Audio so the room it simulates does
-// not go on sounding of where the music was.
+// Move playback to `seconds`. With smooth seeking the sound fades out and in and
+// the 3D room rings on through it, as the other reverbs do; without, the room is
+// cleared, so it does not go on sounding of where the music was after the cut.
+// (A new track always starts with the room silent: loading resets it.)
 static void JumpTo(double seconds) {
     audio::Seek(seconds);
-    if (SpatialAudio* spatial = GetSpatialAudio()) spatial->ClearTails();
+    if (!g_smoothSeek) {
+        if (SpatialAudio* spatial = GetSpatialAudio()) spatial->ClearTails();
+    }
 }
 
 static bool IsMp4Path(const wchar_t* path) {
@@ -838,6 +843,7 @@ bool SwitchAudioDevice(int device) {
     }
     g_selectedDevice = audio::UsingDefaultDevice() ? -1 : device;
     g_selectedDeviceName = audio::UsingDefaultDevice() ? L"" : audio::CurrentDeviceName();
+    audio::SetSmoothTransitions(g_smoothSeek);  // over 8 ms at the new device's rate
 
     // Carry on with what was loaded
     if (!currentFile.empty() && LoadFile(currentFile.c_str())) {

@@ -6,7 +6,7 @@
 // effects it used (BFX_ECHO4, BFX_PEAKEQ, BFX_COMPRESSOR2), with the same
 // parameters. Each works on interleaved stereo float and keeps its own state; a
 // fresh one starts silent. Parameters are set from the UI thread while audio is
-// processed on the mix thread, so each guards them with a mutex.
+// processed on the audio device's thread, so each guards them with a mutex.
 
 #include <algorithm>
 #include <cmath>

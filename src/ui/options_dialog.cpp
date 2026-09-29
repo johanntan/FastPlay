@@ -177,6 +177,7 @@ private:
     wxTextCtrl* m_eqMidFreq = nullptr;
     wxTextCtrl* m_eqTrebleFreq = nullptr;
     wxCheckBox* m_disableBatch = nullptr;
+    wxCheckBox* m_smoothSeek = nullptr;
 
     // YouTube
     wxTextCtrl* m_ytdlpPath = nullptr;
@@ -611,6 +612,7 @@ void OptionsDialog::BuildAdvancedPage(wxNotebook* book) {
 
     // Disable batch delay checkbox
     m_disableBatch = AddCheck(page, sizer, "Disable &batch delay (only catches one file at a time)", g_disableBatchDelay);
+    m_smoothSeek = AddCheck(page, sizer, "&Smooth seeking (short fades when seeking, pausing and changing tracks)", g_smoothSeek);
 
     auto* reset = new wxButton(page, wxID_ANY, "Reset station/podcast &order to alphabetical");
     sizer->Add(reset, 0, wxTOP | wxBOTTOM, 3);
@@ -968,6 +970,8 @@ void OptionsDialog::OnOK(wxCommandEvent&) {
 
         // Get disable batch delay setting
         g_disableBatchDelay = m_disableBatch->GetValue();
+        g_smoothSeek = m_smoothSeek->GetValue();
+        audio::SetSmoothTransitions(g_smoothSeek);
     }
 
     // Get YouTube settings

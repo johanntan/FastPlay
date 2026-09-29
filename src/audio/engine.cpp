@@ -3,10 +3,11 @@
 // Threads and what they own:
 //   - decode thread: the decoder. Reads ahead into m_pcm (stereo float at the
 //     source's rate) and carries out seeks.
-//   - mix thread: the tempo processor, the effects and the tap. Fills the output
-//     ring (stereo float at the device's rate) while it has room.
-//   - device callback (miniaudio): plays the output ring, counts the frames
-//     played (the position), applies the gain, and notices the end.
+//   - mix thread: the tempo processor. Fills the output ring (stereo float at the
+//     device's rate) while it has room.
+//   - device callback (miniaudio): takes from the output ring, counts the frames
+//     played (the position), fades, runs the effects and the tap on what is
+//     heard, applies the gain, and notices the end.
 // A seek stops the mix thread at a safe point (m_mixMutex), has the decode thread
 // reposition the decoder, restarts the tempo processor and empties the ring.
 
@@ -22,6 +23,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdlib>
 #include <cstring>
 #include <mutex>
 #include <thread>
@@ -178,6 +180,19 @@ struct Engine {
     std::atomic<float> gain{1.0f};
     float appliedGain = 1.0f;
 
+    // Short fades, as BASS made by default: out before pausing, stopping, seeking
+    // or unloading, and in whenever sound starts again, so none of them click or
+    // cut a reverb or echo off dead.
+    std::atomic<bool> fadeOut{false};   // asked for by the UI thread
+    std::atomic<bool> fadeOutput{false};  // ...the effects' output too (pausing)
+    std::atomic<bool> fadedOut{false};  // the callback has reached silence
+    float fadeLevel = 0.0f;             // the callback's own: into the effects
+    float outputLevel = 1.0f;           // and out of them
+    // After a seek, play only once a couple of periods are in hand, so the device
+    // never takes half a block and cuts it off.
+    std::atomic<bool> primed{false};
+    std::atomic<float> fadeStep{1.0f / 384.0f};  // per frame: 8 ms; 1 when off
+
     // Tempo settings, kept for the processor
     float tempo = 0, pitch = 0, rate = 1;
 
@@ -195,6 +210,10 @@ struct Engine {
     std::atomic<double> maxBlockMs{0};
     std::atomic<uint32_t> lastPeriod{0};
 
+    // For tests (audio_internal.h)
+    std::atomic<TapProc> monitor{nullptr};
+    void* monitorUser = nullptr;
+
     // UI handlers
     std::function<void()> endHandler;
     std::function<void()> titleHandler;
@@ -206,46 +225,113 @@ Engine g;
 // Device callback
 // ---------------------------------------------------------------------------
 
+void Callback(float* out, ma_uint32 frameCount);
+void RunDsps(float* samples, int frames);
+
 void DataCallback(ma_device*, void* output, const void*, ma_uint32 frameCount) {
     float* out = static_cast<float*>(output);
+    Callback(out, frameCount);
+    if (TapProc monitor = g.monitor.load()) monitor(out, static_cast<int>(frameCount), kChannels, g.outputRate, g.monitorUser);
+}
+
+void Callback(float* out, ma_uint32 frameCount) {
     std::memset(out, 0, static_cast<size_t>(frameCount) * kChannels * sizeof(float));
     g.lastPeriod = frameCount;
-    if (g.state.load() != State::Playing) return;
-    std::unique_lock<std::mutex> lock(g.ringMutex, std::try_to_lock);
-    if (!lock.owns_lock() || !g.ringReady) return;  // being emptied for a seek
-
-    ma_uint32 buffered = ma_pcm_rb_available_read(&g.ring);
-    if (buffered < g.minBuffered.load()) g.minBuffered = buffered;
-    if (buffered < frameCount && !g.producerEnded.load() && !g.mixWaiting.load()) g.underruns++;
-
-    ma_uint32 done = 0;
-    while (done < frameCount) {
-        ma_uint32 frames = frameCount - done;
-        void* buffer = nullptr;
-        if (ma_pcm_rb_acquire_read(&g.ring, &frames, &buffer) != MA_SUCCESS || frames == 0) break;
-        std::memcpy(out + static_cast<size_t>(done) * kChannels, buffer,
-                    static_cast<size_t>(frames) * kChannels * sizeof(float));
-        ma_pcm_rb_commit_read(&g.ring, frames);
-        done += frames;
+    if (g.state.load() != State::Playing) {
+        g.fadeLevel = 0.0f;  // fade in when it plays again
+        g.outputLevel = 0.0f;
+        return;
     }
-    g.played += done;
-    if (done > 0) g.mixWake.notify_one();  // room in the ring: make more
+    const bool fadingOut = g.fadeOut.load();
+    const bool fadingOutput = fadingOut && g.fadeOutput.load();
+    // A pause: once both fades are down, silence (and the effects rest)
+    if (fadingOutput && g.fadeLevel <= 0.0f && g.outputLevel <= 0.0f) {
+        g.fadedOut = true;
+        return;
+    }
+    const float fadeStep = g.fadeStep.load();
+
+    // What the device takes from the ring: nothing while a seek's fade-out has
+    // reached silence (the ring is being emptied), nor until a couple of periods
+    // are in hand after one, so no block is ever cut off half way.
+    ma_uint32 done = 0;
+    const bool inputSilent = fadingOut && g.fadeLevel <= 0.0f;
+    if (!inputSilent) {
+        std::unique_lock<std::mutex> lock(g.ringMutex, std::try_to_lock);
+        if (lock.owns_lock() && g.ringReady) {
+            if (!g.primed.load() &&
+                (ma_pcm_rb_available_read(&g.ring) >= frameCount * 2 || g.producerEnded.load())) {
+                g.primed = true;
+            }
+            if (g.primed.load()) {
+                ma_uint32 buffered = ma_pcm_rb_available_read(&g.ring);
+                if (buffered < g.minBuffered.load()) g.minBuffered = buffered;
+                if (buffered < frameCount && !g.producerEnded.load() && !g.mixWaiting.load()) g.underruns++;
+                while (done < frameCount) {
+                    ma_uint32 frames = frameCount - done;
+                    void* buffer = nullptr;
+                    if (ma_pcm_rb_acquire_read(&g.ring, &frames, &buffer) != MA_SUCCESS || frames == 0) break;
+                    std::memcpy(out + static_cast<size_t>(done) * kChannels, buffer,
+                                static_cast<size_t>(frames) * kChannels * sizeof(float));
+                    ma_pcm_rb_commit_read(&g.ring, frames);
+                    done += frames;
+                }
+                g.played += done;
+                if (done > 0) g.mixWake.notify_one();  // room in the ring: make more
+            }
+        }
+    }
+
+    // The fade, on the way into the effects, so their tails fade with the sound
+    for (ma_uint32 i = 0; i < done; i++) {
+        if (fadingOut) {
+            g.fadeLevel = std::max(0.0f, g.fadeLevel - fadeStep);
+        } else if (g.fadeLevel < 1.0f) {
+            g.fadeLevel = std::min(1.0f, g.fadeLevel + fadeStep);
+        }
+        out[i * 2] *= g.fadeLevel;
+        out[i * 2 + 1] *= g.fadeLevel;
+    }
+    // Nothing more came (a seek, or a stream waiting on the network): what comes
+    // next fades in
+    if (done < frameCount) g.fadeLevel = 0.0f;
+    // A seek: the sound into the effects is silent, so the seek may go ahead,
+    // while their tails ring on below
+    if (fadingOut && !fadingOutput && g.fadeLevel <= 0.0f) g.fadedOut = true;
+
+    // The effects and the recording tap, here, on exactly what is heard: nothing
+    // they hold was thrown away unheard by a seek or pause, and a change to them
+    // is heard at once. The whole block, silence included, so tails ring on.
+    auto t0 = std::chrono::steady_clock::now();
+    RunDsps(out, static_cast<int>(frameCount));
+    double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    if (ms > g.maxBlockMs.load()) g.maxBlockMs = ms;
+
+    // Pausing fades the effects' output too, so a tail still sounding is not cut
+    // off dead; anything else leaves it to ring on
+    if (fadingOutput || g.outputLevel < 1.0f) {
+        for (ma_uint32 i = 0; i < frameCount; i++) {
+            g.outputLevel = fadingOutput ? std::max(0.0f, g.outputLevel - fadeStep)
+                                         : std::min(1.0f, g.outputLevel + fadeStep);
+            out[i * 2] *= g.outputLevel;
+            out[i * 2 + 1] *= g.outputLevel;
+        }
+    }
+    if (fadingOutput && g.fadeLevel <= 0.0f && g.outputLevel <= 0.0f) g.fadedOut = true;
 
     // The gain, ramped across the block so a change never clicks
     float target = g.gain.load();
     float start = g.appliedGain;
-    if (done > 0) {
-        float step = (target - start) / static_cast<float>(done);
-        for (ma_uint32 i = 0; i < done; i++) {
-            float gain = start + step * static_cast<float>(i + 1);
-            out[i * 2] *= gain;
-            out[i * 2 + 1] *= gain;
-        }
+    float step = (target - start) / static_cast<float>(frameCount);
+    for (ma_uint32 i = 0; i < frameCount; i++) {
+        float gain = start + step * static_cast<float>(i + 1);
+        out[i * 2] *= gain;
+        out[i * 2 + 1] *= gain;
     }
     g.appliedGain = target;
 
     // The end: everything produced and played
-    if (done < frameCount && g.producerEnded.load() && !g.endReported.exchange(true)) {
+    if (g.primed.load() && done < frameCount && g.producerEnded.load() && !g.endReported.exchange(true)) {
         RunOnUiThread([]() {
             if (g.endHandler) g.endHandler();
         });
@@ -330,12 +416,8 @@ void MixLoop() {
                 ma_uint32 space = ma_pcm_rb_available_write(&g.ring);
                 if (!g.mixWaiting && space >= static_cast<ma_uint32>(kMixBlockFrames)) {
                     bool ended = false;
-                    auto t0 = std::chrono::steady_clock::now();
                     int frames = g.processor->Fill(g.pcm, g.mixBlock.data(), kMixBlockFrames, ended);
                     if (frames > 0) {
-                        RunDsps(g.mixBlock.data(), frames);
-                        double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
-                        if (ms > g.maxBlockMs.load()) g.maxBlockMs = ms;
                         ma_uint32 left = static_cast<ma_uint32>(frames);
                         const float* src = g.mixBlock.data();
                         while (left > 0) {
@@ -446,9 +528,27 @@ bool OpenDevice(const std::wstring& name, int bufferMs) {
 void ResetOutput() {
     std::lock_guard<std::mutex> lock(g.ringMutex);
     if (g.ringReady) ma_pcm_rb_reset(&g.ring);
+    g.primed = false;
     g.played = 0;
     g.producerEnded = false;
     g.endReported = false;
+}
+
+// Fades the sound out and waits until it is silent (a few milliseconds), so what
+// follows - a pause, a seek, an unload - makes no click. `output`: the effects'
+// output too (pausing); otherwise only what goes into them, and their tails ring
+// on (seeking). The caller clears fadeOut when the sound may come back. Does
+// nothing if nothing is playing.
+void FadeOut(bool output) {
+    if (g.fadeStep.load() >= 1.0f) return;  // smooth seeking is off
+    g.fadedOut = false;
+    g.fadeOutput = output;
+    g.fadeOut = true;
+    if (g.state.load() != State::Playing || !g.deviceReady) return;
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(60);
+    while (!g.fadedOut.load() && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
 }
 
 }  // namespace
@@ -474,7 +574,11 @@ std::vector<Device> ListDevices() {
 
 bool Init(const std::wstring& deviceName, int bufferMs) {
     if (!g.contextReady) {
-        if (ma_context_init(nullptr, 0, nullptr, &g.context) != MA_SUCCESS) return false;
+        ma_backend nullBackend = ma_backend_null;
+        const bool test = getenv("FASTPLAY_NULL_AUDIO") != nullptr;
+        if (ma_context_init(test ? &nullBackend : nullptr, test ? 1 : 0, nullptr, &g.context) != MA_SUCCESS) {
+            return false;
+        }
         g.contextReady = true;
     }
     if (!OpenDevice(deviceName, bufferMs)) return false;
@@ -544,7 +648,9 @@ bool Load(std::unique_ptr<Decoder> decoder, TempoAlgorithm algorithm) {
 
 void Unload() {
     if (!g.loaded) return;
+    FadeOut(true);
     g.state = State::Empty;
+    g.fadeOut = false;
     // A decoder blocked on the network is asked to give up, then the threads are
     // held while it goes.
     if (g.decoder) g.decoder->Abort();
@@ -572,12 +678,16 @@ void Play() {
 
 void Pause() {
     if (!g.loaded) return;
+    FadeOut(true);
     g.state = State::Paused;
+    g.fadeOut = false;
 }
 
 void Stop() {
     if (!g.loaded) return;
+    FadeOut(true);
     g.state = State::Stopped;
+    g.fadeOut = false;
 }
 
 State GetState() { return g.state.load(); }
@@ -595,6 +705,10 @@ bool Seek(double seconds) {
     if (!g.loaded || g.live) return false;
     if (g.length > 0) seconds = std::min(seconds, g.length);
     if (seconds < 0) seconds = 0;
+    FadeOut(false);
+    struct FadeBackIn {
+        ~FadeBackIn() { g.fadeOut = false; }
+    } fadeBackIn;  // however the seek ends
     std::unique_lock<std::mutex> mix(g.mixMutex);
     bool ok;
     {
@@ -632,6 +746,11 @@ void SetRate(float rate) {
 
 void SetGain(float linear) { g.gain = linear; }
 
+void SetSmoothTransitions(bool smooth) {
+    // Over 8 ms at the device's rate, or at once
+    g.fadeStep = smooth ? 1.0f / std::max(1.0f, g.outputRate * 0.008f) : 1.0f;
+}
+
 int AddDsp(DspProc proc, void* user, int priority) {
     std::lock_guard<std::mutex> lock(g.dspMutex);
     Dsp dsp{g.nextDspId++, proc, user, priority};
@@ -668,6 +787,11 @@ void ResetStats() {
     g.underruns = 0;
     g.minBuffered = 0xFFFFFFFF;
     g.maxBlockMs = 0;
+}
+
+void SetOutputMonitor(TapProc proc, void* user) {
+    g.monitorUser = user;
+    g.monitor = proc;
 }
 
 void SetEndHandler(std::function<void()> handler) { g.endHandler = std::move(handler); }
