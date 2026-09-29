@@ -783,6 +783,100 @@ bool DecodeWholeFile(const std::wstring& path, std::vector<float>& samples, int&
     return true;
 }
 
+namespace {
+
+// The demuxer for a file's extension, so opening it for its tags skips guessing
+// the format (reading and testing its start against every format there is).
+const AVInputFormat* FormatForExtension(const std::wstring& path) {
+    size_t dot = path.find_last_of(L'.');
+    if (dot == std::wstring::npos) return nullptr;
+    std::wstring ext = path.substr(dot + 1);
+    for (auto& c : ext) c = static_cast<wchar_t>(towlower(c));
+    static const struct {
+        const wchar_t* ext;
+        const char* format;
+    } kFormats[] = {
+        {L"mp3", "mp3"},  {L"mp2", "mp3"},   {L"flac", "flac"}, {L"m4a", "mov"}, {L"m4b", "mov"},
+        {L"m4r", "mov"},  {L"mp4", "mov"},   {L"ogg", "ogg"},   {L"oga", "ogg"}, {L"opus", "ogg"},
+        {L"wav", "wav"},  {L"wma", "asf"},   {L"aiff", "aiff"}, {L"aif", "aiff"}, {L"ape", "ape"},
+        {L"wv", "wv"},    {L"dsf", "dsf"},   {L"mka", "matroska"}, {L"aac", "aac"}, {L"tta", "tta"},
+        {L"tak", "tak"},  {L"mpc", "mpc8"},  {L"caf", "caf"},   {L"w64", "w64"},
+    };
+    for (const auto& f : kFormats) {
+        if (ext == f.ext) return av_find_input_format(f.format);
+    }
+    return nullptr;
+}
+
+int NumberBefore(const char* text) {
+    // "3/12" -> 3, "2004-05-01" -> 2004
+    return text ? atoi(text) : 0;
+}
+
+}  // namespace
+
+bool ReadFileTags(const std::wstring& path, FileTags& tags) {
+    QuietLogging();
+    tags = FileTags();
+    std::string url = WideToUtf8(path);
+    AVFormatContext* format = nullptr;
+    const AVInputFormat* hint = FormatForExtension(path);
+    if (avformat_open_input(&format, url.c_str(), hint, nullptr) < 0) {
+        // Named for another format than it is: guess after all
+        format = nullptr;
+        if (!hint || avformat_open_input(&format, url.c_str(), nullptr, nullptr) < 0) return false;
+    }
+    // The file's tags, then its audio stream's (Ogg keeps them there)
+    AVStream* audio = nullptr;
+    for (unsigned i = 0; i < format->nb_streams; i++) {
+        if (format->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_AUDIO) {
+            audio = format->streams[i];
+            break;
+        }
+    }
+    AVDictionary* sources[2] = {format->metadata, audio ? audio->metadata : nullptr};
+    auto get = [&](const char* key) -> const char* {
+        for (AVDictionary* dict : sources) {
+            if (!dict) continue;
+            if (const AVDictionaryEntry* e = av_dict_get(dict, key, nullptr, 0)) {
+                if (e->value && *e->value) return e->value;
+            }
+        }
+        return nullptr;
+    };
+    auto text = [&](const char* key) {
+        const char* value = get(key);
+        return value ? std::string(value) : std::string();
+    };
+    tags.title = text("title");
+    tags.artist = text("artist");
+    tags.album = text("album");
+    tags.albumArtist = text("album_artist");
+    if (tags.albumArtist.empty()) tags.albumArtist = text("albumartist");
+    tags.genre = text("genre");
+    tags.track = NumberBefore(get("track"));
+    tags.disc = NumberBefore(get("disc"));
+    const char* date = get("date");
+    if (!date) date = get("year");
+    tags.year = NumberBefore(date);
+    // The length: most formats say it in their header (as the stream's); the rest
+    // (an MP3 without a VBR header, say) take a look at the first few frames
+    auto length = [&]() {
+        if (format->duration > 0) return format->duration / static_cast<double>(AV_TIME_BASE);
+        if (audio && audio->duration > 0) return audio->duration * av_q2d(audio->time_base);
+        return 0.0;
+    };
+    tags.duration = length();
+    if (tags.duration <= 0) {
+        format->probesize = 64 * 1024;
+        format->max_analyze_duration = AV_TIME_BASE / 2;
+        avformat_find_stream_info(format, nullptr);
+        tags.duration = length();
+    }
+    avformat_close_input(&format);
+    return true;
+}
+
 std::string DecoderVersion() {
     return std::string("FFmpeg ") + av_version_info();
 }

@@ -13,6 +13,7 @@
 #include "effects.h"
 #include "database.h"
 #include "youtube.h"
+#include "library.h"
 #include "download_manager.h"
 #include "updater.h"
 #include "playlist_io.h"
@@ -131,6 +132,7 @@ bool MainFrame::Initialize() {
     }
 
     InitDatabase();
+    StartLibrary();  // brought up to date in the background
     InitEffects();
     LoadDSPSettings();
     InitSpeech();
@@ -169,6 +171,7 @@ void MainFrame::BuildMenuBar() {
     file->Append(IDM_FILE_PLAYLIST, "&Playlist...\tCtrl+P");
     file->Append(IDM_FILE_OPEN_URL, "Open &URL...\tCtrl+U");
     file->Append(IDM_FILE_YOUTUBE, "&YouTube...\tCtrl+Y");
+    file->Append(IDM_FILE_LIBRARY, "&Library...\tCtrl+L");
     file->Append(IDM_FILE_RADIO, "&Radio...\tCtrl+R");
     file->Append(IDM_FILE_ADD_TO_FAVORITES, "&Add Stream to Favorites...\tCtrl+D");
     file->Append(IDM_FILE_PODCAST, "&Podcasts...\tCtrl+Shift+P");
@@ -294,6 +297,7 @@ void MainFrame::BuildAccelerators() {
         {C, 'P', IDM_FILE_PLAYLIST},
         {C, 'U', IDM_FILE_OPEN_URL},
         {C, 'Y', IDM_FILE_YOUTUBE},
+        {C, 'L', IDM_FILE_LIBRARY},
         {C, 'R', IDM_FILE_RADIO},
         {C, 'D', IDM_FILE_ADD_TO_FAVORITES},
         {C | S, 'P', IDM_FILE_PODCAST},
@@ -575,6 +579,7 @@ void MainFrame::RunCommand(int id, int param) {
         case IDM_FILE_PLAYLIST: ShowPlaylistDialog(); break;
         case IDM_FILE_OPEN_URL: ShowOpenURLDialog(); break;
         case IDM_FILE_YOUTUBE: ShowYouTubeDialog(); break;
+        case IDM_FILE_LIBRARY: ShowLibraryDialog(); break;
         case IDM_FILE_RADIO: ShowRadioDialog(); break;
         case IDM_FILE_ADD_TO_FAVORITES: AddCurrentStreamToFavorites(); break;
         case IDM_FILE_SCHEDULE: ShowSchedulerDialog(); break;
@@ -1097,6 +1102,7 @@ void MainFrame::OnClose(wxCloseEvent&) {
     SavePlaybackState();
     SaveSettings();
     YouTubeCleanup();  // Clean up temp files
+    StopLibrary();
     CloseDatabase();
     FreeAudio();
     FreeSpeech();

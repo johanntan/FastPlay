@@ -89,7 +89,9 @@ std::wstring PlaylistLineToWide(const char* line) {
 bool IsSupportedAudioExt(const std::wstring& ext) {
     static const wchar_t* exts[] = {
         L".mp3", L".wav", L".ogg", L".oga", L".flac", L".m4a", L".m4b", L".wma", L".aac",
-        L".opus", L".aiff", L".ape", L".wv", L".mid", L".midi", L".dff", L".dsf"
+        L".opus", L".aiff", L".ape", L".wv", L".mid", L".midi", L".dff", L".dsf",
+        L".aif", L".mp2", L".m4r", L".mka", L".mpc", L".tta", L".tak", L".caf", L".w64",
+        L".ac3", L".dts", L".rmi", L".mod", L".xm", L".it", L".s3m", L".mptm", L".mo3"
     };
     std::wstring lowerExt = ext;
     for (auto& c : lowerExt) c = towlower(c);

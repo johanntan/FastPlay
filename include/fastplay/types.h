@@ -44,6 +44,12 @@ struct HotkeyDlgData {
     bool global = true;
 };
 
+// A folder in the library (Options > Library)
+struct LibraryFolder {
+    std::wstring path;
+    bool tagged = true;  // its songs are in the songs, artists and albums views, not only folders
+};
+
 // Stream effect types (tempo stream attributes)
 // A chapter of the file playing: where it starts and its title (may be empty).
 struct Chapter {

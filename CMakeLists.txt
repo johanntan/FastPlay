@@ -240,6 +240,7 @@ set(FASTPLAY_SOURCES
     src/audio/decoder_tracker.cpp
     src/audio/recorder.cpp
     src/audio/scrubber.cpp
+    src/library.cpp
     src/audio/decoders.cpp
     src/audio/engine.cpp
     src/audio/miniaudio.c
@@ -299,6 +300,7 @@ set(FASTPLAY_SOURCES
     src/ui/ui_common.cpp
     src/ui/update_dialog.cpp
     src/ui/youtube_dialog.cpp
+    src/ui/library_dialog.cpp
     # Speedy (Google's nonlinear speech speedup) and what it builds on
     deps/speedy/speedy.c
     deps/speedy/soniclib.c
@@ -317,6 +319,7 @@ if(WIN32)
         src/platform/speech_windows.cpp
         src/platform/startup_windows.cpp
         src/platform/updater_windows.cpp
+        src/platform/folder_watch_windows.cpp
         res/fastplay.rc
     )
 else()
@@ -335,9 +338,10 @@ if(APPLE)
         src/platform/startup_mac.cpp
         src/platform/system_keys_mac.mm
         src/platform/updater_mac.cpp
+        src/platform/folder_watch_mac.cpp
     )
 elseif(NOT WIN32)
-    list(APPEND FASTPLAY_SOURCES src/platform/updater_unsupported.cpp)
+    list(APPEND FASTPLAY_SOURCES src/platform/updater_unsupported.cpp src/platform/folder_watch_none.cpp)
 endif()
 
 add_executable(FastPlay WIN32 MACOSX_BUNDLE ${FASTPLAY_SOURCES})

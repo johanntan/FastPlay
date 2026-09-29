@@ -17,6 +17,7 @@
 #include "database.h"
 #include "file_assoc.h"
 #include "youtube.h"
+#include "library.h"
 
 #include <algorithm>
 #include <cwchar>
@@ -89,6 +90,8 @@ private:
     void BuildSpeedyPage(wxNotebook* book);
     void BuildSignalsmithPage(wxNotebook* book);
     void BuildMidiPage(wxNotebook* book);
+    void BuildLibraryPage(wxNotebook* book);
+    void ShowLibraryFolders(int select);
 
     void OnOK(wxCommandEvent& event);
     void OnRecBrowse(wxCommandEvent& event);
@@ -218,6 +221,11 @@ private:
     wxTextCtrl* m_midiSoundFont = nullptr;
     wxTextCtrl* m_midiVoices = nullptr;
     wxCheckBox* m_midiSinc = nullptr;
+
+    // Library: the folders as edited here, saved on OK
+    std::vector<LibraryFolder> m_libraryFolders;
+    wxListBox* m_libraryList = nullptr;
+    wxCheckBox* m_libraryTagged = nullptr;
 };
 
 OptionsDialog::OptionsDialog(wxWindow* parent)
@@ -228,6 +236,7 @@ OptionsDialog::OptionsDialog(wxWindow* parent)
     m_book = new wxNotebook(this, wxID_ANY);
     BuildPlaybackPage(m_book);
     BuildRecordingPage(m_book);
+    BuildLibraryPage(m_book);
     BuildDownloadsPage(m_book);
     BuildSpeechPage(m_book);
     BuildMovementPage(m_book);
@@ -821,6 +830,82 @@ void OptionsDialog::BuildMidiPage(wxNotebook* book) {
     book->AddPage(page, "MIDI");
 }
 
+void OptionsDialog::BuildLibraryPage(wxNotebook* book) {
+    auto* page = new wxPanel(book);
+    auto* sizer = new wxBoxSizer(wxVERTICAL);
+    m_libraryFolders = g_libraryFolders;
+
+    AddText(page, sizer, "The folders in the library (Control+L). They are kept up to date as files change.");
+    sizer->Add(new wxStaticText(page, wxID_ANY, "&Folders:"), 0, wxTOP, 6);
+    m_libraryList = new wxListBox(page, wxID_ANY, wxDefaultPosition, wxSize(380, 120), 0, nullptr, wxLB_SINGLE);
+    sizer->Add(m_libraryList, 1, wxEXPAND | wxTOP | wxBOTTOM, 3);
+    m_libraryTagged = AddCheck(page, sizer, "&Include its songs in songs, artists, albums and genres", true);
+    AddText(page, sizer, "Unchecked, the folder's files are only listed by name, in the folders view.");
+
+    auto* row = AddRow(sizer);
+    auto* add = new wxButton(page, wxID_ANY, "&Add Folder...");
+    row->Add(add, 0, wxRIGHT, 6);
+    auto* remove = new wxButton(page, wxID_ANY, "&Remove");
+    row->Add(remove, 0, wxRIGHT, 6);
+    auto* rescan = new wxButton(page, wxID_ANY, "Re&scan All");
+    row->Add(rescan);
+
+    m_libraryList->Bind(wxEVT_LISTBOX, [this](wxCommandEvent&) { ShowLibraryFolders(m_libraryList->GetSelection()); });
+    m_libraryTagged->Bind(wxEVT_CHECKBOX, [this](wxCommandEvent&) {
+        int sel = m_libraryList->GetSelection();
+        if (sel < 0 || sel >= static_cast<int>(m_libraryFolders.size())) return;
+        m_libraryFolders[sel].tagged = m_libraryTagged->GetValue();
+        ShowLibraryFolders(sel);
+    });
+    add->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
+        wxDirDialog dlg(this, "Add a folder to the library", "", wxDD_DEFAULT_STYLE | wxDD_DIR_MUST_EXIST);
+        if (dlg.ShowModal() != wxID_OK) return;
+        LibraryFolder folder;
+        folder.path = WS(dlg.GetPath());
+        for (size_t i = 0; i < m_libraryFolders.size(); i++) {
+            if (m_libraryFolders[i].path == folder.path) {
+                ShowLibraryFolders(static_cast<int>(i));
+                return;
+            }
+        }
+        m_libraryFolders.push_back(folder);
+        ShowLibraryFolders(static_cast<int>(m_libraryFolders.size()) - 1);
+        m_libraryList->SetFocus();
+    });
+    remove->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
+        int sel = m_libraryList->GetSelection();
+        if (sel < 0 || sel >= static_cast<int>(m_libraryFolders.size())) return;
+        m_libraryFolders.erase(m_libraryFolders.begin() + sel);
+        ShowLibraryFolders(std::min(sel, static_cast<int>(m_libraryFolders.size()) - 1));
+        m_libraryList->SetFocus();
+    });
+    rescan->Bind(wxEVT_BUTTON, [](wxCommandEvent&) {
+        RescanLibrary();
+        Speak("Rescanning the library");
+    });
+    ShowLibraryFolders(m_libraryFolders.empty() ? -1 : 0);
+
+    page->SetSizer(new wxBoxSizer(wxVERTICAL));
+    page->GetSizer()->Add(sizer, 1, wxEXPAND | wxALL, 10);
+    book->AddPage(page, "Library");
+}
+
+// The folder list as edited, with `select` selected and its checkbox showing it
+void OptionsDialog::ShowLibraryFolders(int select) {
+    wxArrayString texts;
+    for (const LibraryFolder& folder : m_libraryFolders) {
+        texts.push_back(WX(folder.path) + (folder.tagged ? "" : ", folders view only"));
+    }
+    m_libraryList->Set(texts);
+    if (select >= 0 && select < static_cast<int>(m_libraryFolders.size())) {
+        m_libraryList->SetSelection(select);
+        m_libraryTagged->SetValue(m_libraryFolders[select].tagged);
+        m_libraryTagged->Enable(true);
+    } else {
+        m_libraryTagged->Enable(false);
+    }
+}
+
 void OptionsDialog::OnOK(wxCommandEvent&) {
     // Get selected device
     int sel = m_soundcard->GetSelection();
@@ -1070,6 +1155,17 @@ void OptionsDialog::OnOK(wxCommandEvent&) {
         if (voices >= 1 && voices <= 1000) g_midiMaxVoices = voices;
 
         g_midiSincInterp = m_midiSinc->GetValue();
+    }
+
+    // Library folders: indexed again only if they changed
+    bool libraryChanged = m_libraryFolders.size() != g_libraryFolders.size();
+    for (size_t i = 0; !libraryChanged && i < m_libraryFolders.size(); i++) {
+        libraryChanged = m_libraryFolders[i].path != g_libraryFolders[i].path ||
+                         m_libraryFolders[i].tagged != g_libraryFolders[i].tagged;
+    }
+    if (libraryChanged) {
+        g_libraryFolders = m_libraryFolders;
+        LibraryFoldersChanged();
     }
 
     // Save settings

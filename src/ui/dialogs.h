@@ -27,6 +27,7 @@ void AddCurrentStreamToFavorites();  // radio_dialog.cpp
 void ShowPodcastDialog();       // podcast_dialog.cpp
 void ShowSchedulerDialog();     // scheduler_dialog.cpp
 void ShowYouTubeDialog();       // youtube_dialog.cpp (modeless)
+void ShowLibraryDialog();       // library_dialog.cpp (modeless)
 
 // Refresh the YouTube favorites on the schedule set in Options > YouTube (at
 // startup, then every so often), saying when there are new videos. Call when the

@@ -95,6 +95,15 @@ bool DecodeWholeFile(const std::wstring& path, std::vector<float>& samples, int&
 // The version of the decoding library, for Help > Audio Engine.
 std::string DecoderVersion();
 
+// A file's tags and length, read as quickly as can be (the header only, nothing
+// decoded), for the library. Empty where the file has none.
+struct FileTags {
+    std::string title, artist, album, albumArtist, genre;  // UTF-8
+    int year = 0, track = 0, disc = 0;
+    double duration = 0;
+};
+bool ReadFileTags(const std::wstring& path, FileTags& tags);
+
 // ---------------------------------------------------------------------------
 // Output
 // ---------------------------------------------------------------------------

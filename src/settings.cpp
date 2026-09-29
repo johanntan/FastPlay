@@ -88,6 +88,19 @@ void LoadSettings() {
     g_disableBatchDelay = IniGetInt(L"Advanced", L"DisableBatchDelay", 0, g_configPath.c_str()) != 0;
     g_smoothSeek = IniGetInt(L"Advanced", L"SmoothSeek", 1, g_configPath.c_str()) != 0;
     g_liveRewind = IniGetInt(L"Advanced", L"LiveRewind", 0, g_configPath.c_str()) != 0;
+
+    // Library folders: Folder0=path, Tagged0=1, ...
+    g_libraryFolders.clear();
+    int libraryCount = IniGetInt(L"Library", L"Count", 0, g_configPath.c_str());
+    for (int i = 0; i < libraryCount; i++) {
+        wchar_t folderBuf[1024] = {0};
+        IniGetString(L"Library", (L"Folder" + std::to_wstring(i)).c_str(), L"", folderBuf, 1024, g_configPath.c_str());
+        if (!folderBuf[0]) continue;
+        LibraryFolder folder;
+        folder.path = folderBuf;
+        folder.tagged = IniGetInt(L"Library", (L"Tagged" + std::to_wstring(i)).c_str(), 1, g_configPath.c_str()) != 0;
+        g_libraryFolders.push_back(folder);
+    }
     g_liveRewindMinutes = std::clamp(IniGetInt(L"Advanced", L"LiveRewindMinutes", 30, g_configPath.c_str()), 1, 240);
 
 
@@ -445,6 +458,14 @@ void SaveSettings() {
     IniWriteString(L"Advanced", L"DisableBatchDelay", g_disableBatchDelay ? L"1" : L"0", g_configPath.c_str());
     IniWriteString(L"Advanced", L"SmoothSeek", g_smoothSeek ? L"1" : L"0", g_configPath.c_str());
     IniWriteString(L"Advanced", L"LiveRewind", g_liveRewind ? L"1" : L"0", g_configPath.c_str());
+
+    IniWriteString(L"Library", L"Count", std::to_wstring(g_libraryFolders.size()).c_str(), g_configPath.c_str());
+    for (size_t i = 0; i < g_libraryFolders.size(); i++) {
+        IniWriteString(L"Library", (L"Folder" + std::to_wstring(i)).c_str(), g_libraryFolders[i].path.c_str(),
+                       g_configPath.c_str());
+        IniWriteString(L"Library", (L"Tagged" + std::to_wstring(i)).c_str(), g_libraryFolders[i].tagged ? L"1" : L"0",
+                       g_configPath.c_str());
+    }
     IniWriteString(L"Advanced", L"LiveRewindMinutes", std::to_wstring(g_liveRewindMinutes).c_str(),
                    g_configPath.c_str());
 

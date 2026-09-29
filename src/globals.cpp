@@ -11,6 +11,7 @@ bool g_muted = false;      // Muted state (recording still works)
 bool g_disableBatchDelay = false; // Skip batch delay when opening files from explorer
 bool g_smoothSeek = true;         // Short fades when seeking, pausing and changing tracks
 bool g_liveRewind = false;        // Keep live streams for rewinding
+std::vector<LibraryFolder> g_libraryFolders;
 int g_liveRewindMinutes = 30;     // ...this many minutes of them
 const int g_liveRewindChoices[] = {5, 10, 15, 30, 60, 120};
 const int g_liveRewindChoiceCount = sizeof(g_liveRewindChoices) / sizeof(g_liveRewindChoices[0]);
@@ -195,6 +196,7 @@ const HotkeyAction g_hotkeyActions[] = {
     // Window/UI
     {IDM_TOGGLE_WINDOW, L"Toggle Window", L"ToggleWindow"},
     {IDM_FILE_YOUTUBE, L"YouTube Search", L"YouTube"},
+    {IDM_FILE_LIBRARY, L"Library", L"Library"},
     {IDM_SHOW_AUDIO_DEVICES, L"Audio Device Menu", L"AudioDeviceMenu"},
     // Recording
     {IDM_RECORD_TOGGLE, L"Toggle Recording", L"ToggleRecording"},

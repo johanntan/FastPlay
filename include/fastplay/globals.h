@@ -32,6 +32,7 @@ extern bool g_muted;          // Muted state (recording still works)
 extern bool g_disableBatchDelay; // Skip batch delay when opening files from explorer
 extern bool g_smoothSeek;        // Short fades when seeking, pausing and changing tracks
 extern bool g_liveRewind;        // Keep live streams for rewinding
+extern std::vector<LibraryFolder> g_libraryFolders;  // the library's folders (library.h)
 extern int g_liveRewindMinutes;  // ...this many minutes of them
 extern const int g_liveRewindChoices[];
 extern const int g_liveRewindChoiceCount;
