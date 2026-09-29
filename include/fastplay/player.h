@@ -30,6 +30,16 @@ void Seek(double seconds);
 void SeekTracks(int tracks);
 void SeekToPosition(double seconds);
 double GetCurrentPosition();
+
+// Seek modes (globals.h): slash cycles them; in spring and tape seeking, holding an
+// arrow scrubs (Start on the key going down, Stop on it coming up) and comma and
+// period change the speed.
+void CycleSeekMode();
+bool IsScrubSeekMode();
+void ChangeScrubSpeed(int direction);
+void SpeakSeekMode();
+void StartScrubbing(int direction);
+void StopScrubbing();
 double GetCurrentLength();  // 0 for a live stream
 
 // Chapters

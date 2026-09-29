@@ -123,8 +123,19 @@ State GetState();
 double Position();
 double Length();
 bool IsLive();
-// To `seconds` into the source; what was buffered is dropped.
+// To `seconds` into the source; what was buffered is dropped. Ends scrubbing.
 bool Seek(double seconds);
+
+// Scrubbing: playing through the audio at speed, forward (direction 1) or
+// backward (-1), from what is heard now, while a seek key is held. Tape plays it
+// faster, pitch and all, at `speed` times normal once spun up; spring keeps the
+// pitch and winds up the longer it goes, up to `speed`. StopScrub() carries on
+// playing normally from wherever scrubbing got to. Not for live streams.
+enum class ScrubStyle { Tape, Spring };
+bool StartScrub(ScrubStyle style, int direction, float speed);
+void SetScrubSpeed(float speed);
+bool StopScrub();
+bool IsScrubbing();
 
 // Tempo in percent (0 = normal), pitch in semitones, rate as a multiplier that
 // changes speed and pitch together.

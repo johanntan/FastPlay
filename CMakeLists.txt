@@ -239,6 +239,7 @@ set(FASTPLAY_SOURCES
     src/audio/decoder_midi.cpp
     src/audio/decoder_tracker.cpp
     src/audio/recorder.cpp
+    src/audio/scrubber.cpp
     src/audio/decoders.cpp
     src/audio/engine.cpp
     src/audio/miniaudio.c

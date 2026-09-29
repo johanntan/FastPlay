@@ -83,6 +83,15 @@ extern const int g_seekAmountCount;
 extern bool g_seekEnabled[];
 extern int g_currentSeekIndex;
 
+// Seek modes (slash cycles): the arrows jump by the seek unit, or held, scrub
+// through the audio. Comma and period set the scrubbing speed in those modes.
+enum SeekMode { SEEK_MODE_JUMP = 0, SEEK_MODE_SPRING = 1, SEEK_MODE_TAPE = 2, SEEK_MODE_COUNT = 3 };
+extern int g_seekMode;
+extern int g_springSpeed;  // spring's top speed, times normal
+extern int g_tapeSpeed;    // tape's speed, times normal
+extern const int g_scrubSpeeds[];
+extern const int g_scrubSpeedCount;
+
 // Hotkey actions
 extern const HotkeyAction g_hotkeyActions[];
 extern const int g_hotkeyActionCount;

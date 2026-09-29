@@ -136,6 +136,13 @@ const int g_seekAmountCount = sizeof(g_seekAmounts) / sizeof(g_seekAmounts[0]);
 bool g_seekEnabled[12] = {false, true, false, false, false, false, false, false, false, false, false, false};
 int g_currentSeekIndex = 1;
 
+// Seek modes
+int g_seekMode = SEEK_MODE_JUMP;
+int g_springSpeed = 16;
+int g_tapeSpeed = 4;
+const int g_scrubSpeeds[] = {2, 3, 4, 6, 8, 12, 16, 24, 32};
+const int g_scrubSpeedCount = sizeof(g_scrubSpeeds) / sizeof(g_scrubSpeeds[0]);
+
 // Hotkey actions
 const HotkeyAction g_hotkeyActions[] = {
     // Playback
@@ -187,7 +194,9 @@ const HotkeyAction g_hotkeyActions[] = {
     // Audio device
     {IDM_SHOW_AUDIO_DEVICES, L"Audio Device Menu"},
     // Mute
-    {IDM_PLAY_MUTE, L"Toggle Mute"}
+    {IDM_PLAY_MUTE, L"Toggle Mute"},
+    // Seek modes (saved hotkeys keep their place in this list: new ones go last)
+    {IDM_SEEK_MODE, L"Next Seek Mode"}
 };
 const int g_hotkeyActionCount = sizeof(g_hotkeyActions) / sizeof(g_hotkeyActions[0]);
 

@@ -60,6 +60,10 @@ private:
     void RunHotkey(int id);
     void OnBatchTimer(wxTimerEvent& event);
     void SeekBackOrForward(int direction);
+    // Spring and tape seeking: Left or Right held scrubs, from the key going down to
+    // it coming up. True if the key was used for that.
+    bool HandleScrubKey(unsigned modifiers, unsigned vk, bool down, bool repeat);
+    unsigned m_scrubKey = 0;  // the arrow held for scrubbing, if any
 #ifdef __WXMSW__
     // The keyboard shortcuts as a native accelerator table, so punctuation keys
     // are matched by their key position (VK_OEM_*) on every keyboard layout.

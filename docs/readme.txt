@@ -5,6 +5,10 @@ At the core of Fastplay are what we will call virtual sliders. Right now, there 
 The first one adjusts things like your volume and any effects you choose to enable/add. You choose what this slider adjusts by using left and right brackets, and then adjust the value itself with up or down arrows.
 The second slider allows you to do things such as seek and move between tracks. You adjust what this slider does by using comma and period, and you adjust the slider with left and right arrows.
 You can choose what shows up in these sliders by heading to the options dialog, control comma.
+Slash switches how the left and right arrows seek:
+* Jump seeking (the default): each press jumps by the amount you chose with comma and period.
+* Spring seeking: hold an arrow to play through the audio, forward or backward, sped up without changing its pitch. The longer you hold it, the faster it goes. Let go and it plays on from there. Comma and period set the top speed.
+* Tape seeking: hold an arrow to play through the audio like a fast-forwarding or rewinding tape, pitched up with the speed. Comma and period set the speed.
 The rest of the app is pretty explanitory. Just check out the menus for the rest of the keyboard shortcuts. Some of the other features include:
 * Basic Youtube search
 * Completely configurable Global hotkeys

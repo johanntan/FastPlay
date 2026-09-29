@@ -10,10 +10,14 @@
 //     heard, applies the gain, and notices the end.
 // A seek stops the mix thread at a safe point (m_mixMutex), has the decode thread
 // reposition the decoder, restarts the tempo processor and empties the ring.
+// Scrubbing is a seek too: to where it starts, with the scrubber filling the ring
+// instead of the tempo processor, and backward, the decode thread reading the
+// source backward.
 
 #include "audio.h"
 #include "audio_internal.h"
 #include "app_ui.h"
+#include "scrubber.h"
 #include "tempo_processor.h"
 #include "utils.h"
 
@@ -35,8 +39,9 @@ namespace {
 const int kChannels = 2;
 const int kMixBlockFrames = 512;
 const int kDevicePeriodMs = 10;
-// Decoded audio read ahead: a little for files, several seconds for streams
-const double kFileReadAhead = 2.0;
+// Decoded audio read ahead: a little for files (enough for scrubbing at speed),
+// several seconds for streams
+const double kFileReadAhead = 8.0;
 const double kStreamReadAhead = 10.0;
 // A stream starts (and restarts after running dry) once this much is buffered
 const double kStreamPrebuffer = 2.0;
@@ -196,6 +201,18 @@ struct Engine {
     // Tempo settings, kept for the processor
     float tempo = 0, pitch = 0, rate = 1;
 
+    // Scrubbing: the scrubber (UI thread and mix thread, under mixMutex), and the
+    // decode thread reading backward (under decoderMutex): a chunk at a time,
+    // each ending where the last began
+    std::unique_ptr<Scrubber> scrub;
+    int sourceRate = 44100;
+    bool seekReverse = false;        // with seekRequested: read backward from there
+    int seekChunkFrames = 0;         // ...in chunks this long
+    bool reverse = false;
+    int64_t reverseEnd = 0;          // the source frame the next chunk ends at
+    int reverseChunkFrames = 0;
+    std::vector<float> reverseTail;  // the overlap held back to crossfade with the next chunk
+
     // Effects chain and tap
     std::mutex dspMutex;
     std::vector<Dsp> dsps;
@@ -342,19 +359,84 @@ void Callback(float* out, ma_uint32 frameCount) {
 // Decode thread
 // ---------------------------------------------------------------------------
 
+// Reading backward, for scrubbing: the chunk before reverseEnd, reversed, into the
+// buffer. Each is read with a little more before it, held back and crossfaded
+// into the start of the next, so a seek that lands a few samples off never
+// clicks; and a little more before that again, decoded and dropped, since some
+// formats (MP3) take a frame or two to settle after a seek.
+void ReadBackward(std::vector<float>& chunk, std::vector<float>& reversed) {
+    std::lock_guard<std::mutex> use(g.decoderMutex);
+    if (!g.decoder || !g.reverse) return;
+    const int64_t end = g.reverseEnd;
+    if (end <= 0) {
+        g.pcm.SetEnded();  // back at the start
+        return;
+    }
+    const int64_t overlap = g.sourceRate / 50;  // 20 ms
+    const int64_t settle = g.sourceRate / 10;   // 100 ms
+    const int64_t start = std::max<int64_t>(0, end - g.reverseChunkFrames);
+    const int64_t from = std::max<int64_t>(0, start - overlap);
+    const int64_t seekTo = std::max<int64_t>(0, from - settle);
+    const size_t frames = static_cast<size_t>(end - seekTo);
+    chunk.resize(frames * kChannels);
+    size_t got = 0;
+    if (g.decoder->Seek(static_cast<double>(seekTo) / g.sourceRate)) {
+        while (got < frames) {
+            int n = g.decoder->Read(chunk.data() + got * kChannels, static_cast<int>(std::min<size_t>(4096, frames - got)));
+            if (n <= 0) break;
+            got += static_cast<size_t>(n);
+        }
+    }
+    g.reverseEnd = start;
+    const size_t keepStart = static_cast<size_t>(from - seekTo);
+    if (got <= keepStart) return;
+    const size_t count = got - keepStart;
+    reversed.resize(count * kChannels);
+    for (size_t i = 0; i < count; i++) {
+        reversed[i * kChannels] = chunk[(got - 1 - i) * kChannels];
+        reversed[i * kChannels + 1] = chunk[(got - 1 - i) * kChannels + 1];
+    }
+    // Its first frames are the same audio as the last chunk's held-back tail
+    const size_t fade = std::min(count, g.reverseTail.size() / kChannels);
+    for (size_t i = 0; i < fade; i++) {
+        float w = (static_cast<float>(i) + 0.5f) / static_cast<float>(fade);
+        for (int ch = 0; ch < kChannels; ch++) {
+            float& s = reversed[i * kChannels + ch];
+            s = s * w + g.reverseTail[i * kChannels + ch] * (1.0f - w);
+        }
+    }
+    // Hold back its own overlap (none at the very start: nothing comes after it)
+    const size_t hold = std::min(count, static_cast<size_t>(start - from));
+    g.pcm.Write(reversed.data(), count - hold);
+    g.reverseTail.assign(reversed.end() - static_cast<std::ptrdiff_t>(hold * kChannels), reversed.end());
+}
+
 void DecodeLoop() {
     std::vector<float> block(4096 * kChannels);
+    std::vector<float> chunk, reversed;
     while (g.running) {
+        bool backward;
         {
             std::unique_lock<std::mutex> lock(g.decodeMutex);
             if (g.seekRequested) {
                 g.seekRequested = false;
                 double target = g.seekTarget;
+                bool reverse = g.seekReverse;
+                int chunkFrames = g.seekChunkFrames;
                 lock.unlock();
                 bool ok;
                 {
                     std::lock_guard<std::mutex> use(g.decoderMutex);
-                    ok = g.decoder && g.decoder->Seek(target);
+                    g.reverse = reverse && g.decoder;
+                    if (g.reverse) {
+                        // Nothing to do yet: the first chunk ends here
+                        g.reverseEnd = static_cast<int64_t>(std::llround(target * g.sourceRate));
+                        g.reverseChunkFrames = std::max(chunkFrames, g.sourceRate / 10);
+                        g.reverseTail.clear();
+                        ok = true;
+                    } else {
+                        ok = g.decoder && g.decoder->Seek(target);
+                    }
                 }
                 g.pcm.Clear();
                 lock.lock();
@@ -363,10 +445,17 @@ void DecodeLoop() {
                 g.seekFinished.notify_all();
                 continue;
             }
-            if (!g.decoder || g.pcm.DecoderEnded() || g.pcm.Space() < 4096) {
+            backward = g.reverse;
+            // Room for a block, or backward, for a whole chunk and its overlap
+            size_t room = backward ? static_cast<size_t>(g.reverseChunkFrames + g.sourceRate / 50) : 4096;
+            if (!g.decoder || g.pcm.DecoderEnded() || g.pcm.Space() < room) {
                 g.decodeWake.wait_for(lock, std::chrono::milliseconds(20));
                 continue;
             }
+        }
+        if (backward) {
+            ReadBackward(chunk, reversed);
+            continue;
         }
         bool titleChanged;
         {
@@ -416,7 +505,8 @@ void MixLoop() {
                 ma_uint32 space = ma_pcm_rb_available_write(&g.ring);
                 if (!g.mixWaiting && space >= static_cast<ma_uint32>(kMixBlockFrames)) {
                     bool ended = false;
-                    int frames = g.processor->Fill(g.pcm, g.mixBlock.data(), kMixBlockFrames, ended);
+                    int frames = g.scrub ? g.scrub->Fill(g.pcm, g.mixBlock.data(), kMixBlockFrames)
+                                         : g.processor->Fill(g.pcm, g.mixBlock.data(), kMixBlockFrames, ended);
                     if (frames > 0) {
                         ma_uint32 left = static_cast<ma_uint32>(frames);
                         const float* src = g.mixBlock.data();
@@ -634,9 +724,12 @@ bool Load(std::unique_ptr<Decoder> decoder, TempoAlgorithm algorithm) {
     g.processor->SetPitch(g.pitch);
     g.processor->SetRate(g.live ? 1.0f : g.rate);
     g.processor->Restart(0.0);
+    g.scrub.reset();
+    g.sourceRate = rate;
     {
         std::lock_guard<std::mutex> use(g.decoderMutex);
         g.decoder = std::move(decoder);
+        g.reverse = false;
     }
     g.seekRequested = false;
     ResetOutput();
@@ -658,9 +751,11 @@ void Unload() {
     std::lock_guard<std::mutex> decode(g.decodeMutex);
     g.loaded = false;
     g.processor.reset();
+    g.scrub.reset();
     {
         std::lock_guard<std::mutex> use(g.decoderMutex);
         g.decoder.reset();
+        g.reverse = false;
     }
     g.pcm.Clear();
     ResetOutput();
@@ -695,14 +790,20 @@ State GetState() { return g.state.load(); }
 double Position() {
     if (!g.loaded) return 0.0;
     std::lock_guard<std::mutex> mix(g.mixMutex);
-    return g.processor ? g.processor->PositionAt(g.played.load()) : 0.0;
+    double seconds = g.scrub       ? g.scrub->PositionAt(g.played.load())
+                     : g.processor ? g.processor->PositionAt(g.played.load())
+                                   : 0.0;
+    return g.length > 0 ? std::min(seconds, g.length) : seconds;
 }
 
 double Length() { return g.loaded ? g.length : 0.0; }
 bool IsLive() { return g.loaded && g.live; }
 
-bool Seek(double seconds) {
-    if (!g.loaded || g.live) return false;
+namespace {
+
+// Carries on from `seconds`: played normally (scrub null), or by the scrubber,
+// reading the source backward in chunks of `reverseChunkFrames` if that is not 0.
+bool Reposition(double seconds, std::unique_ptr<Scrubber> scrub, int reverseChunkFrames) {
     if (g.length > 0) seconds = std::min(seconds, g.length);
     if (seconds < 0) seconds = 0;
     FadeOut(false);
@@ -714,17 +815,50 @@ bool Seek(double seconds) {
     {
         std::unique_lock<std::mutex> lock(g.decodeMutex);
         g.seekTarget = seconds;
+        g.seekReverse = reverseChunkFrames > 0;
+        g.seekChunkFrames = reverseChunkFrames;
         g.seekRequested = true;
         g.seekDone = false;
         g.decodeWake.notify_all();
         if (!g.seekFinished.wait_for(lock, std::chrono::seconds(30), [] { return g.seekDone; })) return false;
         ok = g.seekOk;
     }
-    if (g.processor) g.processor->Restart(seconds);
+    g.scrub = std::move(scrub);
+    if (g.processor && !g.scrub) g.processor->Restart(seconds);
     ResetOutput();
     g.decodeWake.notify_all();
     return ok;
 }
+
+}  // namespace
+
+bool Seek(double seconds) {
+    if (!g.loaded || g.live) return false;
+    return Reposition(seconds, nullptr, 0);
+}
+
+bool StartScrub(ScrubStyle style, int direction, float speed) {
+    if (!g.loaded || g.live) return false;
+    double from = Position();
+    auto scrub = std::make_unique<Scrubber>(style, direction, speed, g.sourceRate, g.outputRate, from);
+    // Backward, the source is read in chunks: longer the faster it goes, so the
+    // seeks between them stay few
+    int chunk = 0;
+    if (direction < 0) chunk = static_cast<int>(g.sourceRate * std::clamp(speed * 0.125, 0.25, 2.0));
+    return Reposition(from, std::move(scrub), chunk);
+}
+
+void SetScrubSpeed(float speed) {
+    std::lock_guard<std::mutex> mix(g.mixMutex);
+    if (g.scrub) g.scrub->SetSpeed(speed);
+}
+
+bool StopScrub() {
+    if (!g.loaded || !g.scrub) return false;
+    return Reposition(Position(), nullptr, 0);
+}
+
+bool IsScrubbing() { return g.loaded && g.scrub != nullptr; }
 
 void SetTempo(float percent) {
     g.tempo = percent;

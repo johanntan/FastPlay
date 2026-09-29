@@ -473,6 +473,68 @@ void SeekToPosition(double seconds) {
     UpdateStatusBar();
 }
 
+// ---------------------------------------------------------------------------
+// Seek modes: jumping, or scrubbing while an arrow is held
+// ---------------------------------------------------------------------------
+
+static const char* const kSeekModeNames[] = {"Jump seeking", "Spring seeking", "Tape seeking"};
+
+// Paused (or stopped) before scrubbing: paused again after
+static bool g_pausedBeforeScrub = false;
+
+static std::string SpeedText(int speed) { return std::to_string(speed) + " times"; }
+
+void CycleSeekMode() {
+    StopScrubbing();
+    g_seekMode = (g_seekMode + 1) % SEEK_MODE_COUNT;
+    Speak(kSeekModeNames[g_seekMode]);
+}
+
+bool IsScrubSeekMode() { return g_seekMode == SEEK_MODE_SPRING || g_seekMode == SEEK_MODE_TAPE; }
+
+void ChangeScrubSpeed(int direction) {
+    int& speed = g_seekMode == SEEK_MODE_TAPE ? g_tapeSpeed : g_springSpeed;
+    // The next speed in the list, stopping at either end
+    int index = 0;
+    while (index < g_scrubSpeedCount - 1 && g_scrubSpeeds[index] < speed) index++;
+    index = std::clamp(index + direction, 0, g_scrubSpeedCount - 1);
+    speed = g_scrubSpeeds[index];
+    audio::SetScrubSpeed(static_cast<float>(speed));
+    Speak(SpeedText(speed));
+}
+
+void SpeakSeekMode() {
+    if (!IsScrubSeekMode()) {
+        SpeakSeekAmount();
+        return;
+    }
+    Speak(std::string(kSeekModeNames[g_seekMode]) + ", " +
+          SpeedText(g_seekMode == SEEK_MODE_TAPE ? g_tapeSpeed : g_springSpeed));
+}
+
+void StartScrubbing(int direction) {
+    if (!audio::IsLoaded() || g_isBusy || g_isLoading || g_isLiveStream || audio::Length() <= 0) return;
+    if (!audio::IsScrubbing()) g_pausedBeforeScrub = !IsPlaying();
+    const bool tape = g_seekMode == SEEK_MODE_TAPE;
+    if (!audio::StartScrub(tape ? audio::ScrubStyle::Tape : audio::ScrubStyle::Spring, direction,
+                           static_cast<float>(tape ? g_tapeSpeed : g_springSpeed))) {
+        return;
+    }
+    if (!IsPlaying()) audio::Play();
+    UpdateStatusBar();
+}
+
+void StopScrubbing() {
+    if (!audio::IsScrubbing()) return;
+    audio::StopScrub();
+    if (!g_smoothSeek) {
+        if (SpatialAudio* spatial = GetSpatialAudio()) spatial->ClearTails();
+    }
+    if (g_pausedBeforeScrub) audio::Pause();
+    UpdateWindowTitle();
+    UpdateStatusBar();
+}
+
 // Get current playback position in seconds
 double GetCurrentPosition() {
     return audio::Position();

@@ -20,8 +20,10 @@ class wxFrame;
 // that is also a menu item's key equivalent does not perform the menu item (which
 // VoiceOver would announce). The handler gets the key as MOD_* flags (MOD_CONTROL
 // is Command, MOD_ALT is Option, MOD_WIN is Control) and a Windows virtual key
-// code, and returns true to swallow it.
-void StartShortcutMonitor(wxFrame* frame, bool (*handler)(unsigned modifiers, unsigned vk));
+// code, and returns true to swallow it. `holdHandler` sees keys going down (and
+// repeating) and coming up, first, for keys that act while held.
+void StartShortcutMonitor(wxFrame* frame, bool (*handler)(unsigned modifiers, unsigned vk),
+                          bool (*holdHandler)(unsigned modifiers, unsigned vk, bool down, bool repeat));
 void StopShortcutMonitor();
 #endif
 

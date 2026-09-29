@@ -182,7 +182,10 @@ public:
     bool Seek(double seconds) override {
         if (m_live || !m_format) return false;
         if (seconds < 0) seconds = 0;
-        int64_t target = static_cast<int64_t>((seconds + m_startTime) * AV_TIME_BASE);
+        // From a little before, dropped: the first frame after a seek decodes
+        // wrongly in some formats (MP3's bit reservoir, AAC's overlapping windows)
+        const double settle = 0.1;
+        int64_t target = static_cast<int64_t>((std::max(0.0, seconds - settle) + m_startTime) * AV_TIME_BASE);
         Arm();
         if (avformat_seek_file(m_format, -1, INT64_MIN, target, target, 0) < 0 &&
             av_seek_frame(m_format, -1, target, AVSEEK_FLAG_BACKWARD) < 0) {

@@ -197,6 +197,12 @@ void LoadSettings() {
     g_seekEnabled[11] = IniGetInt(L"Movement", L"Seek10t", 0, g_configPath.c_str()) != 0;
     g_chapterSeekEnabled = IniGetInt(L"Movement", L"ChapterSeek", 1, g_configPath.c_str()) != 0;
     g_currentSeekIndex = IniGetInt(L"Movement", L"CurrentSeek", 1, g_configPath.c_str());
+    g_seekMode = std::clamp(IniGetInt(L"Movement", L"SeekMode", SEEK_MODE_JUMP, g_configPath.c_str()), 0,
+                            SEEK_MODE_COUNT - 1);
+    g_springSpeed = std::clamp(IniGetInt(L"Movement", L"SpringSpeed", 16, g_configPath.c_str()), g_scrubSpeeds[0],
+                               g_scrubSpeeds[g_scrubSpeedCount - 1]);
+    g_tapeSpeed = std::clamp(IniGetInt(L"Movement", L"TapeSpeed", 4, g_configPath.c_str()), g_scrubSpeeds[0],
+                             g_scrubSpeeds[g_scrubSpeedCount - 1]);
 
     // Validate current seek index
     if (g_currentSeekIndex < 0 || g_currentSeekIndex >= g_seekAmountCount || !g_seekEnabled[g_currentSeekIndex]) {
@@ -528,6 +534,12 @@ void SaveSettings() {
 
     swprintf(buf, 32, L"%d", g_currentSeekIndex);
     IniWriteString(L"Movement", L"CurrentSeek", buf, g_configPath.c_str());
+    swprintf(buf, 32, L"%d", g_seekMode);
+    IniWriteString(L"Movement", L"SeekMode", buf, g_configPath.c_str());
+    swprintf(buf, 32, L"%d", g_springSpeed);
+    IniWriteString(L"Movement", L"SpringSpeed", buf, g_configPath.c_str());
+    swprintf(buf, 32, L"%d", g_tapeSpeed);
+    IniWriteString(L"Movement", L"TapeSpeed", buf, g_configPath.c_str());
 
     // Save effect settings
     IniWriteString(L"Effects", L"Volume", g_effectEnabled[0] ? L"1" : L"0", g_configPath.c_str());

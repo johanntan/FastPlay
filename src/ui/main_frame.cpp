@@ -80,15 +80,26 @@ MainFrame::MainFrame()
 
 #ifdef __WXOSX__
     (new KeyTarget(this))->SetFocus();
-    StartShortcutMonitor(this, [](unsigned modifiers, unsigned vk) {
-        return g_mainFrame != nullptr && g_mainFrame->RunShortcut(modifiers, vk);
-    });
+    StartShortcutMonitor(
+        this,
+        [](unsigned modifiers, unsigned vk) { return g_mainFrame != nullptr && g_mainFrame->RunShortcut(modifiers, vk); },
+        [](unsigned modifiers, unsigned vk, bool down, bool repeat) {
+            return g_mainFrame != nullptr && g_mainFrame->HandleScrubKey(modifiers, vk, down, repeat);
+        });
 #endif
 
     Bind(wxEVT_MENU, &MainFrame::OnMenu, this);
     Bind(wxEVT_MENU_OPEN, &MainFrame::OnMenuOpen, this);
     Bind(wxEVT_ICONIZE, &MainFrame::OnIconize, this);
     Bind(wxEVT_CLOSE_WINDOW, &MainFrame::OnClose, this);
+    // An arrow held for scrubbing that comes up in another window: stop anyway
+    Bind(wxEVT_ACTIVATE, [this](wxActivateEvent& event) {
+        if (!event.GetActive() && m_scrubKey) {
+            m_scrubKey = 0;
+            StopScrubbing();
+        }
+        event.Skip();
+    });
 #ifdef __WXMSW__
     Bind(wxEVT_HOTKEY, &MainFrame::OnHotkey, this);
 #endif
@@ -191,6 +202,7 @@ void MainFrame::BuildMenuBar() {
     play->AppendSeparator();
     play->Append(IDM_PLAY_SEEKBACK, "Seek &Backward\tLeft");
     play->Append(IDM_PLAY_SEEKFWD, "Seek &Forward\tRight");
+    play->Append(IDM_SEEK_MODE, "Next Seek &Mode\t/");
     play->Append(IDM_PLAY_BEGINNING, "&Beginning\tHome");
     play->Append(IDM_PLAY_JUMPTOTIME, "&Jump to Time...\tJ");
     play->AppendSeparator();
@@ -294,6 +306,7 @@ void MainFrame::BuildAccelerators() {
         {C, WXK_DOWN, IDM_PLAY_VOLDOWN},
         {N, ',', IDM_SEEK_DECREASE},
         {N, '.', IDM_SEEK_INCREASE},
+        {N, '/', IDM_SEEK_MODE},
         {C | S, 'E', IDM_PLAY_ELAPSED},
         {C | S, 'R', IDM_PLAY_REMAINING},
         {C | S, 'T', IDM_PLAY_TOTAL},
@@ -394,6 +407,7 @@ void MainFrame::BuildAccelerators() {
             case WXK_BACK: a.key = VK_BACK; break;
             case ',': a.key = VK_OEM_COMMA; break;
             case '.': a.key = VK_OEM_PERIOD; break;
+            case '/': a.key = VK_OEM_2; break;
             case '[': a.key = VK_OEM_4; break;
             case ']': a.key = VK_OEM_6; break;
             case '-': a.key = VK_OEM_MINUS; break;
@@ -445,6 +459,18 @@ bool MainFrame::RunShortcut(unsigned modifiers, unsigned vk) {
 
 #ifdef __WXMSW__
 bool MainFrame::MSWTranslateMessage(WXMSG* msg) {
+    // The arrows going down and coming up, for scrubbing, ahead of the shortcuts
+    // (which only see them go down)
+    const MSG* m = static_cast<const MSG*>(msg);
+    if ((m->message == WM_KEYDOWN || m->message == WM_KEYUP) && (m->wParam == VK_LEFT || m->wParam == VK_RIGHT)) {
+        unsigned modifiers = 0;
+        if (::GetKeyState(VK_CONTROL) < 0) modifiers |= MOD_CONTROL;
+        if (::GetKeyState(VK_SHIFT) < 0) modifiers |= MOD_SHIFT;
+        if (::GetKeyState(VK_MENU) < 0) modifiers |= MOD_ALT;
+        if (::GetKeyState(VK_LWIN) < 0 || ::GetKeyState(VK_RWIN) < 0) modifiers |= MOD_WIN;
+        const bool repeat = (m->lParam & (1 << 30)) != 0;
+        if (HandleScrubKey(modifiers, static_cast<unsigned>(m->wParam), m->message == WM_KEYDOWN, repeat)) return true;
+    }
     // Checked before the menu bar's shortcuts, so "Volume Up\tUp" in the menu is
     // only a label and Up still adjusts the current effect.
     if (m_nativeAccel && ::TranslateAcceleratorW(static_cast<HWND>(GetHWND()), static_cast<HACCEL>(m_nativeAccel), static_cast<MSG*>(msg))) {
@@ -514,6 +540,27 @@ void MainFrame::SeekBackOrForward(int direction) {
     }
 }
 
+bool MainFrame::HandleScrubKey(unsigned modifiers, unsigned vk, bool down, bool repeat) {
+    if (vk != VK_LEFT && vk != VK_RIGHT) return false;
+    if (!down) {
+        if (vk != m_scrubKey) return false;
+        m_scrubKey = 0;
+        StopScrubbing();
+        return true;
+    }
+    if (modifiers != 0 || !IsScrubSeekMode()) return false;
+    // A hotkey of the user's own on the key keeps it
+    for (const auto& hk : g_hotkeys) {
+        if (!hk.global && hk.modifiers == 0 && hk.vk == vk) return false;
+    }
+    // Held, the key repeats: only its first press starts (or turns) scrubbing
+    if (!repeat || vk != m_scrubKey) {
+        m_scrubKey = vk;
+        StartScrubbing(vk == VK_LEFT ? -1 : 1);
+    }
+    return true;
+}
+
 void MainFrame::RunCommand(int id, int param) {
     switch (id) {
         case IDM_FILE_OPEN: ShowOpenDialog(); break;
@@ -581,8 +628,10 @@ void MainFrame::RunCommand(int id, int param) {
         case IDM_PLAY_JUMPTOTIME: ShowJumpToTimeDialog(); break;
         case IDM_PLAY_SEEKBACK: SeekBackOrForward(-1); break;
         case IDM_PLAY_SEEKFWD: SeekBackOrForward(1); break;
-        case IDM_SEEK_DECREASE: CycleSeekAmount(-1); break;
-        case IDM_SEEK_INCREASE: CycleSeekAmount(1); break;
+        // In spring and tape seeking, the speed; otherwise the seek unit
+        case IDM_SEEK_DECREASE: IsScrubSeekMode() ? ChangeScrubSpeed(-1) : CycleSeekAmount(-1); break;
+        case IDM_SEEK_INCREASE: IsScrubSeekMode() ? ChangeScrubSpeed(1) : CycleSeekAmount(1); break;
+        case IDM_SEEK_MODE: CycleSeekMode(); break;
         case IDM_PLAY_VOLUP: SetVolume(g_volume + g_volumeStep); break;
         case IDM_PLAY_VOLDOWN: SetVolume(g_volume - g_volumeStep); break;
         case IDM_PLAY_MUTE: ToggleMute(); break;
@@ -614,7 +663,7 @@ void MainFrame::RunCommand(int id, int param) {
         case IDM_TOGGLE_CENTERCANCEL: ToggleDSPEffect(DSPEffectType::CenterCancel); break;
         case IDM_TOGGLE_CONVOLUTION: ToggleDSPEffect(DSPEffectType::Convolution); break;
         case IDM_TOGGLE_SPATIAL: ToggleDSPEffect(DSPEffectType::SpatialAudio); break;
-        case IDM_SPEAK_SEEK: SpeakSeekAmount(); break;
+        case IDM_SPEAK_SEEK: SpeakSeekMode(); break;
         // Tag reading (1-0 keys)
         case IDM_READ_TAG_TITLE: SpeakTagTitle(); break;
         case IDM_READ_TAG_ARTIST: SpeakTagArtist(); break;

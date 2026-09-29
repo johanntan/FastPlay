@@ -22,10 +22,11 @@ id g_shortcutMonitor = nil;
 
 }  // namespace
 
-void StartShortcutMonitor(wxFrame* frame, bool (*handler)(unsigned modifiers, unsigned vk)) {
+void StartShortcutMonitor(wxFrame* frame, bool (*handler)(unsigned modifiers, unsigned vk),
+                          bool (*holdHandler)(unsigned modifiers, unsigned vk, bool down, bool repeat)) {
     StopShortcutMonitor();
     NSWindow* window = frame->GetWXWindow();
-    g_shortcutMonitor = [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskKeyDown
+    g_shortcutMonitor = [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskKeyDown | NSEventMaskKeyUp
                                                               handler:^NSEvent*(NSEvent* event) {
         // Only keys typed into this window; a dialog's keys are its own.
         if (event.window != window) return event;
@@ -36,7 +37,10 @@ void StartShortcutMonitor(wxFrame* frame, bool (*handler)(unsigned modifiers, un
         if (flags & NSEventModifierFlagOption) modifiers |= MOD_ALT;
         if (flags & NSEventModifierFlagControl) modifiers |= MOD_WIN;
         unsigned vk = MacKeyCodeToVirtualKey(event.keyCode);
-        if (vk && handler(modifiers, vk)) return nil;  // swallowed: the menu never sees it
+        if (!vk) return event;
+        const bool down = event.type == NSEventTypeKeyDown;
+        if (holdHandler && holdHandler(modifiers, vk, down, down && event.isARepeat)) return nil;
+        if (down && handler(modifiers, vk)) return nil;  // swallowed: the menu never sees it
         return event;
     }];
 }
