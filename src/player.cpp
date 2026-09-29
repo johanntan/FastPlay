@@ -32,9 +32,10 @@ static std::string GetStreamTitle();
 // ---------------------------------------------------------------------------
 
 void UpdateOutputGain() {
-    // A perceptual volume curve (cubic, so the lower half is quieter), then
-    // ReplayGain. Above 100% it amplifies, squared, so it doesn't jump too loud.
-    float curve = g_volume <= 1.0f ? g_volume * g_volume * g_volume : g_volume * g_volume;
+    // A perceptual volume curve (the fourth power, so the lower half is quieter),
+    // then ReplayGain. Above 100% it amplifies, squared, so it doesn't jump too loud.
+    float squared = g_volume * g_volume;
+    float curve = g_volume <= 1.0f ? squared * squared : squared;
     float gain = g_muted ? 0.0f : curve * g_replayGainScale;
     audio::SetGain(gain);
 }
