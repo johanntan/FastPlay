@@ -804,6 +804,7 @@ void OptionsDialog::OnOK(wxCommandEvent&) {
     // Get selected device
     int sel = m_soundcard->GetSelection();
     int newDevice = (sel >= 0 && sel < static_cast<int>(m_deviceIndexes.size())) ? m_deviceIndexes[sel] : -1;
+    if (newDevice == 0) newDevice = -1;  // "Default": the system's, as it changes
 
     // Get amplify setting
     bool newAmplify = m_allowAmplify->GetValue();

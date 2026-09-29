@@ -432,6 +432,8 @@ static std::vector<StreamOption> ResolveTuneInUrls(const std::wstring& playlistU
 // playlist URL, or when the fetch/parse fails (so the caller can still try it).
 std::wstring ResolvePlaylistUrl(const std::wstring& url) {
     if (!IsPlaylistUrl(url)) return url;
+    // YouTube's manifests are always HLS, which FFmpeg reads: no need to look first
+    if (url.find(L".googlevideo.com/") != std::wstring::npos) return url;
 
     std::wstring currentUrl = url;
     // Follow up to 3 nested playlist levels (a playlist can point at another).

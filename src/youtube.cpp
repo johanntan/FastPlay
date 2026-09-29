@@ -6,10 +6,9 @@
 // the first time they are needed, and yt-dlp updated at most once a day. A yt-dlp
 // chosen in Options is used instead when that file exists.
 //
-// Videos stream from YouTube's HLS audio, which BASS plays as it arrives, with
-// seeking. For the rare video without it, the audio is downloaded instead: YouTube
-// serves that as fragmented MP4 over ranged requests, which BASS cannot stream, so
-// yt-dlp downloads it and DefragmentMp4 turns it into an ordinary M4A.
+// Videos stream from YouTube's HLS audio, which FFmpeg plays as it arrives, with
+// seeking. For the rare video without it, the audio is downloaded instead: yt-dlp
+// downloads it and DefragmentMp4 turns it into an ordinary M4A.
 
 #include "youtube.h"
 #include "accessibility.h"
@@ -50,12 +49,18 @@ namespace {
 #if defined(_WIN32)
 const wchar_t* const kYtdlpFile = L"yt-dlp.exe";
 const wchar_t* const kYtdlpUrl = L"https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe";
+// The same yt-dlp unpacked in a folder: it starts in a fraction of a second, where
+// the single file above unpacks itself on every run (about two seconds).
+const wchar_t* const kYtdlpZip = L"yt-dlp_win.zip";
+const wchar_t* const kYtdlpFolderFile = L"yt-dlp.exe";
 const wchar_t* const kDenoFile = L"deno.exe";
 const wchar_t* const kDenoUrl =
     L"https://github.com/denoland/deno/releases/latest/download/deno-x86_64-pc-windows-msvc.zip";
 #elif defined(__APPLE__)
 const wchar_t* const kYtdlpFile = L"yt-dlp";
 const wchar_t* const kYtdlpUrl = L"https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos";
+const wchar_t* const kYtdlpZip = L"yt-dlp_macos.zip";
+const wchar_t* const kYtdlpFolderFile = L"yt-dlp_macos";
 const wchar_t* const kDenoFile = L"deno";
 #if defined(__arm64__) || defined(__aarch64__)
 const wchar_t* const kDenoUrl =
@@ -67,6 +72,8 @@ const wchar_t* const kDenoUrl =
 #else
 const wchar_t* const kYtdlpFile = L"yt-dlp";
 const wchar_t* const kYtdlpUrl = L"https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux";
+const wchar_t* const kYtdlpZip = nullptr;  // the single file (Linux has Python to spare)
+const wchar_t* const kYtdlpFolderFile = nullptr;
 const wchar_t* const kDenoFile = L"deno";
 const wchar_t* const kDenoUrl =
     L"https://github.com/denoland/deno/releases/latest/download/deno-x86_64-unknown-linux-gnu.zip";
@@ -149,6 +156,77 @@ bool DownloadFile(const std::wstring& url, const std::wstring& path, std::wstrin
     return true;
 }
 
+bool Unzip(const std::wstring& zip, std::wstring dir);
+std::wstring TarPath();
+
+const wchar_t* const kYtdlpReleases = L"https://github.com/yt-dlp/yt-dlp/releases/latest/download/";
+
+// The yt-dlp release's checksum for the folder build's zip, from its SHA2-256SUMS,
+// or empty if that could not be read. A new checksum means a new release.
+std::string LatestYtdlpZipSum() {
+    HttpOptions options;
+    options.timeoutMs = 15000;
+    HttpResult result = HttpGet(std::wstring(kYtdlpReleases) + L"SHA2-256SUMS", options);
+    if (!result.completed || result.status != 200) return "";
+    std::string name = WideToUtf8(kYtdlpZip);
+    std::istringstream lines(result.body);
+    std::string line;
+    while (std::getline(lines, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        size_t space = line.find("  ");
+        if (space != std::string::npos && line.substr(space + 2) == name) return line.substr(0, space);
+    }
+    return "";
+}
+
+// Download and unpack the folder build, replacing the one there (unless it is
+// running, in which case it stays until next time).
+bool InstallYtdlpFolder(const std::wstring& folder, std::wstring& error) {
+    std::wstring zip = ToolsDir() + kYtdlpZip;
+    if (!DownloadFile(std::wstring(kYtdlpReleases) + kYtdlpZip, zip, error)) return false;
+    std::error_code ec;
+    std::wstring fresh = folder + L".new";
+    std::wstring old = folder + L".old";
+    fs::remove_all(fs::path(fresh), ec);
+    fs::create_directories(fs::path(fresh), ec);
+    bool unpacked = Unzip(zip, fresh);
+    fs::remove(fs::path(zip), ec);
+    if (!unpacked || !FileExists(fresh + kPathSeparator + kYtdlpFolderFile)) {
+        fs::remove_all(fs::path(fresh), ec);
+        error = L"Could not unpack yt-dlp.";
+        return false;
+    }
+    MakeExecutable(fresh + kPathSeparator + kYtdlpFolderFile);
+    fs::remove_all(fs::path(old), ec);
+    if (fs::exists(fs::path(folder), ec)) {
+        fs::rename(fs::path(folder), fs::path(old), ec);
+        if (ec) {
+            fs::remove_all(fs::path(fresh), ec);
+            error = L"yt-dlp is in use.";
+            return false;
+        }
+    }
+    fs::rename(fs::path(fresh), fs::path(folder), ec);
+    if (ec) {
+        fs::rename(fs::path(old), fs::path(folder), ec);
+        error = L"Could not save yt-dlp.";
+        return false;
+    }
+    fs::remove_all(fs::path(old), ec);
+    return true;
+}
+
+std::string ReadSmallFile(const std::wstring& path) {
+    std::string text;
+    if (FILE* f = FileOpen(path, "rb")) {
+        char buffer[256];
+        size_t n = fread(buffer, 1, sizeof(buffer), f);
+        text.assign(buffer, n);
+        fclose(f);
+    }
+    return text;
+}
+
 // The yt-dlp to run.
 bool EnsureYtdlp(std::wstring& ytdlp, std::wstring& error, const YouTubeStatus& status) {
     if (FileExists(g_ytdlpPath)) {  // chosen in Options; its owner keeps it up to date
@@ -157,9 +235,48 @@ bool EnsureYtdlp(std::wstring& ytdlp, std::wstring& error, const YouTubeStatus& 
     }
 
     std::lock_guard<std::mutex> lock(g_toolsMutex);
+    std::error_code ec;
+
+    // The folder build, checked for a new release once a day (it cannot update
+    // itself). The stamp holds the checksum of the one installed.
+    if (kYtdlpZip && FileExists(TarPath())) {
+        std::wstring zipName = kYtdlpZip;
+        std::wstring folder = ToolsDir() + zipName.substr(0, zipName.size() - 4);
+        std::wstring exe = folder + kPathSeparator + kYtdlpFolderFile;
+        std::wstring stamp = ToolsDir() + L"yt-dlp-folder-checked";
+        auto checked = fs::last_write_time(fs::path(stamp), ec);
+        bool recent = !ec && fs::file_time_type::clock::now() - checked < std::chrono::hours(24);
+        if (FileExists(exe) && recent) {
+            ytdlp = exe;
+            return true;
+        }
+        if (!FileExists(exe)) Say(status, L"Downloading yt-dlp for YouTube. This happens once.");
+        std::string latest = LatestYtdlpZipSum();
+        std::string installed = ReadSmallFile(stamp);
+        bool installedNow = false;
+        if (!FileExists(exe) || (!latest.empty() && latest != installed)) {
+            std::wstring installError;
+            installedNow = InstallYtdlpFolder(folder, installError);
+        }
+        if (FileExists(exe)) {
+            // Checked (or the check failed: try again tomorrow, not every run)
+            if (FILE* f = FileOpen(stamp, "wb")) {
+                const std::string& sum = installedNow ? latest : installed;
+                fwrite(sum.data(), 1, sum.size(), f);
+                fclose(f);
+            }
+            fs::last_write_time(fs::path(stamp), fs::file_time_type::clock::now(), ec);
+            // The single file it replaces
+            fs::remove(fs::path(ToolsDir() + kYtdlpFile), ec);
+            fs::remove(fs::path(ToolsDir() + L"yt-dlp-checked"), ec);
+            ytdlp = exe;
+            return true;
+        }
+        // Could not be had (no tar to unpack it): the single file
+    }
+
     ytdlp = ToolsDir() + kYtdlpFile;
     std::wstring stamp = ToolsDir() + L"yt-dlp-checked";
-    std::error_code ec;
     if (!FileExists(ytdlp)) {
         Say(status, L"Downloading yt-dlp for YouTube. This happens once.");
         if (!DownloadFile(kYtdlpUrl, ytdlp, error)) {
@@ -182,14 +299,18 @@ bool EnsureYtdlp(std::wstring& ytdlp, std::wstring& error, const YouTubeStatus& 
 }
 
 // tar reads zip files, and comes with Windows 10 and macOS.
-bool Unzip(const std::wstring& zip, std::wstring dir) {
+std::wstring TarPath() {
 #ifdef _WIN32
     wchar_t system[kMaxPathChars] = {};
     GetSystemDirectoryW(system, kMaxPathChars);
-    std::wstring tar = std::wstring(system) + L"\\tar.exe";
+    return std::wstring(system) + L"\\tar.exe";
 #else
-    std::wstring tar = L"/usr/bin/tar";
+    return L"/usr/bin/tar";
 #endif
+}
+
+bool Unzip(const std::wstring& zip, std::wstring dir) {
+    std::wstring tar = TarPath();
     if (!dir.empty() && (dir.back() == L'\\' || dir.back() == L'/')) dir.pop_back();
     std::string output;
     int exitCode = -1;
@@ -829,7 +950,7 @@ bool YouTubePrepare(const std::wstring& videoId, YouTubeMedia& media, std::wstri
     std::wstring url = L"https://www.youtube.com/watch?v=" + videoId;
 
     // Stream it: YouTube's HLS audio (234, 233), or for a live stream the
-    // smallest HLS video, whose audio BASS plays as it arrives, with seeking.
+    // smallest HLS video, whose audio FFmpeg plays as it arrives, with seeking.
     YtdlpRun run;
     if (!RunYtdlp({L"--no-playlist", L"-f", L"234/233/93/92/91/94/95", L"--print",
                    L"%(title)s\t%(url)s\t%(channel,uploader|)s", url},

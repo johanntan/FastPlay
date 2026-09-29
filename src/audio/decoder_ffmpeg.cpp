@@ -90,6 +90,9 @@ public:
 
         AVDictionary* options = nullptr;
         if (network) {
+            // Look at a second of a stream, not FFmpeg's five, before playing it
+            m_format->probesize = 128 * 1024;
+            m_format->max_analyze_duration = AV_TIME_BASE;
             av_dict_set(&options, "user_agent", UserAgent().c_str(), 0);
             av_dict_set(&options, "icy", "1", 0);  // ask Shoutcast/Icecast for titles
             av_dict_set(&options, "reconnect", "1", 0);

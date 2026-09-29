@@ -32,8 +32,10 @@ static std::string GetStreamTitle();
 // ---------------------------------------------------------------------------
 
 void UpdateOutputGain() {
-    // A perceptual (quadratic) volume curve, then ReplayGain
-    float gain = g_muted ? 0.0f : g_volume * g_volume * g_replayGainScale;
+    // A perceptual volume curve (cubic, so the lower half is quieter), then
+    // ReplayGain. Above 100% it amplifies, squared, so it doesn't jump too loud.
+    float curve = g_volume <= 1.0f ? g_volume * g_volume * g_volume : g_volume * g_volume;
+    float gain = g_muted ? 0.0f : curve * g_replayGainScale;
     audio::SetGain(gain);
 }
 
@@ -99,24 +101,28 @@ std::wstring GetDeviceName(int device) {
     return devices[device - 1].name;
 }
 
-// The playback devices, for the main window's device menu
+// The playback devices, for the device menu and Options: first "Default", which
+// follows the system's default device as it changes (number 0 here, -1 once
+// chosen), then each device
 std::vector<AudioDeviceInfo> GetAudioDevices() {
     std::vector<AudioDeviceInfo> list;
+    list.push_back({0, L"Default", g_selectedDevice == -1});
     std::vector<audio::Device> devices = audio::ListDevices();
     for (size_t i = 0; i < devices.size(); i++) {
         AudioDeviceInfo dev;
         dev.index = static_cast<int>(i) + 1;
         dev.name = devices[i].name;
-        dev.current = dev.index == g_selectedDevice || (g_selectedDevice == -1 && devices[i].isDefault);
+        dev.current = dev.index == g_selectedDevice;
         list.push_back(dev);
     }
     return list;
 }
 
-// Select and switch to an audio device
+// Select and switch to an audio device (0: the default)
 void SelectAudioDevice(int deviceIndex) {
-    if (deviceIndex <= 0) return;
-    std::wstring deviceName = GetDeviceName(deviceIndex);
+    if (deviceIndex < 0) return;
+    if (deviceIndex == 0) deviceIndex = -1;
+    std::wstring deviceName = deviceIndex > 0 ? GetDeviceName(deviceIndex) : L"Default";
     if (SwitchAudioDevice(deviceIndex)) {
         SaveSettings();
         Speak("Switched to " + WideToUtf8(deviceName));

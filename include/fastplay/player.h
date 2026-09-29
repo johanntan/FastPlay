@@ -58,7 +58,7 @@ bool SwitchAudioDevice(int device);
 int FindDeviceByName(const std::wstring& name);
 std::wstring GetDeviceName(int device);
 struct AudioDeviceInfo {
-    int index;          // device number
+    int index;          // device number; 0 is "Default", the system's default device
     std::wstring name;
     bool current;       // the device FastPlay is using
 };
