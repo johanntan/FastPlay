@@ -179,6 +179,8 @@ private:
     wxTextCtrl* m_eqTrebleFreq = nullptr;
     wxCheckBox* m_disableBatch = nullptr;
     wxCheckBox* m_smoothSeek = nullptr;
+    wxCheckBox* m_liveRewind = nullptr;
+    wxChoice* m_liveRewindMinutes = nullptr;
 
     // YouTube
     wxTextCtrl* m_ytdlpPath = nullptr;
@@ -619,6 +621,20 @@ void OptionsDialog::BuildAdvancedPage(wxNotebook* book) {
     m_disableBatch = AddCheck(page, sizer, "Disable &batch delay (only catches one file at a time)", g_disableBatchDelay);
     m_smoothSeek = AddCheck(page, sizer, "&Smooth seeking (short fades when seeking, pausing and changing tracks)", g_smoothSeek);
 
+    // Live streams kept for rewinding
+    m_liveRewind = AddCheck(page, sizer, "Allow &rewinding and pausing live streams (L goes back to live)", g_liveRewind);
+    row = AddRow(sizer);
+    m_liveRewindMinutes = AddChoice(page, row, "Rewind &length:");
+    int minutesIndex = 3;
+    for (int i = 0; i < g_liveRewindChoiceCount; i++) {
+        m_liveRewindMinutes->Append(wxString::Format("%d minutes", g_liveRewindChoices[i]));
+        if (g_liveRewindChoices[i] == g_liveRewindMinutes) minutesIndex = i;
+    }
+    m_liveRewindMinutes->SetSelection(minutesIndex);
+    m_liveRewindMinutes->Enable(g_liveRewind);
+    m_liveRewind->Bind(wxEVT_CHECKBOX, [this](wxCommandEvent&) { m_liveRewindMinutes->Enable(m_liveRewind->GetValue()); });
+    AddText(page, sizer, "Kept as the stream comes, about 1 MB a minute at 128 kbps. Applies to streams opened after.");
+
     auto* reset = new wxButton(page, wxID_ANY, "Reset station/podcast &order to alphabetical");
     sizer->Add(reset, 0, wxTOP | wxBOTTOM, 3);
     reset->Bind(wxEVT_BUTTON, &OptionsDialog::OnResetListOrder, this);
@@ -978,6 +994,10 @@ void OptionsDialog::OnOK(wxCommandEvent&) {
         g_disableBatchDelay = m_disableBatch->GetValue();
         g_smoothSeek = m_smoothSeek->GetValue();
         audio::SetSmoothTransitions(g_smoothSeek);
+        g_liveRewind = m_liveRewind->GetValue();
+        int minutesSel = m_liveRewindMinutes->GetSelection();
+        if (minutesSel >= 0 && minutesSel < g_liveRewindChoiceCount) g_liveRewindMinutes = g_liveRewindChoices[minutesSel];
+        ApplyLiveRewindSetting();
     }
 
     // Get YouTube settings

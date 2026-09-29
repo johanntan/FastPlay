@@ -208,9 +208,11 @@ struct Engine {
     int sourceRate = 44100;
     bool seekReverse = false;        // with seekRequested: read backward from there
     int seekChunkFrames = 0;         // ...in chunks this long
+    int64_t seekFloorFrames = 0;     // ...back to here
     bool reverse = false;
     int64_t reverseEnd = 0;          // the source frame the next chunk ends at
     int reverseChunkFrames = 0;
+    int64_t reverseFloor = 0;        // where reading backward stops (a frame of the source)
     std::vector<float> reverseTail;  // the overlap held back to crossfade with the next chunk
 
     // Effects chain and tap
@@ -369,15 +371,15 @@ void ReadBackward(std::vector<float>& chunk, std::vector<float>& reversed) {
     std::lock_guard<std::mutex> use(g.decoderMutex);
     if (!g.decoder || !g.reverse) return;
     const int64_t end = g.reverseEnd;
-    if (end <= 0) {
-        g.pcm.SetEnded();  // back at the start
+    if (end <= g.reverseFloor) {
+        g.pcm.SetEnded();  // back at the start (or the oldest a live stream keeps)
         return;
     }
     const int64_t overlap = g.sourceRate / 50;  // 20 ms
     const int64_t settle = g.sourceRate / 10;   // 100 ms
-    const int64_t start = std::max<int64_t>(0, end - g.reverseChunkFrames);
-    const int64_t from = std::max<int64_t>(0, start - overlap);
-    const int64_t seekTo = std::max<int64_t>(0, from - settle);
+    const int64_t start = std::max<int64_t>(g.reverseFloor, end - g.reverseChunkFrames);
+    const int64_t from = std::max<int64_t>(g.reverseFloor, start - overlap);
+    const int64_t seekTo = std::max<int64_t>(g.reverseFloor, from - settle);
     const size_t frames = static_cast<size_t>(end - seekTo);
     chunk.resize(frames * kChannels);
     size_t got = 0;
@@ -424,6 +426,7 @@ void DecodeLoop() {
                 double target = g.seekTarget;
                 bool reverse = g.seekReverse;
                 int chunkFrames = g.seekChunkFrames;
+                int64_t floorFrames = g.seekFloorFrames;
                 lock.unlock();
                 bool ok;
                 {
@@ -433,6 +436,7 @@ void DecodeLoop() {
                         // Nothing to do yet: the first chunk ends here
                         g.reverseEnd = static_cast<int64_t>(std::llround(target * g.sourceRate));
                         g.reverseChunkFrames = std::max(chunkFrames, g.sourceRate / 10);
+                        g.reverseFloor = floorFrames;
                         g.reverseTail.clear();
                         ok = true;
                     } else {
@@ -449,7 +453,8 @@ void DecodeLoop() {
             backward = g.reverse;
             // Room for a block, or backward, for a whole chunk and its overlap
             size_t room = backward ? static_cast<size_t>(g.reverseChunkFrames + g.sourceRate / 50) : 4096;
-            if (!g.decoder || g.pcm.DecoderEnded() || g.pcm.Space() < room) {
+            // (a live stream kept for rewinding that has played all it has: until more comes)
+            if (!g.decoder || g.pcm.DecoderEnded() || g.pcm.Space() < room || (!backward && g.decoder->Starved())) {
                 g.decodeWake.wait_for(lock, std::chrono::milliseconds(20));
                 continue;
             }
@@ -467,7 +472,7 @@ void DecodeLoop() {
             int got = g.decoder->Read(block.data(), 4096);
             if (got > 0) {
                 g.pcm.Write(block.data(), static_cast<size_t>(got));
-            } else {
+            } else if (!g.decoder->Starved()) {
                 g.pcm.SetEnded();
             }
             titleChanged = TakeStreamTitleChange(g.decoder.get());
@@ -804,8 +809,9 @@ bool IsLive() { return g.loaded && g.live; }
 namespace {
 
 // Carries on from `seconds`: played normally (scrub null), or by the scrubber,
-// reading the source backward in chunks of `reverseChunkFrames` if that is not 0.
-bool Reposition(double seconds, std::unique_ptr<Scrubber> scrub, int reverseChunkFrames) {
+// reading the source backward in chunks of `reverseChunkFrames` if that is not 0,
+// back as far as `floorSeconds`.
+bool Reposition(double seconds, std::unique_ptr<Scrubber> scrub, int reverseChunkFrames, double floorSeconds = 0) {
     if (g.length > 0) seconds = std::min(seconds, g.length);
     if (seconds < 0) seconds = 0;
     FadeOut(false);
@@ -819,6 +825,7 @@ bool Reposition(double seconds, std::unique_ptr<Scrubber> scrub, int reverseChun
         g.seekTarget = seconds;
         g.seekReverse = reverseChunkFrames > 0;
         g.seekChunkFrames = reverseChunkFrames;
+        g.seekFloorFrames = static_cast<int64_t>(floorSeconds * g.sourceRate);
         g.seekRequested = true;
         g.seekDone = false;
         g.decodeWake.notify_all();
@@ -834,20 +841,39 @@ bool Reposition(double seconds, std::unique_ptr<Scrubber> scrub, int reverseChun
 
 }  // namespace
 
+bool LiveRange(double& start, double& live) {
+    if (!g.loaded || !g.live || !g.decoder) return false;
+    double end;
+    if (!g.decoder->Rewindable(start, end)) return false;
+    // As much in hand as a stream starts with, and a little
+    live = std::max(start, end - kStreamPrebuffer - 0.5);
+    return true;
+}
+
 bool Seek(double seconds) {
-    if (!g.loaded || g.live) return false;
+    if (!g.loaded) return false;
+    if (g.live) {
+        double start, live;
+        if (!LiveRange(start, live)) return false;
+        seconds = std::clamp(seconds, start, live);
+    }
     return Reposition(seconds, nullptr, 0);
 }
 
 bool StartScrub(ScrubStyle style, int direction, float speed) {
-    if (!g.loaded || g.live) return false;
+    if (!g.loaded) return false;
+    double floor = 0, live = 0;
+    if (g.live) {
+        if (!LiveRange(floor, live)) return false;
+        floor += 1.0;  // clear of what is about to be dropped
+    }
     double from = Position();
     auto scrub = std::make_unique<Scrubber>(style, direction, speed, g.sourceRate, g.outputRate, from);
     // Backward, the source is read in chunks: longer the faster it goes, so the
     // seeks between them stay few
     int chunk = 0;
     if (direction < 0) chunk = static_cast<int>(g.sourceRate * std::clamp(speed * 0.125, 0.25, 2.0));
-    return Reposition(from, std::move(scrub), chunk);
+    return Reposition(from, std::move(scrub), chunk, floor);
 }
 
 void SetScrubSpeed(float speed) {
@@ -857,7 +883,10 @@ void SetScrubSpeed(float speed) {
 
 bool StopScrub() {
     if (!g.loaded || !g.scrub) return false;
-    return Reposition(Position(), nullptr, 0);
+    double at = Position();
+    double start, live;
+    if (g.live && LiveRange(start, live)) at = std::clamp(at, start, live);
+    return Reposition(at, nullptr, 0);
 }
 
 bool IsScrubbing() { return g.loaded && g.scrub != nullptr; }

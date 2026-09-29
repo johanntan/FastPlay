@@ -64,7 +64,25 @@ public:
     virtual int SourceSampleRate() const = 0;
     virtual int SourceBits() const = 0;  // 0 for a lossy format
     virtual std::string CodecName() const = 0;
+
+    // A live stream kept for rewinding (SetLiveRewindSeconds): the seconds of it
+    // held, in its own time (from 0 where it was opened), for Seek(): from the
+    // oldest to as near the newest as plays without running out before more
+    // arrives. False if not kept.
+    virtual bool Rewindable(double& start, double& end) const {
+        (void)start;
+        (void)end;
+        return false;
+    }
+    // Such a stream has played all it has so far: Read() would come back empty,
+    // not because it ended, but because the rest has not arrived yet.
+    virtual bool Starved() const { return false; }
 };
+
+// Live streams opened from now on keep their last `seconds` for rewinding (0: not
+// kept). What is kept is the stream as it came (compressed), about a megabyte a
+// minute at 128 kbps.
+void SetLiveRewindSeconds(int seconds);
 
 // Opens a file or URL. Null with `error` set if it cannot be played.
 std::unique_ptr<Decoder> OpenDecoder(const std::wstring& pathOrUrl, std::wstring& error);
@@ -124,13 +142,19 @@ double Position();
 double Length();
 bool IsLive();
 // To `seconds` into the source; what was buffered is dropped. Ends scrubbing.
+// A live stream kept for rewinding seeks within LiveRange().
 bool Seek(double seconds);
+// A live stream kept for rewinding: where it can be played from, in Position()'s
+// time: `start`, the oldest kept, to `live`, the live edge less the little a
+// stream keeps in hand. False for anything else.
+bool LiveRange(double& start, double& live);
 
 // Scrubbing: playing through the audio at speed, forward (direction 1) or
 // backward (-1), from what is heard now, while a seek key is held. Tape plays it
 // faster, pitch and all, at `speed` times normal once spun up; spring keeps the
 // pitch and winds up the longer it goes, up to `speed`. StopScrub() carries on
-// playing normally from wherever scrubbing got to. Not for live streams.
+// playing normally from wherever scrubbing got to. Not for live streams,
+// unless kept for rewinding.
 enum class ScrubStyle { Tape, Spring };
 bool StartScrub(ScrubStyle style, int direction, float speed);
 void SetScrubSpeed(float speed);

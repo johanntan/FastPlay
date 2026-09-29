@@ -29,6 +29,10 @@ void FreeCurrentStream();
 void Seek(double seconds);
 void SeekTracks(int tracks);
 void SeekToPosition(double seconds);
+// A live stream kept for rewinding (Options > Advanced): back to live
+void GoLive();
+// Whether live streams opened from now on are kept for rewinding (the settings)
+void ApplyLiveRewindSetting();
 double GetCurrentPosition();
 
 // Seek modes (globals.h): slash cycles them; in spring and tape seeking, holding an

@@ -210,6 +210,7 @@ void MainFrame::BuildMenuBar() {
     play->Append(IDM_SEEK_MODE, "Next Seek &Mode\t/");
     play->Append(IDM_PLAY_BEGINNING, "&Beginning\tHome");
     play->Append(IDM_PLAY_JUMPTOTIME, "&Jump to Time...\tJ");
+    play->Append(IDM_PLAY_GOLIVE, "Go to &Live\tL");
     play->AppendSeparator();
 #ifdef __WXOSX__
     // On macOS a menu shortcut is a real key, and plain Up/Down belong to the
@@ -326,6 +327,7 @@ void MainFrame::BuildAccelerators() {
         {N, 'P', IDM_EFFECT_PRESETS},
         {N, WXK_HOME, IDM_PLAY_BEGINNING},
         {N, 'J', IDM_PLAY_JUMPTOTIME},
+        {N, 'L', IDM_PLAY_GOLIVE},
         // Bookmarks
         {N, 'M', IDM_BOOKMARK_ADD},
         {C, 'M', IDM_BOOKMARK_LIST},
@@ -637,6 +639,7 @@ void MainFrame::RunCommand(int id, int param) {
         case IDM_SEEK_DECREASE: IsScrubSeekMode() ? ChangeScrubSpeed(-1) : CycleSeekAmount(-1); break;
         case IDM_SEEK_INCREASE: IsScrubSeekMode() ? ChangeScrubSpeed(1) : CycleSeekAmount(1); break;
         case IDM_SEEK_MODE: CycleSeekMode(); break;
+        case IDM_PLAY_GOLIVE: GoLive(); break;
         case IDM_PLAY_VOLUP: SetVolume(g_volume + g_volumeStep); break;
         case IDM_PLAY_VOLDOWN: SetVolume(g_volume - g_volumeStep); break;
         case IDM_PLAY_MUTE: ToggleMute(); break;

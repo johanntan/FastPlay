@@ -10,6 +10,10 @@ float g_volume = 1.0f;
 bool g_muted = false;      // Muted state (recording still works)
 bool g_disableBatchDelay = false; // Skip batch delay when opening files from explorer
 bool g_smoothSeek = true;         // Short fades when seeking, pausing and changing tracks
+bool g_liveRewind = false;        // Keep live streams for rewinding
+int g_liveRewindMinutes = 30;     // ...this many minutes of them
+const int g_liveRewindChoices[] = {5, 10, 15, 30, 60, 120};
+const int g_liveRewindChoiceCount = sizeof(g_liveRewindChoices) / sizeof(g_liveRewindChoices[0]);
 
 // ReplayGain
 int g_replayGainMode = 0;          // Off by default (opt-in)
@@ -153,6 +157,7 @@ const HotkeyAction g_hotkeyActions[] = {
     {IDM_PLAY_STOP, L"Stop", L"Stop"},
     {IDM_PLAY_PREV, L"Previous Track", L"PreviousTrack"},
     {IDM_PLAY_NEXT, L"Next Track", L"NextTrack"},
+    {IDM_PLAY_GOLIVE, L"Go to Live (Rewound Live Stream)", L"GoLive"},
     // Seeking
     {IDM_PLAY_SEEKBACK, L"Seek Backward", L"SeekBackward"},
     {IDM_PLAY_SEEKFWD, L"Seek Forward", L"SeekForward"},

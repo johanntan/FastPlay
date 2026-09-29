@@ -87,6 +87,8 @@ void LoadSettings() {
 
     g_disableBatchDelay = IniGetInt(L"Advanced", L"DisableBatchDelay", 0, g_configPath.c_str()) != 0;
     g_smoothSeek = IniGetInt(L"Advanced", L"SmoothSeek", 1, g_configPath.c_str()) != 0;
+    g_liveRewind = IniGetInt(L"Advanced", L"LiveRewind", 0, g_configPath.c_str()) != 0;
+    g_liveRewindMinutes = std::clamp(IniGetInt(L"Advanced", L"LiveRewindMinutes", 30, g_configPath.c_str()), 1, 240);
 
 
     // Load Speedy settings
@@ -442,6 +444,9 @@ void SaveSettings() {
     IniWriteString(L"Advanced", L"TempoAlgorithm", buf, g_configPath.c_str());
     IniWriteString(L"Advanced", L"DisableBatchDelay", g_disableBatchDelay ? L"1" : L"0", g_configPath.c_str());
     IniWriteString(L"Advanced", L"SmoothSeek", g_smoothSeek ? L"1" : L"0", g_configPath.c_str());
+    IniWriteString(L"Advanced", L"LiveRewind", g_liveRewind ? L"1" : L"0", g_configPath.c_str());
+    IniWriteString(L"Advanced", L"LiveRewindMinutes", std::to_wstring(g_liveRewindMinutes).c_str(),
+                   g_configPath.c_str());
 
 
     // Save Speedy settings

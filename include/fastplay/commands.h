@@ -37,6 +37,7 @@
 #define IDM_SEEK_DECREASE   220
 #define IDM_SEEK_INCREASE   221
 #define IDM_SEEK_MODE       222
+#define IDM_PLAY_GOLIVE     223
 #define IDM_EFFECT_PREV     230
 #define IDM_EFFECT_NEXT     231
 #define IDM_EFFECT_UP       232

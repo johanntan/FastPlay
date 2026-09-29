@@ -9,6 +9,7 @@ Slash switches how the left and right arrows seek:
 * Jump seeking (the default): each press jumps by the amount you chose with comma and period.
 * Spring seeking: hold an arrow to play through the audio, forward or backward, sped up without changing its pitch. The longer you hold it, the faster it goes. Let go and it plays on from there. Comma and period set the top speed.
 * Tape seeking: hold an arrow to play through the audio like a fast-forwarding or rewinding tape, pitched up with the speed. Comma and period set the speed.
+Live streams can be rewound and paused too, if you turn it on in the Advanced tab of the options, where you also choose how many minutes are kept. The arrows move back through what has been kept, and L goes back to live.
 The rest of the app is pretty explanitory. Just check out the menus for the rest of the keyboard shortcuts. Some of the other features include:
 * Basic Youtube search
 * Completely configurable Global hotkeys

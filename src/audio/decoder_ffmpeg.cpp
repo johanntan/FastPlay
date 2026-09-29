@@ -5,6 +5,11 @@
 // own rate: a mono source is copied to both sides, more channels are mixed down.
 // Seeking is exact to the sample: FFmpeg seeks to a packet at or before the time,
 // and the audio before it is decoded and dropped.
+//
+// A live stream can be kept for rewinding: a thread of its own reads the stream
+// and keeps its packets (compressed, as they came) for so many minutes, each
+// given a time from where the stream was opened, with the title changes; playing
+// reads from what is kept, and seeking moves about in it.
 
 #include "audio.h"
 #include "audio_internal.h"
@@ -28,6 +33,7 @@ extern "C" {
 #include <deque>
 #include <map>
 #include <mutex>
+#include <thread>
 
 namespace audio {
 namespace {
@@ -40,6 +46,9 @@ void QuietLogging() {
 
 // Seconds a network read may stall before the stream is given up
 const int kNetworkTimeoutSeconds = 20;
+
+// How much of a live stream to keep for rewinding (SetLiveRewindSeconds)
+std::atomic<int> g_liveRewindSeconds{0};
 
 std::string Upper(std::string s) {
     for (auto& c : s) c = static_cast<char>(toupper(static_cast<unsigned char>(c)));
@@ -72,6 +81,9 @@ std::string IcyField(const std::string& meta, const char* key) {
 class FfmpegDecoder : public Decoder {
 public:
     ~FfmpegDecoder() override {
+        m_abort = true;
+        if (m_reader.joinable()) m_reader.join();
+        for (Kept& kept : m_kept) av_packet_free(&kept.packet);
         swr_free(&m_swr);
         av_frame_free(&m_frame);
         av_packet_free(&m_packet);
@@ -156,6 +168,21 @@ public:
         m_nominalBitrate = static_cast<int>((stream->codecpar->bit_rate > 0 ? stream->codecpar->bit_rate
                                                                             : m_format->bit_rate) / 1000);
         ReadInfo();
+
+        const int keep = g_liveRewindSeconds.load();
+        if (m_live && keep > 0) {
+            m_rewind = true;
+            m_keepSeconds = keep;
+            m_startTime = 0;  // times are the kept timeline's
+            // A packet that doesn't say how long it is: a frame of the codec's
+            const int frameSize = stream->codecpar->frame_size > 0 ? stream->codecpar->frame_size : 1024;
+            m_defaultPacketSeconds = static_cast<double>(frameSize) / m_rate;
+            {
+                std::lock_guard<std::mutex> lock(m_infoMutex);
+                m_titleTimes.push_back({0.0, m_streamTitle});
+            }
+            m_reader = std::thread(&FfmpegDecoder::KeepStream, this);
+        }
         return true;
     }
 
@@ -180,16 +207,27 @@ public:
     }
 
     bool Seek(double seconds) override {
-        if (m_live || !m_format) return false;
+        if ((m_live && !m_rewind) || !m_format) return false;
         if (seconds < 0) seconds = 0;
         // From a little before, dropped: the first frame after a seek decodes
         // wrongly in some formats (MP3's bit reservoir, AAC's overlapping windows)
         const double settle = 0.1;
-        int64_t target = static_cast<int64_t>((std::max(0.0, seconds - settle) + m_startTime) * AV_TIME_BASE);
-        Arm();
-        if (avformat_seek_file(m_format, -1, INT64_MIN, target, target, 0) < 0 &&
-            av_seek_frame(m_format, -1, target, AVSEEK_FLAG_BACKWARD) < 0) {
-            return false;
+        if (m_rewind) {
+            // Within what is kept: from the first packet that ends after the time
+            std::lock_guard<std::mutex> lock(m_keptMutex);
+            if (m_kept.empty()) return false;
+            seconds = std::clamp(seconds, m_kept.front().start, m_keptEnd);
+            const double from = std::max(m_kept.front().start, seconds - settle);
+            auto it = std::upper_bound(m_kept.begin(), m_kept.end(), from,
+                                       [](double t, const Kept& kept) { return t < kept.end; });
+            m_cursor = m_keptBase + static_cast<uint64_t>(it - m_kept.begin());
+        } else {
+            int64_t target = static_cast<int64_t>((std::max(0.0, seconds - settle) + m_startTime) * AV_TIME_BASE);
+            Arm();
+            if (avformat_seek_file(m_format, -1, INT64_MIN, target, target, 0) < 0 &&
+                av_seek_frame(m_format, -1, target, AVSEEK_FLAG_BACKWARD) < 0) {
+                return false;
+            }
         }
         avcodec_flush_buffers(m_codec);
         if (m_swr) swr_init(m_swr);  // drops anything still inside it
@@ -234,6 +272,22 @@ public:
     bool IsVbr() const override {
         std::lock_guard<std::mutex> lock(m_infoMutex);
         return m_vbr;
+    }
+
+    bool Rewindable(double& start, double& end) const override {
+        if (!m_rewind) return false;
+        std::lock_guard<std::mutex> lock(m_keptMutex);
+        start = m_kept.empty() ? 0.0 : m_kept.front().start;
+        // Short of the newest by what arrives at a time (an HLS stream's segment),
+        // so playing from there never runs out before the next arrives
+        end = std::max(start, m_keptEnd - m_largestArrival);
+        return true;
+    }
+
+    bool Starved() const override {
+        if (!m_rewind) return false;
+        std::lock_guard<std::mutex> lock(m_keptMutex);
+        return !m_readerEnded && std::max(m_cursor, m_keptBase) >= m_keptBase + m_kept.size();
     }
 
     int SourceChannels() const override { return m_sourceChannels; }
@@ -329,6 +383,18 @@ private:
         if (meta.empty() || meta == m_lastIcyPacket) return;
         m_lastIcyPacket = meta;
         std::string title = IcyField(meta, "StreamTitle");
+        if (m_rewind) {
+            // Kept with the time it came at; it is the title once playing gets there
+            double at, oldest;
+            {
+                std::lock_guard<std::mutex> lock(m_keptMutex);
+                at = m_keptEnd;
+                oldest = m_kept.empty() ? 0.0 : m_kept.front().start;
+            }
+            m_titleTimes.push_back({at, title});
+            while (m_titleTimes.size() > 1 && m_titleTimes[1].first <= oldest) m_titleTimes.pop_front();
+            return;
+        }
         if (title != m_streamTitle) {
             m_streamTitle = title;
             m_titleChanged = true;
@@ -374,6 +440,20 @@ private:
             if (rc != AVERROR(EAGAIN)) return false;
             if (m_flushing) return false;
 
+            if (m_rewind) {
+                if (!NextKept(m_packet)) {
+                    if (!Starved()) {
+                        m_flushing = true;  // the stream ended
+                        avcodec_send_packet(m_codec, nullptr);
+                        continue;
+                    }
+                    return false;  // nothing more yet
+                }
+                avcodec_send_packet(m_codec, m_packet);
+                av_packet_unref(m_packet);
+                continue;
+            }
+
             Arm();
             rc = av_read_frame(m_format, m_packet);
             if (rc < 0) {
@@ -391,6 +471,79 @@ private:
             av_packet_unref(m_packet);
             PollIcy();
         }
+    }
+
+    // Kept for rewinding: reads the stream into m_kept until it ends or the
+    // decoder goes (its own thread; the only user of m_format from then on).
+    void KeepStream() {
+        AVPacket* packet = av_packet_alloc();
+        const AVRational timeBase = m_format->streams[m_stream]->time_base;
+        while (packet && !m_abort) {
+            Arm();
+            if (av_read_frame(m_format, packet) < 0) break;
+            if (packet->stream_index == m_stream) {
+                CountPacket(packet);
+                double seconds = packet->duration > 0 ? packet->duration * av_q2d(timeBase) : 0.0;
+                if (seconds <= 0) seconds = m_defaultPacketSeconds;
+                Kept kept{av_packet_clone(packet), 0.0, 0.0};
+                if (kept.packet) {
+                    std::lock_guard<std::mutex> lock(m_keptMutex);
+                    kept.start = m_keptEnd;
+                    kept.end = m_keptEnd + seconds;
+                    // The stream's own times, which start anywhere and can jump, give
+                    // way to the kept timeline's, so a seek's target is found in frames
+                    kept.packet->pts = kept.packet->dts = std::llround(kept.start / av_q2d(timeBase));
+                    kept.packet->duration = std::llround(seconds / av_q2d(timeBase));
+                    m_kept.push_back(kept);
+                    m_keptEnd = kept.end;
+                    // How much comes at a time: packets in a run with no pause
+                    // between them. The first run (a server's opening burst, or
+                    // HLS's first few segments) is left out.
+                    const auto now = std::chrono::steady_clock::now();
+                    if (now - m_lastArrival > std::chrono::milliseconds(250)) {
+                        if (m_arrivals++ > 1) m_largestArrival = std::max(m_largestArrival, kept.start - m_arrivalStart);
+                        m_arrivalStart = kept.start;
+                    }
+                    m_lastArrival = now;
+                    while (m_kept.size() > 1 && m_kept.front().end < m_keptEnd - m_keepSeconds) {
+                        av_packet_free(&m_kept.front().packet);
+                        m_kept.pop_front();
+                        m_keptBase++;
+                    }
+                }
+            }
+            av_packet_unref(packet);
+            PollIcy();
+        }
+        av_packet_free(&packet);
+        std::lock_guard<std::mutex> lock(m_keptMutex);
+        m_readerEnded = true;
+    }
+
+    // The next kept packet to decode, if it has come; the title is what it was then.
+    // Paused longer than what is kept, playing carries on from the oldest.
+    bool NextKept(AVPacket* out) {
+        double at;
+        {
+            std::lock_guard<std::mutex> lock(m_keptMutex);
+            if (m_cursor < m_keptBase) m_cursor = m_keptBase;
+            const size_t i = static_cast<size_t>(m_cursor - m_keptBase);
+            if (i >= m_kept.size()) return false;
+            if (av_packet_ref(out, m_kept[i].packet) < 0) return false;
+            at = m_kept[i].start;
+            m_cursor++;
+        }
+        std::lock_guard<std::mutex> lock(m_infoMutex);
+        const std::string* title = nullptr;
+        for (const auto& change : m_titleTimes) {
+            if (change.first > at) break;
+            title = &change.second;
+        }
+        if (title && *title != m_streamTitle) {
+            m_streamTitle = *title;
+            m_titleChanged = true;
+        }
+        return true;
     }
 
     // Converts a decoded frame to stereo float and appends it, dropping what lies
@@ -502,11 +655,36 @@ private:
     std::vector<Chapter> m_chapters;
     std::string m_streamTitle, m_lastIcyPacket;
     bool m_titleChanged = false;
+    std::deque<std::pair<double, std::string>> m_titleTimes;  // kept for rewinding: when each title came
+
+    // Kept for rewinding: the stream's packets, with their times from where it was
+    // opened. Filled by m_reader; read at m_cursor, counted as m_keptBase is (the
+    // number dropped off the front).
+    struct Kept {
+        AVPacket* packet;
+        double start, end;
+    };
+    bool m_rewind = false;
+    double m_keepSeconds = 0;
+    double m_defaultPacketSeconds = 0;
+    std::thread m_reader;
+    mutable std::mutex m_keptMutex;
+    std::deque<Kept> m_kept;
+    uint64_t m_keptBase = 0;
+    uint64_t m_cursor = 0;
+    double m_keptEnd = 0;
+    bool m_readerEnded = false;
+    std::chrono::steady_clock::time_point m_lastArrival;  // for how much arrives at a time
+    double m_arrivalStart = 0;
+    int m_arrivals = 0;
+    double m_largestArrival = 0;
     int m_nominalBitrate = 0, m_recentBitrate = 0;
     bool m_vbr = false;
 };
 
 }  // namespace
+
+void SetLiveRewindSeconds(int seconds) { g_liveRewindSeconds = std::max(0, seconds); }
 
 bool IsNetworkPath(const std::wstring& path) {
     return WStrNICmp(path.c_str(), L"http://", 7) == 0 || WStrNICmp(path.c_str(), L"https://", 8) == 0;

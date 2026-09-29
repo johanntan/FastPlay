@@ -40,6 +40,12 @@ void UpdateOutputGain() {
     audio::SetGain(gain);
 }
 
+// A live stream kept for rewinding: it can pause and seek within what is kept
+static bool IsRewindable() {
+    double start, live;
+    return g_isLiveStream && audio::LiveRange(start, live);
+}
+
 // Compute the linear ReplayGain multiplier for what was just loaded and store it
 // in g_replayGainScale. Reads REPLAYGAIN_TRACK_GAIN / REPLAYGAIN_ALBUM_GAIN (and
 // the matching _PEAK tags). 1.0 (no change) when disabled or when the file has no
@@ -160,6 +166,7 @@ bool InitAudio() {
     if (g_selectedDevice == -1) g_selectedDeviceName.clear();
     audio::SetSmoothTransitions(g_smoothSeek);
     audio::SetTapBeforeEffects(!g_recordEffects);
+    ApplyLiveRewindSetting();
     UpdateOutputGain();
     ApplyMidiSettings();
     return true;
@@ -356,7 +363,7 @@ void PlayPause() {
 
     if (IsPlaying()) {
         // For live streams, stop instead of pause
-        if (g_isLiveStream) {
+        if (g_isLiveStream && !IsRewindable()) {
             Stop();
         } else {
             Pause();
@@ -401,8 +408,8 @@ void Play() {
 // Pause playback
 void Pause() {
     if (!audio::IsLoaded()) return;
-    // Don't allow pausing live streams
-    if (g_isLiveStream) {
+    // Don't allow pausing live streams (unless kept for rewinding)
+    if (g_isLiveStream && !IsRewindable()) {
         Speak("Cannot pause live stream");
         return;
     }
@@ -434,7 +441,17 @@ void Stop() {
 
 // Seek relative to current position
 void Seek(double seconds) {
-    if (!audio::IsLoaded() || g_isBusy || g_isLoading || g_isLiveStream) return;
+    if (!audio::IsLoaded() || g_isBusy || g_isLoading) return;
+    if (g_isLiveStream) {
+        // Kept for rewinding: back into what is kept, or forward as far as live
+        double start, live;
+        if (!audio::LiveRange(start, live)) return;
+        double target = std::clamp(audio::Position() + seconds, start, live);
+        JumpTo(target);
+        if (target >= live) Speak("Live");
+        UpdateStatusBar();
+        return;
+    }
 
     double length = audio::Length();
     if (length <= 0) return;  // Invalid or unknown length
@@ -464,7 +481,14 @@ void SeekTracks(int tracks) {
 
 // Seek to absolute position in seconds
 void SeekToPosition(double seconds) {
-    if (!audio::IsLoaded() || g_isLiveStream) return;
+    if (!audio::IsLoaded()) return;
+    if (g_isLiveStream) {
+        // Kept for rewinding: within what is kept (the engine holds it to that)
+        if (!IsRewindable()) return;
+        JumpTo(seconds);
+        UpdateStatusBar();
+        return;
+    }
 
     double duration = audio::Length();
     if (seconds < 0) seconds = 0;
@@ -514,7 +538,8 @@ void SpeakSeekMode() {
 }
 
 void StartScrubbing(int direction) {
-    if (!audio::IsLoaded() || g_isBusy || g_isLoading || g_isLiveStream || audio::Length() <= 0) return;
+    if (!audio::IsLoaded() || g_isBusy || g_isLoading) return;
+    if (g_isLiveStream ? !IsRewindable() : audio::Length() <= 0) return;
     if (!audio::IsScrubbing()) g_pausedBeforeScrub = !IsPlaying();
     const bool tape = g_seekMode == SEEK_MODE_TAPE;
     if (!audio::StartScrub(tape ? audio::ScrubStyle::Tape : audio::ScrubStyle::Spring, direction,
@@ -534,6 +559,21 @@ void StopScrubbing() {
     if (g_pausedBeforeScrub) audio::Pause();
     UpdateWindowTitle();
     UpdateStatusBar();
+}
+
+void GoLive() {
+    double start, live;
+    if (!g_isLiveStream || !audio::LiveRange(start, live)) return;
+    StopScrubbing();
+    if (live - audio::Position() > 1.0) JumpTo(live);
+    if (!IsPlaying()) audio::Play();
+    Speak("Live");
+    UpdateWindowTitle();
+    UpdateStatusBar();
+}
+
+void ApplyLiveRewindSetting() {
+    audio::SetLiveRewindSeconds(g_liveRewind ? g_liveRewindMinutes * 60 : 0);
 }
 
 // Get current playback position in seconds
@@ -667,6 +707,12 @@ void SpeakElapsed() {
 // Speak remaining time
 void SpeakRemaining() {
     if (!audio::IsLoaded()) return;
+    double start, live;
+    if (g_isLiveStream && audio::LiveRange(start, live)) {
+        double behind = live - audio::Position();
+        Speak(behind < 1.0 ? std::string("Live") : WideToUtf8(FormatTime(behind)) + " behind live");
+        return;
+    }
     double remaining = audio::Length() - audio::Position();
     if (remaining < 0) remaining = 0;
     Speak(WideToUtf8(FormatTime(remaining)));
