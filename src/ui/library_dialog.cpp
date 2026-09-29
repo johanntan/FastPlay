@@ -16,12 +16,78 @@
 #include "playlist_io.h"
 #include "utils.h"
 
+#include <wx/listctrl.h>
 #include <wx/notebook.h>
 
 #include <algorithm>
+#include <chrono>
+#include <functional>
 #include <memory>
 
 namespace {
+
+// A list of lines that stays quick with tens of thousands of them. On Windows a
+// list box takes seconds to fill with that many (each line is its own message
+// and allocation), so it is a virtual list view there instead, which asks only
+// for the lines it shows; screen readers read it as they do any list. On macOS
+// the list box is a table view that already works that way.
+#ifdef __WXMSW__
+class ItemList : public wxListCtrl {
+public:
+    ItemList(wxWindow* parent, const wxSize& size)
+        : wxListCtrl(parent, wxID_ANY, wxDefaultPosition, size,
+                     wxLC_REPORT | wxLC_VIRTUAL | wxLC_SINGLE_SEL | wxLC_NO_HEADER) {
+        AppendColumn("");
+        Bind(wxEVT_SIZE, [this](wxSizeEvent& event) {
+            SetColumnWidth(0, GetClientSize().x);
+            event.Skip();
+        });
+        Bind(wxEVT_LIST_ITEM_ACTIVATED, [this](wxListEvent&) {
+            if (m_activate) m_activate();
+        });
+    }
+
+    void Set(wxArrayString texts) {
+        m_texts = std::move(texts);
+        SetItemCount(static_cast<long>(m_texts.size()));
+        Refresh();
+    }
+    int GetSelection() const { return static_cast<int>(GetNextItem(-1, wxLIST_NEXT_ALL, wxLIST_STATE_SELECTED)); }
+    void SetSelection(int index) {
+        const long state = wxLIST_STATE_SELECTED | wxLIST_STATE_FOCUSED;
+        SetItemState(index, state, state);
+        EnsureVisible(index);
+    }
+    void OnActivate(std::function<void()> activate) { m_activate = std::move(activate); }
+
+private:
+    wxString OnGetItemText(long item, long) const override {
+        return item >= 0 && item < static_cast<long>(m_texts.size()) ? m_texts[item] : wxString();
+    }
+
+    wxArrayString m_texts;
+    std::function<void()> m_activate;
+};
+#else
+class ItemList : public wxListBox {
+public:
+    ItemList(wxWindow* parent, const wxSize& size)
+        : wxListBox(parent, wxID_ANY, wxDefaultPosition, size, 0, nullptr, wxLB_SINGLE) {
+        Bind(wxEVT_LISTBOX_DCLICK, [this](wxCommandEvent&) {
+            if (m_activate) m_activate();
+        });
+    }
+    void Set(const wxArrayString& texts) {
+        Freeze();
+        wxListBox::Set(texts);
+        Thaw();
+    }
+    void OnActivate(std::function<void()> activate) { m_activate = std::move(activate); }
+
+private:
+    std::function<void()> m_activate;
+};
+#endif
 
 class LibraryDialog;
 LibraryDialog* g_libraryDialog = nullptr;
@@ -169,7 +235,8 @@ private:
     struct Page {
         wxChoice* sort = nullptr;
         int sortKind = -1;  // the Kind its choices are for
-        wxListBox* list = nullptr;
+        ItemList* list = nullptr;
+        wxArrayString shown;  // what the list says, to leave it be when that is the same
         std::vector<Level> levels;
         std::vector<Item> items;
     };
@@ -187,8 +254,7 @@ private:
         page.sort = new wxChoice(panel, wxID_ANY);
         sortRow->Add(page.sort);
         sizer->Add(sortRow, 0, wxLEFT | wxRIGHT | wxTOP, 10);
-        page.list = new wxListBox(panel, wxID_ANY, wxDefaultPosition, ConvertDialogToPixels(wxSize(336, 200)), 0,
-                                  nullptr, wxLB_SINGLE);
+        page.list = new ItemList(panel, ConvertDialogToPixels(wxSize(336, 200)));
         sizer->Add(page.list, 1, wxEXPAND | wxALL, 10);
         panel->SetSizer(sizer);
         m_book->AddPage(panel, kTabNames[tab]);
@@ -204,7 +270,7 @@ private:
             if (p.levels.size() == 1) g_topSort[tab] = p.levels.back().sort;
             Fill(tab);
         });
-        page.list->Bind(wxEVT_LISTBOX_DCLICK, [this](wxCommandEvent&) { Activate(); });
+        page.list->OnActivate([this]() { Activate(); });
     }
 
     int CurrentTab() const { return std::max(0, m_book->GetSelection()); }
@@ -253,15 +319,13 @@ private:
         texts.reserve(items.size());
         for (const Item& item : items) texts.push_back(Text(level, item));
         // The same as before (a refresh while indexing changed nothing here): leave it be
-        wxArrayString shown = page.list->GetStrings();
-        bool same = shown.size() == texts.size() && std::equal(shown.begin(), shown.end(), texts.begin());
+        const bool same = page.shown.size() == texts.size() && std::equal(texts.begin(), texts.end(), page.shown.begin());
         wxString selected = SelectedKey(page);
         if (selected.empty()) selected = level.selected;
         page.items = std::move(items);
         if (!same) {
-            page.list->Freeze();
-            page.list->Set(texts);
-            page.list->Thaw();
+            page.shown = texts;
+            page.list->Set(std::move(texts));
         }
         int select = page.items.empty() ? -1 : 0;
         for (size_t i = 0; i < page.items.size(); i++) {
@@ -360,7 +424,15 @@ private:
     }
 
     // The index changed: the list shown now shows it too
-    void LibraryChanged() { Fill(CurrentTab()); }
+    // While indexing, the list follows every few seconds (a big one takes a
+    // moment to fetch); once indexing is done, at once
+    void LibraryChanged() {
+        int done, found;
+        const auto now = std::chrono::steady_clock::now();
+        if (LibraryProgress(done, found) && now - m_lastRefresh < std::chrono::seconds(3)) return;
+        m_lastRefresh = now;
+        Fill(CurrentTab());
+    }
 
     void ShowStatus() {
         wxString text;
@@ -579,6 +651,7 @@ private:
     Page m_pages[kTabs];
     wxTimer m_searchTimer;
     wxTimer m_statusTimer;
+    std::chrono::steady_clock::time_point m_lastRefresh;
 };
 
 }  // namespace
