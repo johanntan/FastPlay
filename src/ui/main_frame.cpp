@@ -1152,9 +1152,7 @@ void MainFrame::OnClose(wxCloseEvent&) {
     StopMediaKeys();  // and leave Control Center's Now Playing
 #endif
     StopRecording();  // Stop recording on exit
-    if (audio::IsLoaded() && g_currentTrack >= 0 && g_currentTrack < static_cast<int>(g_playlist.size())) {
-        SaveFilePosition(g_playlist[g_currentTrack]);
-    }
+    SaveCurrentPosition();
     SavePlaybackState();
     SaveSettings();
     YouTubeCleanup();  // Clean up temp files

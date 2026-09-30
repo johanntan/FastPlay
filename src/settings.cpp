@@ -829,6 +829,8 @@ void SaveFilePosition(const std::wstring& filePath) {
     if (length < g_rememberPosMinutes * 60.0) return;
 
     double position = audio::Position();
+    // Played to the end (or as good as): next time it starts from the beginning
+    if (position >= length - 5.0) position = 0.0;
 
     SaveFilePositionDB(filePath, position);
 }

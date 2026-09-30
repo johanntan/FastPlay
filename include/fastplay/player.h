@@ -34,6 +34,9 @@ void GoLive();
 // Whether live streams opened from now on are kept for rewinding (the settings)
 void ApplyLiveRewindSetting();
 double GetCurrentPosition();
+// Remember where the file playing is (Options: remember position), under its own
+// name. Done by itself whenever another file is loaded; at exit, call it.
+void SaveCurrentPosition();
 
 // Seek modes (globals.h): slash cycles them; in spring and tape seeking, holding an
 // arrow scrubs (Start on the key going down, Stop on it coming up) and comma and

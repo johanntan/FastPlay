@@ -233,7 +233,18 @@ static void ReadChapters(const wchar_t* path) {
 }
 
 // Unload whatever is playing, effects first.
+// The file loaded now, as it was loaded. Its position is saved under this name,
+// not the playlist's current entry: the playlist may already hold what is to
+// play next (a file opened from Explorer replaces it before it is played).
+static std::wstring g_loadedPath;
+
+void SaveCurrentPosition() {
+    if (!g_loadedPath.empty() && !g_isLiveStream) SaveFilePosition(g_loadedPath);
+}
+
 static void UnloadCurrent() {
+    SaveCurrentPosition();
+    g_loadedPath.clear();
     RemoveDSPEffects();
     audio::Unload();
     g_isLiveStream = false;
@@ -257,6 +268,7 @@ static bool StartDecoder(std::unique_ptr<audio::Decoder> decoder, const wchar_t*
         return false;
     }
 
+    g_loadedPath = path;
     ComputeReplayGainScale();
     UpdateOutputGain();
     ApplyDSPEffects();
@@ -757,10 +769,7 @@ void PlayTrack(int index, bool autoPlay) {
 
     g_isBusy = true;
 
-    // Save position of current track before switching
-    if (audio::IsLoaded() && g_currentTrack >= 0 && g_currentTrack < static_cast<int>(g_playlist.size())) {
-        SaveFilePosition(g_playlist[g_currentTrack]);
-    }
+    // (The position of what is playing is saved as it is unloaded, under its own name)
 
     // Try to load tracks, skipping failures (up to 10 attempts to prevent infinite loop)
     int attempts = 0;
