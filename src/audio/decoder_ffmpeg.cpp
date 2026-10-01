@@ -13,6 +13,7 @@
 
 #include "audio.h"
 #include "audio_internal.h"
+#include "http_cache.h"
 #include "http.h"
 #include "utils.h"
 
@@ -84,11 +85,13 @@ public:
         m_abort = true;
         if (m_reader.joinable()) m_reader.join();
         for (Kept& kept : m_kept) av_packet_free(&kept.packet);
+        if (m_cache) m_cache->Abort();
         swr_free(&m_swr);
         av_frame_free(&m_frame);
         av_packet_free(&m_packet);
         avcodec_free_context(&m_codec);
-        avformat_close_input(&m_format);
+        avformat_close_input(&m_format);  // not the cache's reader, which is the cache's own
+        m_cache.reset();
     }
 
     bool Open(const std::wstring& pathOrUrl, std::wstring& error) {
@@ -163,6 +166,26 @@ public:
         const bool seekable = m_format->pb && (m_format->pb->seekable & AVIO_SEEKABLE_NORMAL);
         m_live = network && (m_length <= 0 || !seekable);
         if (m_live) m_length = 0;
+
+        // A file over HTTP is read through a local copy that downloads in the
+        // background (http_cache.h): a seek into what has come is then at once,
+        // rather than a new request to the server every time
+        if (network && !m_live && m_format->pb && std::strcmp(m_format->iformat->name, "hls") != 0) {
+            const int64_t size = avio_size(m_format->pb);
+            if (size > 0) {
+                AVIOContext* source = m_format->pb;
+                m_cache = HttpCache::Create(source, size, avio_tell(source), [this]() { Arm(); });
+                if (m_cache) {
+                    m_format->pb = m_cache->Io();
+                    m_format->flags |= AVFMT_FLAG_CUSTOM_IO;
+                }
+                // An MP3 without a seek table is otherwise sought by reading every
+                // frame up to the time, which over the network is downloading all
+                // of it in between; from its bitrate it goes straight there instead
+                // (exact for a constant bitrate, close for a variable one)
+                m_format->flags |= AVFMT_FLAG_FAST_SEEK;
+            }
+        }
         if (m_format->start_time != AV_NOPTS_VALUE) m_startTime = m_format->start_time / static_cast<double>(AV_TIME_BASE);
 
         m_nominalBitrate = static_cast<int>((stream->codecpar->bit_rate > 0 ? stream->codecpar->bit_rate
@@ -239,7 +262,10 @@ public:
         return true;
     }
 
-    void Abort() override { m_abort = true; }
+    void Abort() override {
+        m_abort = true;
+        if (m_cache) m_cache->Abort();
+    }
 
     double Length() const override { return m_length; }
     bool IsLive() const override { return m_live; }
@@ -323,13 +349,17 @@ private:
     }
 
     // Starts the clock a blocking call may run for before it is given up.
+    // (From the decode thread and a download or keeping thread at once: atomic.)
     void Arm() {
-        m_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(kNetworkTimeoutSeconds * 2);
+        m_deadline = (std::chrono::steady_clock::now() + std::chrono::seconds(kNetworkTimeoutSeconds * 2))
+                         .time_since_epoch()
+                         .count();
     }
 
     static int Interrupted(void* opaque) {
         auto* self = static_cast<FfmpegDecoder*>(opaque);
-        return self->m_abort || std::chrono::steady_clock::now() > self->m_deadline ? 1 : 0;
+        return self->m_abort || std::chrono::steady_clock::now().time_since_epoch().count() > self->m_deadline ? 1
+                                                                                                                 : 0;
     }
 
     // The tags, chapters and stream headers, read once the file is open.
@@ -644,7 +674,8 @@ private:
     std::string m_codecName;
 
     std::atomic<bool> m_abort{false};
-    std::chrono::steady_clock::time_point m_deadline;
+    std::atomic<std::chrono::steady_clock::rep> m_deadline{0};
+    std::unique_ptr<HttpCache> m_cache;  // a file over HTTP: its local copy
 
     std::deque<std::pair<int, double>> m_window;  // recent packets: bytes, seconds
     double m_windowBytes = 0, m_windowSeconds = 0;

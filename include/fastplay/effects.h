@@ -42,6 +42,14 @@ void SetCurrentParamToMin();
 void SetCurrentParamToMax();
 void AnnounceCurrentParam();
 int GetAvailableParamCount();
+// The parameters the effect slider goes through now (those of the enabled
+// effects), in order, and the one it is on: for interfaces that show them.
+std::vector<ParamId> GetAvailableParamIds();
+ParamId GetCurrentParam();
+void SetCurrentParam(ParamId id);
+// A parameter and its value as AnnounceCurrentParam() says it: "Tempo 5%",
+// "Reverb Room: Cathedral", "3D Mode: Binaural".
+std::string DescribeParam(ParamId id);
 
 // Reset all effects to default
 void ResetEffects();

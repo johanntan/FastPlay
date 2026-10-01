@@ -445,6 +445,18 @@ int GetAvailableParamCount() {
     return (int)GetAvailableParams().size();
 }
 
+std::vector<ParamId> GetAvailableParamIds() {
+    return GetAvailableParams();
+}
+
+ParamId GetCurrentParam() {
+    return (ParamId)g_currentParamIndex;
+}
+
+void SetCurrentParam(ParamId id) {
+    if (GetParamDef(id)) g_currentParamIndex = (int)id;
+}
+
 // Toggle stream effect (Volume=0, Pitch=1, Tempo=2, Rate=3)
 void ToggleStreamEffect(int effectIndex) {
     if (effectIndex < 0 || effectIndex >= 4) return;
@@ -1075,10 +1087,13 @@ void SetCurrentParamToMax() {
 
 void AnnounceCurrentParam() {
     if (!g_speechEffect) return;
+    std::string text = DescribeParam((ParamId)g_currentParamIndex);
+    if (!text.empty()) Speak(text);
+}
 
-    ParamId id = (ParamId)g_currentParamIndex;
+std::string DescribeParam(ParamId id) {
     const ParamDef* def = GetParamDef(id);
-    if (!def) return;
+    if (!def) return std::string();
 
     float val = GetParamValue(id);
     char buf[64];
@@ -1125,7 +1140,7 @@ void AnnounceCurrentParam() {
         snprintf(buf, sizeof(buf), "%s %.0f%s", def->name, val, def->unit);
     }
 
-    Speak(buf);
+    return buf;
 }
 
 void ResetEffects() {

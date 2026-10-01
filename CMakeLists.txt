@@ -240,6 +240,7 @@ set(FASTPLAY_SOURCES
     src/audio/decoder_tracker.cpp
     src/audio/recorder.cpp
     src/audio/scrubber.cpp
+    src/audio/http_cache.cpp
     src/library.cpp
     src/audio/decoders.cpp
     src/audio/engine.cpp
