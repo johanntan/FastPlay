@@ -31,6 +31,7 @@
 #include <mutex>
 #include <sstream>
 #include <thread>
+#include <utility>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -615,46 +616,63 @@ std::wstring ParseJsonString(const std::wstring& json, const std::wstring& key) 
     return value;
 }
 
+// Find the end of a JSON object or array, ignoring delimiters inside strings.
+// Search entries must be read as whole objects: a snippet can be arbitrarily
+// long, and its position relative to the video ID is not fixed.
+size_t JsonContainerEnd(const std::wstring& json, size_t start) {
+	int depth = 0;
+	bool inString = false;
+	for (size_t pos = start; pos < json.size(); pos++) {
+		wchar_t c = json[pos];
+		if (inString) {
+			if (c == L'\\') pos++;
+			else if (c == L'"') inString = false;
+			continue;
+		}
+		if (c == L'"') inString = true;
+		else if (c == L'{' || c == L'[') depth++;
+		else if ((c == L'}' || c == L']') && --depth == 0) return pos + 1;
+	}
+	return std::wstring::npos;
+}
+
 bool SearchWithAPI(const std::wstring& query, std::vector<YouTubeResult>& results, std::wstring& nextPageToken,
                    const std::wstring& pageToken) {
-    std::wstring url = L"https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&maxResults=25&q=";
-    url += UrlEncode(query);
-    url += L"&key=" + g_ytApiKey;
-    if (!pageToken.empty()) {
-        url += L"&pageToken=" + pageToken;
-    }
+	std::wstring url = L"https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&maxResults=25&q=";
+	url += UrlEncode(query);
+	url += L"&key=" + g_ytApiKey;
+	if (!pageToken.empty()) {
+		url += L"&pageToken=" + pageToken;
+	}
 
-    std::wstring response = Utf8ToWide(HttpGet(url).body);
-    if (response.empty()) return false;
+	std::wstring response = Utf8ToWide(HttpGet(url).body);
+	if (response.empty()) return false;
 
-    // Parse results (simple parsing, not full JSON)
-    nextPageToken = ParseJsonString(response, L"nextPageToken");
+	nextPageToken = ParseJsonString(response, L"nextPageToken");
+	size_t itemsPos = response.find(L"\"items\"");
+	if (itemsPos == std::wstring::npos) return false;
+	size_t arrayStart = response.find(L'[', itemsPos + 7);
+	if (arrayStart == std::wstring::npos) return false;
+	size_t arrayEnd = JsonContainerEnd(response, arrayStart);
+	if (arrayEnd == std::wstring::npos) return false;
 
-    // Find items array and parse each item
-    size_t itemsPos = response.find(L"\"items\"");
-    if (itemsPos == std::wstring::npos) return false;
-
-    size_t searchStart = itemsPos;
-    while ((searchStart = response.find(L"\"videoId\"", searchStart)) != std::wstring::npos) {
-        YouTubeResult result;
-        result.id = ParseJsonString(response.substr(searchStart, 500), L"videoId");
-
-        // Find the snippet for this item
-        size_t snippetPos = response.rfind(L"\"snippet\"", searchStart);
-        if (snippetPos != std::wstring::npos && snippetPos > itemsPos) {
-            std::wstring snippet = response.substr(snippetPos, searchStart - snippetPos + 1000);
-            result.title = ParseJsonString(snippet, L"title");
-            result.channel = ParseJsonString(snippet, L"channelTitle");
-            result.channelId = ParseJsonString(snippet, L"channelId");
-        }
-
-        if (!result.id.empty() && !result.title.empty()) {
-            results.push_back(result);
-        }
-        searchStart += 10;
-    }
-
-    return !results.empty();
+	// Keep the ID, title and channel within the same entry, regardless of key
+	// order. Never search backwards into the previous result's snippet.
+	size_t pos = arrayStart + 1;
+	while ((pos = response.find_first_not_of(L" \t\r\n,", pos)) < arrayEnd - 1) {
+		if (response[pos] != L'{') return false;
+		size_t end = JsonContainerEnd(response, pos);
+		if (end == std::wstring::npos || end >= arrayEnd) return false;
+		std::wstring item = response.substr(pos, end - pos);
+		YouTubeResult result;
+		result.id = ParseJsonString(item, L"videoId");
+		result.title = ParseJsonString(item, L"title");
+		result.channel = ParseJsonString(item, L"channelTitle");
+		result.channelId = ParseJsonString(item, L"channelId");
+		if (!result.id.empty() && !result.title.empty()) results.push_back(std::move(result));
+		pos = end;
+	}
+	return !results.empty();
 }
 
 // ---------------------------------------------------------------------------
