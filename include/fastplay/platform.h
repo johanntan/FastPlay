@@ -21,7 +21,9 @@ class wxFrame;
 // VoiceOver would announce). The handler gets the key as MOD_* flags (MOD_CONTROL
 // is Command, MOD_ALT is Option, MOD_WIN is Control) and a Windows virtual key
 // code, and returns true to swallow it. `holdHandler` sees keys going down (and
-// repeating) and coming up, first, for keys that act while held.
+// repeating) and coming up, first, for keys that act while held. Menu key
+// equivalents are suspended while another window is focused, so dialogs keep
+// their typing and editing keys.
 void StartShortcutMonitor(wxFrame* frame, bool (*handler)(unsigned modifiers, unsigned vk),
                           bool (*holdHandler)(unsigned modifiers, unsigned vk, bool down, bool repeat));
 void StopShortcutMonitor();
