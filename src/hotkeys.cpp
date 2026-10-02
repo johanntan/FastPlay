@@ -130,7 +130,8 @@ void LoadHotkeys() {
         unsigned mods = 0, vk = 0;
         wchar_t action[64] = {0};
         int global = 1;
-        if (swscanf(value, L"%u,%u,%63[^,],%d", &mods, &vk, action, &global) >= 3) {
+		// The l modifier makes the scanset write wchar_t on every platform.
+		if (swscanf(value, L"%u,%u,%63l[^,],%d", &mods, &vk, action, &global) >= 3) {
             int actionIdx = FindAction(action);
             if (actionIdx >= 0) {
                 GlobalHotkey hk;
