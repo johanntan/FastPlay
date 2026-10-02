@@ -90,6 +90,11 @@ static const ParamDef g_paramDefs[] = {
     {ParamId::SpatialCrossover,  "3D Crossover",   " Hz",  40.0f,  160.0f,  10.0f, 80.0f,  DSPEffectType::SpatialAudio},
     {ParamId::SpatialBassFeel,   "3D Bass Feel",   "%",    0.0f,   200.0f,  10.0f, 100.0f, DSPEffectType::SpatialAudio},
     {ParamId::SpatialConeNoise,  "3D Cone Noise",  "%",    0.0f,   1000.0f, 25.0f, 100.0f, DSPEffectType::SpatialAudio},
+    // Normalizer parameters
+    {ParamId::NormTarget,    "Normalizer Target",    " dB", -40.0f, 0.0f,    1.0f,  -3.0f,   DSPEffectType::Normalizer},
+    {ParamId::NormLookahead, "Normalizer Lookahead", " ms", 0.0f,   200.0f,  10.0f, 50.0f,   DSPEffectType::Normalizer},
+    {ParamId::NormMaxGain,   "Normalizer Max Gain",  " dB", 0.0f,   40.0f,   1.0f,  20.0f,   DSPEffectType::Normalizer},
+    {ParamId::NormRelease,   "Normalizer Release",   " ms", 50.0f,  5000.0f, 50.0f, 1000.0f, DSPEffectType::Normalizer},
 };
 static const int g_paramDefCount = sizeof(g_paramDefs) / sizeof(g_paramDefs[0]);
 
@@ -102,15 +107,17 @@ static int g_dspStereoWidth = 0;
 static int g_dspCenterCancel = 0;   // center cancel/extract
 static int g_dspConvolution = 0;    // convolution reverb
 static int g_dspSpatialAudio = 0;   // 3D audio
+static int g_dspNormalizer = 0;     // normalizer
 
 // Echo, EQ and compressor (src/audio/basic_effects.h)
 static audio::Echo g_echo;
 static audio::Gain g_eqPreamp;
 static audio::PeakingEq g_eqBass, g_eqMid, g_eqTreble;
 static audio::Compressor g_compressor;
+static audio::Normalizer g_normalizer;
 
 // DSP effect enabled states
-static bool g_dspEnabled[(int)DSPEffectType::COUNT] = {false, false, false, false, false, false, false, false};
+static bool g_dspEnabled[(int)DSPEffectType::COUNT] = {};
 
 // Parameter values
 static float g_paramValues[(int)ParamId::COUNT];
@@ -491,7 +498,8 @@ void ToggleDSPEffect(DSPEffectType type) {
     bool newState = !g_dspEnabled[(int)type];
     EnableDSPEffect(type, newState);
 
-    const char* names[] = {"Reverb", "Echo", "EQ", "Compressor", "Stereo Width", "Center Cancel", "Convolution", "3D Audio"};
+    const char* names[] = {"Reverb", "Echo", "EQ", "Compressor", "Stereo Width", "Center Cancel", "Convolution", "3D Audio",
+                           "Normalizer"};
     std::string msg = std::string(names[(int)type]) +
                       (newState ? " enabled" : " disabled");
     Speak(msg);
@@ -543,6 +551,7 @@ void EnableDSPEffect(DSPEffectType type, bool enable) {
                 case DSPEffectType::CenterCancel: RemoveDsp(g_dspCenterCancel); break;
                 case DSPEffectType::Convolution: RemoveDsp(g_dspConvolution); break;
                 case DSPEffectType::SpatialAudio: RemoveDsp(g_dspSpatialAudio); break;
+                case DSPEffectType::Normalizer: RemoveDsp(g_dspNormalizer); break;
                 default: break;
             }
         }
@@ -575,6 +584,19 @@ static void UpdateCompressor() {
     p.attackMs = g_paramValues[(int)ParamId::CompAttack];
     p.releaseMs = g_paramValues[(int)ParamId::CompRelease];
     g_compressor.Set(p);
+}
+
+static void UpdateNormalizer() {
+    audio::Normalizer::Params p;
+    p.targetDb = g_paramValues[(int)ParamId::NormTarget];
+    p.lookaheadMs = g_paramValues[(int)ParamId::NormLookahead];
+    p.maxGainDb = g_paramValues[(int)ParamId::NormMaxGain];
+    p.releaseMs = g_paramValues[(int)ParamId::NormRelease];
+    g_normalizer.Set(p);
+}
+
+static void NormalizerDSPProc(float* samples, int frames, int, int sampleRate, void*) {
+    g_normalizer.Process(samples, frames, sampleRate);
 }
 
 static void EchoDSPProc(float* samples, int frames, int, int sampleRate, void*) {
@@ -727,6 +749,12 @@ void ApplyDSPEffects() {
             g_dspSpatialAudio = audio::AddDsp(SpatialAudioDSPProc, nullptr, 0);
         }
     }
+
+    // Normalizer: last, so it holds the level of everything before it
+    if (g_dspEnabled[(int)DSPEffectType::Normalizer] && !g_dspNormalizer) {
+        UpdateNormalizer();
+        g_dspNormalizer = audio::AddDsp(NormalizerDSPProc, nullptr, -10);
+    }
 }
 
 void RemoveDSPEffects() {
@@ -738,6 +766,7 @@ void RemoveDSPEffects() {
     RemoveDsp(g_dspCenterCancel);
     RemoveDsp(g_dspConvolution);
     RemoveDsp(g_dspSpatialAudio);
+    RemoveDsp(g_dspNormalizer);
 }
 
 const ParamDef* GetParamDef(ParamId id) {
@@ -846,6 +875,12 @@ void SetParamValue(ParamId id, float value) {
         case ParamId::CompRelease:
         case ParamId::CompGain:
             UpdateCompressor();
+            break;
+        case ParamId::NormTarget:
+        case ParamId::NormLookahead:
+        case ParamId::NormMaxGain:
+        case ParamId::NormRelease:
+            UpdateNormalizer();
             break;
         case ParamId::SpatialMode: {
             SpatialAudio* spatial = GetSpatialAudio();

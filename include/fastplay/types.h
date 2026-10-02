@@ -90,6 +90,7 @@ enum class DSPEffectType {
     CenterCancel,  // Center channel canceler/extractor (vocal removal/isolation)
     Convolution,   // Convolution reverb using impulse response
     SpatialAudio,  // 3D audio via HRTF/binaural rendering
+    Normalizer,    // a steady level, with lookahead (last in the chain)
     COUNT
 };
 
@@ -169,6 +170,11 @@ enum class ParamId {
     SpatialCrossover,   // Hz
     SpatialBassFeel,    // %
     SpatialConeNoise,   // %
+    // Normalizer parameters
+    NormTarget,         // dBFS
+    NormLookahead,      // ms
+    NormMaxGain,        // dB
+    NormRelease,        // ms
     COUNT
 };
 

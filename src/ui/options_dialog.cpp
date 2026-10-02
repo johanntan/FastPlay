@@ -168,6 +168,7 @@ private:
     wxCheckBox* m_dspEcho = nullptr;
     wxCheckBox* m_dspEQ = nullptr;
     wxCheckBox* m_dspCompressor = nullptr;
+    wxCheckBox* m_dspNormalizer = nullptr;
     wxCheckBox* m_dspStereoWidth = nullptr;
     wxCheckBox* m_dspCenterCancel = nullptr;
     wxCheckBox* m_dspSpatial = nullptr;
@@ -566,6 +567,8 @@ void OptionsDialog::BuildEffectsPage(wxNotebook* book) {
     m_dspEcho = AddCheck(page, sizer, "&Echo", IsDSPEffectEnabled(DSPEffectType::Echo));
     m_dspEQ = AddCheck(page, sizer, "E&Q (Bass/Mid/Treble)", IsDSPEffectEnabled(DSPEffectType::EQ));
     m_dspCompressor = AddCheck(page, sizer, "&Compressor", IsDSPEffectEnabled(DSPEffectType::Compressor));
+    m_dspNormalizer = AddCheck(page, sizer, "Normal&izer (a steady level, Ctrl+Shift+N)",
+                               IsDSPEffectEnabled(DSPEffectType::Normalizer));
     m_dspStereoWidth = AddCheck(page, sizer, "&Stereo Width (0-200%)", IsDSPEffectEnabled(DSPEffectType::StereoWidth));
     m_dspCenterCancel = AddCheck(page, sizer, "Ce&nter Cancel (-100 to +100%)", IsDSPEffectEnabled(DSPEffectType::CenterCancel));
     m_dspSpatial = AddCheck(page, sizer, "&3D Audio (HRTF/Binaural)", IsDSPEffectEnabled(DSPEffectType::SpatialAudio));
@@ -1048,6 +1051,7 @@ void OptionsDialog::OnOK(wxCommandEvent&) {
     EnableDSPEffect(DSPEffectType::Echo, m_dspEcho->GetValue());
     EnableDSPEffect(DSPEffectType::EQ, m_dspEQ->GetValue());
     EnableDSPEffect(DSPEffectType::Compressor, m_dspCompressor->GetValue());
+    EnableDSPEffect(DSPEffectType::Normalizer, m_dspNormalizer->GetValue());
     EnableDSPEffect(DSPEffectType::StereoWidth, m_dspStereoWidth->GetValue());
     EnableDSPEffect(DSPEffectType::CenterCancel, m_dspCenterCancel->GetValue());
     EnableDSPEffect(DSPEffectType::Convolution, m_dspConvolution->GetValue());

@@ -4,7 +4,7 @@
 
 // Echo, peaking EQ band and compressor: FastPlay's own versions of the BASS_FX
 // effects it used (BFX_ECHO4, BFX_PEAKEQ, BFX_COMPRESSOR2), with the same
-// parameters. Each works on interleaved stereo float and keeps its own state; a
+// parameters; and a normalizer. Each works on interleaved stereo float and keeps its own state; a
 // fresh one starts silent. Parameters are set from the UI thread while audio is
 // processed on the audio device's thread, so each guards them with a mutex.
 
@@ -189,6 +189,109 @@ private:
     std::mutex m_mutex;
     Params m_params;
     float m_reduction = 0.0f;  // smoothed gain reduction in dB
+};
+
+// Normalizing as it plays: the running form of turning a file up until its
+// loudest point reaches the target. The gain for each sample is worked out from
+// the loudest sample in the window ahead of it (the lookahead, which is also how
+// late it makes the sound), so the level is already down when a loud passage
+// arrives. It comes down at once and goes back up slowly, so it does not pump
+// between words; the most it will turn up is capped, so near silence and room
+// tone stay quiet; and through silence it holds rather than climbs.
+// (FastRoute's normaliser, by the same author.)
+class Normalizer {
+public:
+    struct Params {
+        float targetDb = -3.0f;     // where the loudest part is brought to (dBFS)
+        float lookaheadMs = 50.0f;  // how far ahead it looks, and how late it makes the sound
+        float maxGainDb = 20.0f;    // the most it will turn up
+        float releaseMs = 1000.0f;  // how slowly it goes back up
+    };
+
+    void Set(const Params& p) {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        m_params = p;
+        m_changed = true;
+    }
+
+    void Process(float* samples, int frames, int sampleRate) {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        if (m_changed || sampleRate != m_rate) Configure(sampleRate);
+        const size_t span = m_look + 1;
+        for (int i = 0; i < frames; i++) {
+            float* frame = samples + static_cast<size_t>(i) * 2;
+            // In at the front of the delay, the oldest out
+            m_delay[m_pos * 2] = frame[0];
+            m_delay[m_pos * 2 + 1] = frame[1];
+            m_pos = (m_pos + 1) % span;
+            const float dl = m_delay[m_pos * 2], dr = m_delay[m_pos * 2 + 1];
+
+            // The loudest over the window ahead: a queue of falling peaks, from
+            // which anything this sample beats is dropped (it leaves the window
+            // first, so it can never be the loudest again)
+            const float level = std::max(std::fabs(frame[0]), std::fabs(frame[1]));
+            while (m_head != m_tail) {
+                size_t back = (m_tail + m_span - 1) % m_span;
+                if (m_peaks[back] > level) break;
+                m_tail = back;
+            }
+            m_peaks[m_tail] = level;
+            m_at[m_tail] = m_n;
+            m_tail = (m_tail + 1) % m_span;
+            while (m_at[m_head] + m_look < m_n) m_head = (m_head + 1) % m_span;
+            const double peak = m_peaks[m_head];
+            m_n++;
+
+            double target = m_gain;  // silence: hold
+            if (peak > 1e-9) target = std::clamp(m_target / peak, 0.0, m_maxGain);
+            const double coeff = target < m_gain ? m_attack : m_releaseCoeff;
+            m_gain = target + (m_gain - target) * coeff;
+            frame[0] = static_cast<float>(dl * m_gain);
+            frame[1] = static_cast<float>(dr * m_gain);
+        }
+    }
+
+private:
+    static double Coefficient(double ms, int rate) {
+        return ms <= 0.0 || rate <= 0 ? 0.0 : std::exp(-1.0 / (ms * 0.001 * rate));
+    }
+
+    // The parameters at this rate. The window is made again only when its length
+    // changes (starting it empty, which a change of lookahead has to anyway).
+    void Configure(int rate) {
+        m_changed = false;
+        m_target = std::pow(10.0, std::clamp(m_params.targetDb, -40.0f, 0.0f) / 20.0);
+        m_maxGain = std::pow(10.0, std::clamp(m_params.maxGainDb, 0.0f, 40.0f) / 20.0);
+        m_releaseCoeff = Coefficient(std::clamp(m_params.releaseMs, 50.0f, 5000.0f), rate);
+        const float ms = std::clamp(m_params.lookaheadMs, 0.0f, 200.0f);
+        // Four time constants inside the window, so a reduction is complete by
+        // the time the peak it was made for comes out
+        m_attack = Coefficient(ms / 4.0, rate);
+        const size_t look = static_cast<size_t>(static_cast<double>(rate) * ms / 1000.0);
+        if (look != m_look || rate != m_rate || m_delay.empty()) {
+            m_look = look;
+            m_delay.assign((m_look + 1) * 2, 0.0f);
+            m_span = m_look + 2;  // one more than the queue can hold, so full is not empty
+            m_peaks.assign(m_span, 0.0f);
+            m_at.assign(m_span, 0);
+            m_head = m_tail = m_pos = 0;
+            m_n = 0;
+            m_gain = 1.0;
+        }
+        m_rate = rate;
+    }
+
+    std::mutex m_mutex;
+    Params m_params;
+    bool m_changed = true;
+    int m_rate = 0;
+    double m_target = 1.0, m_maxGain = 1.0, m_attack = 0.0, m_releaseCoeff = 0.0, m_gain = 1.0;
+    size_t m_look = 0, m_pos = 0;
+    std::vector<float> m_delay;  // the sound, delayed by the lookahead
+    std::vector<float> m_peaks;  // the falling peaks in the window
+    std::vector<unsigned long long> m_at;
+    size_t m_span = 0, m_head = 0, m_tail = 0;
+    unsigned long long m_n = 0;
 };
 
 }  // namespace audio

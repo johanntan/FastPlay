@@ -275,6 +275,7 @@ void LoadDSPSettings() {
     EnableDSPEffect(DSPEffectType::CenterCancel, IniGetInt(L"DSPEffects", L"CenterCancel", 0, g_configPath.c_str()) != 0);
     EnableDSPEffect(DSPEffectType::Convolution, IniGetInt(L"DSPEffects", L"Convolution", 0, g_configPath.c_str()) != 0);
     EnableDSPEffect(DSPEffectType::SpatialAudio, IniGetInt(L"DSPEffects", L"SpatialAudio", 0, g_configPath.c_str()) != 0);
+    EnableDSPEffect(DSPEffectType::Normalizer, IniGetInt(L"DSPEffects", L"Normalizer", 0, g_configPath.c_str()) != 0);
 
     // Load convolution IR path
     {
@@ -356,6 +357,18 @@ void LoadDSPSettings() {
     SetParamValue(ParamId::CompRelease, IniGetFloat(L"DSPParams", L"CompRelease", def->defaultValue, g_configPath.c_str()));
     def = GetParamDef(ParamId::CompGain);
     SetParamValue(ParamId::CompGain, IniGetFloat(L"DSPParams", L"CompGain", def->defaultValue, g_configPath.c_str()));
+
+    const struct {
+        ParamId id;
+        const wchar_t* key;
+    } normParams[] = {{ParamId::NormTarget, L"NormTarget"},
+                      {ParamId::NormLookahead, L"NormLookahead"},
+                      {ParamId::NormMaxGain, L"NormMaxGain"},
+                      {ParamId::NormRelease, L"NormRelease"}};
+    for (const auto& p : normParams) {
+        def = GetParamDef(p.id);
+        SetParamValue(p.id, IniGetFloat(L"DSPParams", p.key, def->defaultValue, g_configPath.c_str()));
+    }
 
     def = GetParamDef(ParamId::StereoWidth);
     SetParamValue(ParamId::StereoWidth, IniGetFloat(L"DSPParams", L"StereoWidth", def->defaultValue, g_configPath.c_str()));
@@ -589,6 +602,14 @@ void SaveSettings() {
     IniWriteString(L"DSPEffects", L"Convolution", IsDSPEffectEnabled(DSPEffectType::Convolution) ? L"1" : L"0", g_configPath.c_str());
     IniWriteString(L"DSPEffects", L"ConvolutionIR", g_convolutionIRPath.c_str(), g_configPath.c_str());
     IniWriteString(L"DSPEffects", L"SpatialAudio", IsDSPEffectEnabled(DSPEffectType::SpatialAudio) ? L"1" : L"0", g_configPath.c_str());
+    IniWriteString(L"DSPEffects", L"Normalizer", IsDSPEffectEnabled(DSPEffectType::Normalizer) ? L"1" : L"0", g_configPath.c_str());
+    for (const auto& p : {std::make_pair(ParamId::NormTarget, L"NormTarget"),
+                          std::make_pair(ParamId::NormLookahead, L"NormLookahead"),
+                          std::make_pair(ParamId::NormMaxGain, L"NormMaxGain"),
+                          std::make_pair(ParamId::NormRelease, L"NormRelease")}) {
+        swprintf(buf, 32, L"%.2f", GetParamValue(p.first));
+        IniWriteString(L"DSPParams", p.second, buf, g_configPath.c_str());
+    }
 
     // Save DSP effect parameter values
     // Reverb parameters

@@ -330,6 +330,7 @@ void MainFrame::BuildAccelerators() {
         {C | S, 'E', IDM_PLAY_ELAPSED},
         {C | S, 'R', IDM_PLAY_REMAINING},
         {C | S, 'T', IDM_PLAY_TOTAL},
+        {C | S, 'N', IDM_TOGGLE_NORMALIZER},
         // Winamp-style shortcuts
         {N, 'Z', IDM_PLAY_PREV},
         {N, 'X', IDM_PLAY_PLAY},
@@ -721,6 +722,7 @@ void MainFrame::RunCommand(int id, int param) {
         case IDM_TOGGLE_ECHO: ToggleDSPEffect(DSPEffectType::Echo); break;
         case IDM_TOGGLE_EQ: ToggleDSPEffect(DSPEffectType::EQ); break;
         case IDM_TOGGLE_COMPRESSOR: ToggleDSPEffect(DSPEffectType::Compressor); break;
+        case IDM_TOGGLE_NORMALIZER: ToggleDSPEffect(DSPEffectType::Normalizer); break;
         case IDM_TOGGLE_STEREOWIDTH: ToggleDSPEffect(DSPEffectType::StereoWidth); break;
         case IDM_TOGGLE_CENTERCANCEL: ToggleDSPEffect(DSPEffectType::CenterCancel); break;
         case IDM_TOGGLE_CONVOLUTION: ToggleDSPEffect(DSPEffectType::Convolution); break;

@@ -193,6 +193,7 @@ const HotkeyAction g_hotkeyActions[] = {
     {IDM_TOGGLE_CENTERCANCEL, L"Toggle Center Cancel", L"ToggleCenterCancel"},
     {IDM_TOGGLE_CONVOLUTION, L"Toggle Convolution Reverb", L"ToggleConvolution"},
     {IDM_TOGGLE_SPATIAL, L"Toggle 3D Audio", L"Toggle3DAudio"},
+    {IDM_TOGGLE_NORMALIZER, L"Toggle Normalizer", L"ToggleNormalizer"},
     // Window/UI
     {IDM_TOGGLE_WINDOW, L"Toggle Window", L"ToggleWindow"},
     {IDM_FILE_YOUTUBE, L"YouTube Search", L"YouTube"},
