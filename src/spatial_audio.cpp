@@ -39,7 +39,8 @@ SpatialAudio::SpatialAudio()
       m_queueL(MAX_QUEUE), m_queueR(MAX_QUEUE),
       m_engine(std::make_unique<speakers::Engine>()),
       m_system(std::make_unique<speakers::SpeakerSystem>()),
-      m_speakerDry(static_cast<size_t>(SPEAKER_CHUNK) * 2) {
+      m_speakerDry(static_cast<size_t>(SPEAKER_CHUNK) * 2),
+      m_speakerOld(static_cast<size_t>(SPEAKER_CHUNK) * 2) {
     m_renderer.init();
     for (auto& voice : m_voices) voice.init();
     m_voiceInput.allocate(FRAME_SIZE);
@@ -60,7 +61,10 @@ void SpatialAudio::SetMode(SpatialMode mode) {
         ResetVoices();
         m_carryCount = 0;
         m_queueCount = 0;
-        if (mode == SpatialMode::Speakers) m_engine->Reset();
+        if (mode == SpatialMode::Speakers) {
+            m_engine->Reset();
+            m_oldEngine.reset();
+        }
         m_mode = mode;
     }
 }
@@ -81,9 +85,10 @@ bool SpatialAudio::Initialize(int sampleRate) {
     ResetVoices();
 
     m_engine->Init(static_cast<float>(sampleRate), SPEAKER_CHUNK);
-    RebuildSpeakers();
+    RebuildSpeakers(false);
     // A new track: nothing of the last one may ring on into it.
     m_engine->Reset();
+    m_oldEngine.reset();
     m_clearTails = false;
 
     m_carryCount = 0;
@@ -225,9 +230,11 @@ void SpatialAudio::ProcessSurroundFrame(float* frameL, float* frameR) {
 
 void SpatialAudio::Process(float* buffer, int frameCount, float blend) {
     if (!m_initialized || frameCount <= 0) return;
-    // Never make the audio thread wait (a mode change or re-initialisation holds the lock briefly).
-    std::unique_lock<std::mutex> lock(m_mutex, std::try_to_lock);
-    if (!lock.owns_lock() || !m_initialized) return;
+    // Waits for a change in progress (a millisecond or two) rather than skipping
+    // the block: a skipped block went out unprocessed, a burst of the dry sound in
+    // the middle of the room's, which is a loud click.
+    std::lock_guard<std::mutex> lock(m_mutex);
+    if (!m_initialized) return;
 
     if (m_mode == SpatialMode::Speakers) {
         ProcessSpeakers(buffer, frameCount, blend);
@@ -324,8 +331,7 @@ void SpatialAudio::SetRoomPreset(int preset) {
     std::lock_guard<std::mutex> lock(m_mutex);
     if (preset == m_preset) return;
     m_preset = preset;
-    RebuildSpeakers();
-    m_engine->Reset();  // a different room: the last one's tail does not carry over
+    RebuildSpeakers(true);  // a different room, faded into: the last one's tail does not carry over
 }
 
 void SpatialAudio::SetSubwoofer(bool on) {
@@ -333,7 +339,7 @@ void SpatialAudio::SetSubwoofer(bool on) {
     if (on == m_subOn) return;
     m_subOn = on;
     // Structural: with no sub playing, the other speakers keep their bottom end.
-    RebuildSpeakers();
+    RebuildSpeakers(true);
 }
 
 void SpatialAudio::SetSubLevel(float db) {
@@ -346,7 +352,7 @@ void SpatialAudio::SetCrossover(float hz) {
     std::lock_guard<std::mutex> lock(m_mutex);
     if (hz == m_crossoverHz) return;
     m_crossoverHz = hz;
-    RebuildSpeakers();  // new crossover filters
+    RebuildSpeakers(true);  // new crossover filters
 }
 
 void SpatialAudio::SetBassFeel(float amount) {
@@ -361,7 +367,8 @@ void SpatialAudio::SetConeNoise(float amount) {
     ApplySpeakerLevels();
 }
 
-void SpatialAudio::RebuildSpeakers() {
+void SpatialAudio::RebuildSpeakers(bool crossfade) {
+    m_retiredEngine.reset();
     speakers::BuildRoomPreset(m_preset, *m_system);
     speakers::SystemSettings& settings = m_system->Settings();
     settings.crossoverHz = m_crossoverHz;
@@ -371,10 +378,21 @@ void SpatialAudio::RebuildSpeakers() {
     for (auto& speaker : m_system->Speakers()) {
         if (speaker.IsSub()) speaker.muted = !m_subOn;
     }
-    if (m_sampleRate > 0) {
+    if (m_sampleRate <= 0) return;
+    if (crossfade && m_initialized && m_mode == SpatialMode::Speakers) {
+        // Built beside the one playing, which fades out as this fades in. (A
+        // change during a fade lets the oldest go at once: by then it is quiet.)
+        auto fresh = std::make_unique<speakers::Engine>();
+        fresh->Init(static_cast<float>(m_sampleRate), SPEAKER_CHUNK);
+        fresh->Prepare(*m_system);
+        m_retiredEngine = std::move(m_oldEngine);
+        m_oldEngine = std::move(m_engine);
+        m_engine = std::move(fresh);
+        m_crossfadeDone = 0;
+    } else {
         m_engine->Prepare(*m_system);
-        UpdateListener();
     }
+    UpdateListener();
 }
 
 void SpatialAudio::ApplySpeakerLevels() {
@@ -413,9 +431,12 @@ void SpatialAudio::ProcessSpeakers(float* buffer, int frameCount, float blend) {
         ~FlushDenormals() { _mm_setcsr(saved); }
     } flush;
 #endif
-    if (m_clearTails.exchange(false)) m_engine->Reset();
+    if (m_clearTails.exchange(false)) {
+        m_engine->Reset();
+        m_oldEngine.reset();
+    }
     UpdateListener();
-    if (blend >= 1.0f) {
+    if (blend >= 1.0f && !m_oldEngine) {
         m_engine->RenderInterleaved(buffer, buffer, frameCount);
         return;
     }
@@ -424,7 +445,37 @@ void SpatialAudio::ProcessSpeakers(float* buffer, int frameCount, float blend) {
         int n = std::min(SPEAKER_CHUNK, frameCount - done);
         float* chunk = buffer + static_cast<size_t>(done) * 2;
         std::memcpy(m_speakerDry.data(), chunk, static_cast<size_t>(n) * 2 * sizeof(float));
-        m_engine->RenderInterleaved(chunk, chunk, n);
-        for (int i = 0; i < n * 2; i++) chunk[i] = m_speakerDry[i] * dry + chunk[i] * wet;
+        if (!m_oldEngine) {
+            m_engine->RenderInterleaved(chunk, chunk, n);
+        } else {
+            // A change of room: the music is faded out of the old one and into the
+            // new, rather than the two rooms' sound being swapped. Each then does
+            // what a room does with a sound starting and stopping: the new one's
+            // arrives faded in however far its speakers are from the seat, and the
+            // old one's rings on and dies away.
+            float peak = 0.0f;
+            for (int i = 0; i < n; i++) {
+                float t = std::min(1.0f, static_cast<float>(m_crossfadeDone + i) / SPEAKER_CROSSFADE);
+                for (int c = 0; c < 2; c++) {
+                    chunk[i * 2 + c] = m_speakerDry[i * 2 + c] * t;
+                    m_speakerOld[i * 2 + c] = m_speakerDry[i * 2 + c] * (1.0f - t);
+                }
+            }
+            m_engine->RenderInterleaved(chunk, chunk, n);
+            m_oldEngine->RenderInterleaved(m_speakerOld.data(), m_speakerOld.data(), n);
+            for (int i = 0; i < n * 2; i++) {
+                chunk[i] += m_speakerOld[i];
+                peak = std::max(peak, std::fabs(m_speakerOld[i]));
+            }
+            m_crossfadeDone += n;
+            // Until its tail has died away (or a few seconds, whatever it holds)
+            const int longest = m_sampleRate * 4;
+            if (m_crossfadeDone >= longest || (m_crossfadeDone > SPEAKER_CROSSFADE && peak < 1e-4f)) {
+                m_retiredEngine = std::move(m_oldEngine);
+            }
+        }
+        if (blend < 1.0f) {
+            for (int i = 0; i < n * 2; i++) chunk[i] = m_speakerDry[i] * dry + chunk[i] * wet;
+        }
     }
 }

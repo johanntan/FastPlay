@@ -40,10 +40,6 @@ const FeelShelf kFeel[3] = {{64.3f, 0.383f, 0.8267f},
 constexpr float kSystemFullScaleSpl = 124.0f;
 constexpr float kHeadphoneFullScaleSpl = 94.0f;
 
-// Below this the correction is not worth applying; above it the shelves cost
-// nothing to leave running.
-constexpr float kFeelFloor = 0.02f;
-
 // Bass has to actually be present before there is anything to put back. This
 // is where "present" is measured, and how much of the band counts as full.
 constexpr float kBassSenseHz = 90.0f;
@@ -450,7 +446,10 @@ void Engine::Render(const float *inL, const float *inR, int frames, float *outL,
                 m_feelR[i].SetLowShelf(m_sampleRate, kFeel[i].hz, kFeel[i].q, db);
             }
         }
-        if (m_feelBlend > kFeelFloor) {
+        // Always run, even with next to nothing asked of them: shelves stopped
+        // while the bass was away kept what they held from then, and came back
+        // with it as a step when it returned -- a loud click, seconds after.
+        {
             for (int i = 0; i < frames; ++i) {
                 float l = outL[i], r = outR[i];
                 for (int stage = 0; stage < kFeelStages; ++stage) {

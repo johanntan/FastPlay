@@ -73,7 +73,10 @@ private:
     void ResetVoices();
 
     // Room presets. The first two need m_mutex held.
-    void RebuildSpeakers();      // after the preset or anything structural changed
+    // After the preset or anything structural changed. `crossfade`: into a new
+    // room built beside the one playing, rather than rebuilding it in place,
+    // which would cut off everything it was sounding at once (a loud click).
+    void RebuildSpeakers(bool crossfade);
     void ApplySpeakerLevels();   // after a level changed; never rebuilds a filter
     void ProcessSpeakers(float* buffer, int frameCount, float blend);
     void UpdateListener();
@@ -109,6 +112,13 @@ private:
     // Room presets
     static constexpr int SPEAKER_CHUNK = 2048;
     std::unique_ptr<speakers::Engine> m_engine;
+    // The room the music is faded out of after a change (over SPEAKER_CROSSFADE
+    // frames, then rendered on until its tail has died away), and one done with
+    // (freed off the audio thread, at the next change)
+    std::unique_ptr<speakers::Engine> m_oldEngine, m_retiredEngine;
+    static constexpr int SPEAKER_CROSSFADE = 1024;
+    int m_crossfadeDone = 0;
+    std::vector<float> m_speakerOld;  // the old room's output, one chunk
     std::unique_ptr<speakers::SpeakerSystem> m_system;
     int m_preset = 0;
     bool m_subOn = true;
