@@ -58,8 +58,8 @@ bool YouTubeGetListContents(const std::wstring& listUrl, std::vector<YouTubeResu
                             std::wstring& error, const YouTubeStatus& status = nullptr);
 
 // Get a video ready to play: its audio stream, or where YouTube offers none, its
-// audio downloaded (kept for a week). On first use this also downloads yt-dlp and
-// deno, the JavaScript runtime yt-dlp needs for YouTube.
+// audio downloaded (kept for a week). Managed mode downloads yt-dlp and deno on
+// first use; installed mode uses the tools selected in Settings > YouTube.
 bool YouTubePrepare(const std::wstring& videoId, YouTubeMedia& media, std::wstring& error,
                     const YouTubeStatus& status = nullptr);
 

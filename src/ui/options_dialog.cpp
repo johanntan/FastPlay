@@ -17,6 +17,8 @@
 #include "database.h"
 #include "file_assoc.h"
 #include "youtube.h"
+#include "youtube_tools.h"
+#include "utils.h"
 #include "library.h"
 
 #include <algorithm>
@@ -29,6 +31,9 @@
 #include <cstdlib>
 #include <string>
 #include <vector>
+#include <memory>
+#include <thread>
+#include <wx/scrolwin.h>
 
 namespace {
 
@@ -67,6 +72,7 @@ void ApplyHotkeys() {
 class OptionsDialog : public wxDialog {
 public:
     explicit OptionsDialog(wxWindow* parent);
+	~OptionsDialog() override { *m_toolTestAlive = false; }
 
 private:
     // Page building helpers. Each adds a label followed by the control it names.
@@ -98,6 +104,9 @@ private:
     void OnDownloadBrowse(wxCommandEvent& event);
     void OnRecFormat(wxCommandEvent& event);
     void OnYtdlpBrowse(wxCommandEvent& event);
+	YouTubeToolSettings ReadToolSettings() const;
+	void UpdateToolControls();
+	void OnTestTools(wxCommandEvent& event);
     void OnImportCookies(wxCommandEvent& event);
     void OnYtFolderBrowse(wxCommandEvent& event);
     void UpdateYtDownloadControls();
@@ -188,6 +197,16 @@ private:
 
     // YouTube
     wxTextCtrl* m_ytdlpPath = nullptr;
+	wxChoice* m_toolSource = nullptr;
+	wxTextCtrl* m_denoPath = nullptr;
+	wxTextCtrl* m_ffmpegFolder = nullptr;
+	wxButton* m_denoBrowse = nullptr;
+	wxButton* m_ffmpegBrowse = nullptr;
+	wxButton* m_ytdlpBrowse = nullptr;
+	wxButton* m_testTools = nullptr;
+	wxTextCtrl* m_toolResults = nullptr;
+	bool m_testingTools = false;
+	std::shared_ptr<bool> m_toolTestAlive = std::make_shared<bool>(true);
     wxStaticText* m_cookiesStatus = nullptr;
     wxChoice* m_ytAutoRefresh = nullptr;
     // YouTube downloads
@@ -657,15 +676,68 @@ void OptionsDialog::BuildAdvancedPage(wxNotebook* book) {
 }
 
 void OptionsDialog::BuildYouTubePage(wxNotebook* book) {
-    auto* page = new wxPanel(book);
-    auto* sizer = new wxBoxSizer(wxVERTICAL);
+	auto* page = new wxScrolledWindow(book);
+	page->SetScrollRate(0, 10);
+	page->SetMinSize(wxSize(550, 500));
+	auto* sizer = new wxBoxSizer(wxVERTICAL);
+	const auto tools = GetYouTubeToolSettings();
 
-    auto* row = AddRow(sizer);
-    m_ytdlpPath = AddEdit(page, row, "&yt-dlp path:", WX(g_ytdlpPath), 300);
-    auto* browse = new wxButton(page, wxID_ANY, "&Browse...");
-    row->Add(browse, 0, wxALIGN_CENTER_VERTICAL);
-    browse->Bind(wxEVT_BUTTON, &OptionsDialog::OnYtdlpBrowse, this);
-    AddText(page, sizer, "Optional. Leave it empty and FastPlay downloads yt-dlp itself and keeps it up to date.");
+	m_toolSource = AddChoice(page, sizer, "Tool &source:", 260);
+	m_toolSource->Append("FastPlay managed");
+	m_toolSource->Append("Installed tools");
+	m_toolSource->SetSelection(tools.source == YouTubeToolSource::Installed ? 1 : 0);
+	AddText(page, sizer, "Managed tools are downloaded and updated by FastPlay.\nInstalled tools are never downloaded or updated.");
+	AddText(page, sizer, "Installed mode: leave paths empty to search PATH.\nOn macOS, standard Homebrew locations are also searched.");
+
+	auto* row = AddRow(sizer);
+	m_ytdlpPath = AddEdit(page, row, "&yt-dlp path:", WX(tools.ytdlpPath), 300);
+	m_ytdlpBrowse = new wxButton(page, wxID_ANY, "Browse yt-dlp...");
+	row->Add(m_ytdlpBrowse, 0, wxALIGN_CENTER_VERTICAL);
+	m_ytdlpBrowse->Bind(wxEVT_BUTTON, &OptionsDialog::OnYtdlpBrowse, this);
+	AddText(page, sizer, "In managed mode, an existing yt-dlp override is used;\nFastPlay manages Deno and FFmpeg.");
+
+	row = AddRow(sizer);
+	m_denoPath = AddEdit(page, row, "&Deno path:", WX(tools.denoPath), 300);
+	m_denoBrowse = new wxButton(page, wxID_ANY, "Browse Deno...");
+	row->Add(m_denoBrowse, 0, wxALIGN_CENTER_VERTICAL);
+	m_denoBrowse->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
+#ifdef __WXMSW__
+		const char* filter = "Executables (*.exe)|*.exe|All Files (*.*)|*.*";
+#else
+		const char* filter = "All Files (*)|*";
+#endif
+		wxFileDialog dlg(this, "Select Deno executable", wxEmptyString, wxEmptyString, filter,
+			wxFD_OPEN | wxFD_FILE_MUST_EXIST);
+		if (dlg.ShowModal() == wxID_OK) m_denoPath->SetValue(dlg.GetPath());
+	});
+	row = AddRow(sizer);
+	m_ffmpegFolder = AddEdit(page, row, "&FFmpeg folder:", WX(tools.ffmpegFolder), 300);
+	m_ffmpegBrowse = new wxButton(page, wxID_ANY, "Browse FFmpeg...");
+	row->Add(m_ffmpegBrowse, 0, wxALIGN_CENTER_VERTICAL);
+	m_ffmpegBrowse->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
+		wxDirDialog dlg(this, "Select folder containing FFmpeg and ffprobe", m_ffmpegFolder->GetValue());
+		if (dlg.ShowModal() == wxID_OK) m_ffmpegFolder->SetValue(dlg.GetPath());
+	});
+
+	m_testTools = new wxButton(page, wxID_ANY, "&Test tools");
+	sizer->Add(m_testTools, 0, wxTOP | wxBOTTOM, 5);
+	m_testTools->Bind(wxEVT_BUTTON, &OptionsDialog::OnTestTools, this);
+	AddText(page, sizer, "Tool test &results:");
+	m_toolResults = new wxTextCtrl(page, wxID_ANY, "Test tools to check paths and versions offline.",
+		wxDefaultPosition, wxSize(500, 115), wxTE_MULTILINE | wxTE_READONLY);
+	m_toolResults->SetName("Tool test results");
+	sizer->Add(m_toolResults, 0, wxEXPAND | wxBOTTOM, 8);
+	m_toolSource->Bind(wxEVT_CHOICE, [this](wxCommandEvent&) {
+		UpdateToolControls();
+		m_toolResults->ChangeValue("Tool source changed. Test tools to check this selection.");
+	});
+	for (auto* field : {m_ytdlpPath, m_denoPath, m_ffmpegFolder}) {
+		field->Bind(wxEVT_TEXT, [this](wxCommandEvent& event) {
+			m_toolResults->ChangeValue("Tool paths changed. Test tools to check this selection.");
+			event.Skip();
+		});
+	}
+	UpdateToolControls();
 
     AddText(page, sizer, "YouTube Data &API key (optional, enables search):");
     m_ytApiKey = new wxTextCtrl(page, wxID_ANY, WX(g_ytApiKey), wxDefaultPosition, wxSize(430, -1), wxTE_PASSWORD);
@@ -696,6 +768,7 @@ void OptionsDialog::BuildYouTubePage(wxNotebook* book) {
 
     page->SetSizer(new wxBoxSizer(wxVERTICAL));
     page->GetSizer()->Add(sizer, 1, wxEXPAND | wxALL, 10);
+	page->FitInside();
     book->AddPage(page, "YouTube");
 }
 
@@ -1090,7 +1163,7 @@ void OptionsDialog::OnOK(wxCommandEvent&) {
     }
 
     // Get YouTube settings
-    g_ytdlpPath = WS(m_ytdlpPath->GetValue());
+	SetYouTubeToolSettings(ReadToolSettings());
     g_ytApiKey = WS(m_ytApiKey->GetValue());
     g_ytAutoRefresh = m_ytAutoRefresh->GetSelection();
     StartYouTubeAutoRefresh(false);
@@ -1225,6 +1298,53 @@ void OptionsDialog::OnRemoveCookies(wxCommandEvent&) {
     YouTubeRemoveCookies();
     UpdateCookiesStatus();
     Speak("Cookies removed");
+}
+
+YouTubeToolSettings OptionsDialog::ReadToolSettings() const {
+	YouTubeToolSettings tools;
+	tools.source = m_toolSource->GetSelection() == 1 ? YouTubeToolSource::Installed : YouTubeToolSource::Managed;
+	tools.ytdlpPath = WS(m_ytdlpPath->GetValue());
+	tools.denoPath = WS(m_denoPath->GetValue());
+	tools.ffmpegFolder = WS(m_ffmpegFolder->GetValue());
+	return tools;
+}
+
+void OptionsDialog::UpdateToolControls() {
+	bool installed = m_toolSource->GetSelection() == 1;
+	m_toolSource->Enable(!m_testingTools);
+	m_ytdlpPath->Enable(!m_testingTools);
+	m_ytdlpBrowse->Enable(!m_testingTools);
+	m_denoPath->Enable(installed && !m_testingTools);
+	m_denoBrowse->Enable(installed && !m_testingTools);
+	m_ffmpegFolder->Enable(installed && !m_testingTools);
+	m_ffmpegBrowse->Enable(installed && !m_testingTools);
+	m_testTools->Enable(!m_testingTools);
+}
+
+void OptionsDialog::OnTestTools(wxCommandEvent&) {
+	if (m_testingTools) return;
+	const auto tools = ReadToolSettings();
+	m_testingTools = true;
+	UpdateToolControls();
+	m_toolResults->ChangeValue("Testing local tools...");
+	auto alive = m_toolTestAlive;
+	std::thread([this, alive, tools]() {
+		std::wstring report;
+		try {
+			report = TestYouTubeTools(tools);
+		} catch (const std::exception& error) {
+			report = L"Could not test tools: " + Utf8ToWide(error.what());
+		}
+		RunOnUiThread([this, alive, report]() {
+			// The flag is read and written only on the UI thread.
+			if (!*alive) return;
+			m_testingTools = false;
+			UpdateToolControls();
+			m_toolResults->ChangeValue(WX(report));
+			m_toolResults->SetInsertionPoint(0);
+			SpeakW(L"Tool test finished. Results are available in the YouTube settings tab.");
+		});
+	}).detach();
 }
 
 void OptionsDialog::OnYtdlpBrowse(wxCommandEvent&) {

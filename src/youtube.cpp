@@ -4,13 +4,15 @@
 // the challenges YouTube sets, and it needs to be recent, since YouTube keeps
 // changing. So FastPlay keeps its own copies of both in its data folder: downloaded
 // the first time they are needed, and yt-dlp updated at most once a day. A yt-dlp
-// chosen in Options is used instead when that file exists.
+// chosen in Options is used instead when that file exists. Installed mode uses
+// user-owned tools from PATH or explicit paths and never downloads or updates them.
 //
 // Videos stream from YouTube's HLS audio, which FFmpeg plays as it arrives, with
 // seeking. For the rare video without it, the audio is downloaded instead: yt-dlp
 // downloads it and DefragmentMp4 turns it into an ordinary M4A.
 
 #include "youtube.h"
+#include "youtube_tools.h"
 #include "accessibility.h"
 #include "app_ui.h"
 #include "globals.h"
@@ -229,9 +231,13 @@ std::string ReadSmallFile(const std::wstring& path) {
 }
 
 // The yt-dlp to run.
-bool EnsureYtdlp(std::wstring& ytdlp, std::wstring& error, const YouTubeStatus& status) {
-    if (FileExists(g_ytdlpPath)) {  // chosen in Options; its owner keeps it up to date
-        ytdlp = g_ytdlpPath;
+bool EnsureYtdlp(std::wstring& ytdlp, std::wstring& error, const YouTubeStatus& status,
+	const YouTubeToolSettings& tools) {
+	if (tools.source == YouTubeToolSource::Installed) {
+		return ResolveYouTubeTool(tools, YouTubeTool::Ytdlp, ytdlp, error);
+	}
+	if (FileExists(tools.ytdlpPath)) {  // chosen in Options; its owner keeps it up to date
+		ytdlp = tools.ytdlpPath;
         return true;
     }
 
@@ -340,7 +346,14 @@ std::wstring EnsureDeno(const YouTubeStatus& status) {
 
 // Where ffmpeg is for yt-dlp: FastPlay's own copy (its folder), or empty for one
 // already installed on the PATH. False when there is none and none could be had.
-bool EnsureFfmpeg(std::wstring& location, std::wstring& error, const YouTubeStatus& status) {
+bool EnsureFfmpeg(std::wstring& location, std::wstring& error, const YouTubeStatus& status,
+	const YouTubeToolSettings& tools) {
+	if (tools.source == YouTubeToolSource::Installed) {
+		std::wstring executable;
+		if (!ResolveYouTubeTool(tools, YouTubeTool::Ffmpeg, executable, error)) return false;
+		location = fs::path(executable).parent_path().wstring();
+		return true;
+	}
     std::lock_guard<std::mutex> lock(g_toolsMutex);
     std::wstring dir = ToolsDir() + L"ffmpeg" + kPathSeparator;
     location = dir;
@@ -423,12 +436,17 @@ std::wstring YtdlpError(const YtdlpRun& run) {
 }
 
 bool RunYtdlp(const std::vector<std::wstring>& args, bool needsDeno, YtdlpRun& run, std::wstring& error,
-              const YouTubeStatus& status) {
+	const YouTubeStatus& status, const YouTubeToolSettings& tools = GetYouTubeToolSettings()) {
     std::wstring ytdlp;
-    if (!EnsureYtdlp(ytdlp, error, status)) return false;
+    if (!EnsureYtdlp(ytdlp, error, status, tools)) return false;
     std::vector<std::wstring> all = {L"--ignore-config", L"--no-update", L"--encoding", L"utf-8"};
     if (needsDeno) {
-        std::wstring deno = EnsureDeno(status);
+		std::wstring deno;
+		if (tools.source == YouTubeToolSource::Installed) {
+			if (!ResolveYouTubeTool(tools, YouTubeTool::Deno, deno, error)) return false;
+		} else {
+			deno = EnsureDeno(status);
+		}
         if (!deno.empty()) {
             all.push_back(L"--js-runtimes");
             all.push_back(L"deno:" + deno);
@@ -439,7 +457,9 @@ bool RunYtdlp(const std::vector<std::wstring>& args, bool needsDeno, YtdlpRun& r
         all.push_back(CookiesPath());
     }
     all.insert(all.end(), args.begin(), args.end());
-    if (!RunProcessCapture(ytdlp, all, run.output, &run.errors, &run.exitCode)) {
+	ProcessOptions options;
+	options.pathDirectories = YouTubeToolChildDirectories(tools);
+    if (!RunProcessCapture(ytdlp, all, run.output, &run.errors, &run.exitCode, options)) {
         error = L"Could not run yt-dlp (" + ytdlp + L").";
         return false;
     }
@@ -963,6 +983,7 @@ bool YouTubeResolveFavorite(const std::wstring& text, YouTubeListInfo& info, int
 
 bool YouTubePrepare(const std::wstring& videoId, YouTubeMedia& media, std::wstring& error,
                     const YouTubeStatus& status) {
+	const auto tools = GetYouTubeToolSettings();
     media = YouTubeMedia();
     error.clear();
     std::wstring url = L"https://www.youtube.com/watch?v=" + videoId;
@@ -972,7 +993,7 @@ bool YouTubePrepare(const std::wstring& videoId, YouTubeMedia& media, std::wstri
     YtdlpRun run;
     if (!RunYtdlp({L"--no-playlist", L"-f", L"234/233/93/92/91/94/95", L"--print",
                    L"%(title)s\t%(url)s\t%(channel,uploader|)s", url},
-                  true, run, error, status)) {
+		true, run, error, status, tools)) {
         return false;
     }
     auto rows = PrintedRows(run.output);
@@ -1003,7 +1024,7 @@ bool YouTubePrepare(const std::wstring& videoId, YouTubeMedia& media, std::wstri
     if (!RunYtdlp({L"--no-playlist", L"-f", L"140/bestaudio[ext=m4a]", L"--fixup", L"never", L"--no-part",
                    L"--no-mtime", L"-o", download, L"--no-simulate", L"--print", L"%(title)s\t%(channel,uploader|)s",
                    url},
-                  true, run, error, status)) {
+		true, run, error, status, tools)) {
         return false;
     }
     rows = PrintedRows(run.output);
@@ -1080,6 +1101,7 @@ struct DownloadJob {
     std::wstring url;
     std::wstring title;
     YouTubeDownloadSettings settings;  // as they were when it was asked for
+	YouTubeToolSettings tools;
 };
 
 std::mutex g_downloadMutex;
@@ -1190,12 +1212,12 @@ void RunDownload(const DownloadJob& job) {
     std::wstring ffmpeg, error;
     bool haveFfmpeg = false;
     if (NeedsFfmpeg(job.settings)) {
-        if (!EnsureFfmpeg(ffmpeg, error, SpeakLater)) return fail(error);
+        if (!EnsureFfmpeg(ffmpeg, error, SpeakLater, job.tools)) return fail(error);
         haveFfmpeg = true;
     }
 
     YtdlpRun run;
-    if (!RunYtdlp(DownloadArgs(job, folder, ffmpeg, haveFfmpeg), true, run, error, SpeakLater)) return fail(error);
+    if (!RunYtdlp(DownloadArgs(job, folder, ffmpeg, haveFfmpeg), true, run, error, SpeakLater, job.tools)) return fail(error);
     if (run.exitCode != 0) return fail(YtdlpError(run));
 
     // M4A straight from YouTube is fragmented, which not every player reads;
@@ -1250,7 +1272,7 @@ std::wstring YouTubeDownloadFolder() {
 }
 
 void YouTubeDownload(const std::wstring& url, const std::wstring& title) {
-    DownloadJob job{url, title, g_ytDownload};
+	DownloadJob job{url, title, g_ytDownload, GetYouTubeToolSettings()};
     if (job.settings.folder.empty()) job.settings.folder = YouTubeDownloadFolder();
     size_t ahead;
     bool start;

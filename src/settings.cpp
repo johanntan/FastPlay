@@ -1,4 +1,5 @@
 #include "settings.h"
+#include "youtube_tools.h"
 #include "ini.h"
 #include "globals.h"
 #include "player.h"
@@ -140,8 +141,7 @@ void LoadSettings() {
 
     // Load YouTube settings
     wchar_t ytBuf[512] = {0};
-    IniGetString(L"YouTube", L"YtdlpPath", L"", ytBuf, 512, g_configPath.c_str());
-    g_ytdlpPath = ytBuf;
+	SetYouTubeToolSettings(ReadYouTubeToolSettings(g_configPath));
     IniGetString(L"YouTube", L"ApiKey", L"", ytBuf, 512, g_configPath.c_str());
     g_ytApiKey = ytBuf;
     g_ytFavoritesSort = IniGetInt(L"YouTube", L"FavoritesSort", 0, g_configPath.c_str()) == 1 ? 1 : 0;
@@ -510,7 +510,7 @@ void SaveSettings() {
     IniWriteString(L"Advanced", L"EQTrebleFreq", buf, g_configPath.c_str());
 
     // Save YouTube settings
-    IniWriteString(L"YouTube", L"YtdlpPath", g_ytdlpPath.c_str(), g_configPath.c_str());
+	WriteYouTubeToolSettings(g_configPath, GetYouTubeToolSettings());
     IniWriteString(L"YouTube", L"ApiKey", g_ytApiKey.c_str(), g_configPath.c_str());
     IniWriteString(L"YouTube", L"FavoritesSort", g_ytFavoritesSort == 1 ? L"1" : L"0", g_configPath.c_str());
     IniWriteString(L"YouTube", L"AutoRefresh", std::to_wstring(g_ytAutoRefresh).c_str(), g_configPath.c_str());
