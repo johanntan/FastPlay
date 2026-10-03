@@ -268,6 +268,7 @@ set(FASTPLAY_SOURCES
     src/utils.cpp
     src/xheaac.cpp
     src/youtube.cpp
+    src/youtube_tools.cpp
     src/sqlite3.c
     src/reverb/reverb.cpp
     src/reverb/efx_reverb.cpp
